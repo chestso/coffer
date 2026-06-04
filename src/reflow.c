@@ -358,6 +358,24 @@ void bvt_reflow(BvtTerm *vt, int new_rows, int new_cols)
     if (visible_count > new_rows)
         visible_count = new_rows;
 
+    /* Invariants: distribute partitions [0..total) into sb-bound +
+     * visible. A miscount here means we'd push past the end of
+     * new_rows_arr or skip rows; both have shown up as latent off-by-
+     * ones in similar engines. The per-row range checks catch a
+     * rewrap bug that left a NewRow pointing outside the collected
+     * cells flat buffer. */
+    BVT_BUG_CHECK(sb_count + visible_count == total,
+                  "reflow distribute: sb=%d + visible=%d != total=%d",
+                  sb_count, visible_count, total);
+    for (uint32_t k = 0; k < new_rows_count; ++k) {
+        BVT_BUG_CHECK(new_rows_arr[k].start <= new_rows_arr[k].end,
+                      "reflow row %u: start=%u > end=%u", k,
+                      new_rows_arr[k].start, new_rows_arr[k].end);
+        BVT_BUG_CHECK(new_rows_arr[k].end <= c.cells_count,
+                      "reflow row %u: end=%u beyond cells_count=%u", k,
+                      new_rows_arr[k].end, c.cells_count);
+    }
+
     BvtPage *new_grid = bvt_page_new(vt, new_rows, new_cols);
     if (!new_grid)
         goto fail2;

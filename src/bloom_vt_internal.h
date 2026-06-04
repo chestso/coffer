@@ -12,6 +12,34 @@
 
 #include <bloom-vt/bloom_vt.h>
 
+#include <stdio.h>
+#include <stdlib.h>
+
+/*
+ * BVT_BUG_CHECK — invariant assertion that aborts on violation.
+ *
+ * These guard documented invariants at three audit-identified fragile
+ * sites in the engine (style intern after realloc, scrollback push
+ * source page, reflow distribute phase). Each is a "should never fire
+ * in a correct caller" condition — a fire means a bug has corrupted
+ * state. Crash so the cause can be diagnosed, instead of letting
+ * corruption propagate.
+ *
+ * Always-on: not gated on a debug switch, because the cost is one
+ * branch in non-hot paths and the benefit is fail-fast on bugs that
+ * would otherwise scribble heap minutes later.
+ */
+#define BVT_BUG_CHECK(cond, ...)                                     \
+    do {                                                             \
+        if (__builtin_expect(!(cond), 0)) {                          \
+            fprintf(stderr, "BLOOM-VT BUG: " __VA_ARGS__);           \
+            fprintf(stderr, " at %s:%d (!%s)\n", __FILE__, __LINE__, \
+                    #cond);                                          \
+            fflush(stderr);                                          \
+            abort();                                                 \
+        }                                                            \
+    } while (0)
+
 /* ------------------------------------------------------------------ */
 /* Tunables                                                            */
 /* ------------------------------------------------------------------ */

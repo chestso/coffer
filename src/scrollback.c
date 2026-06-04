@@ -82,6 +82,14 @@ void bvt_scrollback_push(BvtTerm *vt, const BvtCell *src_cells, int cols,
         return;
 
     BvtPage *head = vt->sb_head;
+    /* Invariant: the scrollback push reads style/grapheme/hyperlink ids
+     * from vt->grid (the source) and writes them into head. If a caller
+     * (most worryingly, reflow) ever passes the scrollback head AS the
+     * grid, we'd alias source and dest pages — the intern table grows
+     * mid-read and any held pointer dangles. Fail loud at the door. */
+    BVT_BUG_CHECK(head != vt->grid,
+                  "scrollback push target page is also vt->grid (head=%p)",
+                  (void *)head);
     int row = head->row_count;
     BvtCell *dst = &head->cells[(size_t)row * head->cols];
     head->row_flags[row] = wrapline ? (uint8_t)BVT_CELL_WRAPLINE : 0u;

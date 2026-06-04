@@ -138,6 +138,15 @@ uint32_t bvt_style_intern(BvtTerm *vt, BvtPage *page, const BvtStyle *style)
             page->styles.entries[new_id] = *style;
             page->styles.index[slot] = new_id;
 
+            /* Invariant: a freshly stored entry must reflect the source
+             * style. If grow_entries returned a stale or corrupted
+             * pointer, this catches it before downstream cells reference
+             * the bogus id. */
+            BVT_BUG_CHECK(
+                memcmp(&page->styles.entries[new_id], style, sizeof(*style)) == 0,
+                "style intern wrote id=%u but readback differs (count=%u cap=%u)",
+                new_id, page->styles.count, page->styles.capacity);
+
             /* Maintain load factor < 70%. Rebuild rehashes; the just-
              * placed entry's slot may move, which is fine. */
             if (page->styles.count * 10 > page->styles.index_capacity * 7) {
