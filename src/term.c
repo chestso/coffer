@@ -79,6 +79,8 @@ BvtTerm *bvt_new_with_allocator(int rows, int cols, const BvtAllocator *alloc)
     vt->sb_capacity = BVT_DEFAULT_SCROLLBACK;
     vt->cursor.visible = true;
     vt->cursor.blink = true;
+    /* Mirror the initial cursor so the first flush doesn't spuriously damage. */
+    vt->dmg_cursor_visible = true;
     vt->cursor.pen.color_flags =
         BVT_COLOR_DEFAULT_FG | BVT_COLOR_DEFAULT_BG | BVT_COLOR_DEFAULT_UL;
     vt->modes[BVT_MODE_CURSOR_VISIBLE] = true;

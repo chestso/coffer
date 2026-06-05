@@ -286,6 +286,13 @@ struct BvtTerm
     /* Damage accumulator (rectangular union since last clear). */
     BvtRect damage;
     bool damage_dirty;
+
+    /* Cursor position/visibility at the last bvt_damage_flush. A cursor-only
+     * move (CUP, arrows) changes no grid cell and so emits no damage; flush
+     * folds it in by dirtying the old and new cursor cells. */
+    int dmg_cursor_row;
+    int dmg_cursor_col;
+    bool dmg_cursor_visible;
 };
 
 /* ------------------------------------------------------------------ */
@@ -379,11 +386,10 @@ void bvt_dcs_hook(BvtTerm *vt, uint8_t final);
 void bvt_dcs_put(BvtTerm *vt, uint8_t b);
 void bvt_dcs_unhook(BvtTerm *vt);
 
-/* Damage helper. */
+/* Damage helper. bvt_damage_flush() is public (declared in bloom_vt.h). */
 void bvt_damage_cell(BvtTerm *vt, int row, int col);
 void bvt_damage_row(BvtTerm *vt, int row);
 void bvt_damage_all(BvtTerm *vt);
-void bvt_damage_flush(BvtTerm *vt);
 
 /* Scrollback (scrollback.c). */
 void bvt_scrollback_push(BvtTerm *vt, const BvtCell *src_cells, int cols, bool wrapline);

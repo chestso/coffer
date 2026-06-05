@@ -51,6 +51,20 @@ void bvt_damage_all(BvtTerm *vt)
 
 void bvt_damage_flush(BvtTerm *vt)
 {
+    /* A cursor-only move (CUP, arrows) changes no grid cell and emits no
+     * damage. Fold it in by dirtying the old and new cursor cells so the
+     * consumer repaints both — matching how Alacritty damages the cursor at
+     * flush time. */
+    if (vt->cursor.row != vt->dmg_cursor_row ||
+        vt->cursor.col != vt->dmg_cursor_col ||
+        vt->cursor.visible != vt->dmg_cursor_visible) {
+        bvt_damage_cell(vt, vt->dmg_cursor_row, vt->dmg_cursor_col);
+        bvt_damage_cell(vt, vt->cursor.row, vt->cursor.col);
+        vt->dmg_cursor_row = vt->cursor.row;
+        vt->dmg_cursor_col = vt->cursor.col;
+        vt->dmg_cursor_visible = vt->cursor.visible;
+    }
+
     if (!vt->damage_dirty)
         return;
     if (vt->callbacks.damage)

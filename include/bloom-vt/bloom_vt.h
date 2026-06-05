@@ -327,6 +327,15 @@ void bvt_set_scrollback_size(BvtTerm *vt, int lines);
  * `len` unless the term is in an error state). */
 size_t bvt_input_write(BvtTerm *vt, const uint8_t *bytes, size_t len);
 
+/* Drain accumulated damage: invoke the `damage` callback (if set) with the
+ * rectangular union of everything that changed since the last flush, then
+ * clear the accumulator. The engine never fires `damage` on its own — the
+ * consumer calls this at a controlled time (typically once per frame, just
+ * before rendering), so damage from a burst of bvt_input_write() calls
+ * coalesces into one callback. A cursor-only move (which dirties no grid cell)
+ * is folded in here by damaging the old and new cursor cells. */
+void bvt_damage_flush(BvtTerm *vt);
+
 void bvt_send_key(BvtTerm *vt, BvtKey key, BvtMods mods);
 void bvt_send_text(BvtTerm *vt, const char *utf8, size_t len, BvtMods mods);
 void bvt_send_mouse(BvtTerm *vt, int row, int col, BvtMouseButton b,
