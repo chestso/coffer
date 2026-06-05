@@ -2,30 +2,37 @@
  * bloom-vt — 256-color palette resolution.
  *
  * Layout:
- *   0-15:   ANSI base colors (Charm dark style by default; matches term_vt.c)
+ *   0-15:   ANSI base colors (Charmbracelet CharmTone, per charm.land)
  *   16-231: 6×6×6 cube
  *   232-255: greyscale ramp
+ *
+ * The 0-15 colors are the canonical CharmTone hexes
+ * (github.com/charmbracelet/x/exp/charmtone), named in the comments below.
+ * Bright white (15) stays #fffdf5 to match charm.land's body text and the
+ * default foreground, rather than CharmTone's Butter (#fffaf1).
+ *
+ * Homage to Charmbracelet (charm.land) — thanks for the gorgeous palette. 🌸
  */
 
 #include "bloom_vt_internal.h"
 
 static const uint8_t base16[16][3] = {
-    { 0x1a, 0x1a, 0x1a },
-    { 0xed, 0x56, 0x7a },
-    { 0x02, 0xbf, 0x87 },
-    { 0xec, 0xcc, 0x68 },
-    { 0x75, 0x71, 0xf9 },
-    { 0xf7, 0x80, 0xe2 },
-    { 0x6e, 0xef, 0xc0 },
-    { 0xd0, 0xd0, 0xd0 },
-    { 0x67, 0x67, 0x67 },
-    { 0xff, 0x8d, 0xa1 },
-    { 0x5a, 0xee, 0xad },
-    { 0xf5, 0xdf, 0xa0 },
-    { 0x9b, 0x98, 0xff },
-    { 0xff, 0x9c, 0xe8 },
-    { 0xa5, 0xf5, 0xd4 },
-    { 0xff, 0xfd, 0xf5 },
+    { 0x20, 0x1f, 0x26 }, /* 0  black          Pepper  */
+    { 0xff, 0x57, 0x7d }, /* 1  red            Coral   */
+    { 0x12, 0xc7, 0x8f }, /* 2  green          Guac    */
+    { 0xf5, 0xef, 0x34 }, /* 3  yellow         Mustard */
+    { 0x6b, 0x50, 0xff }, /* 4  blue           Charple */
+    { 0xff, 0x60, 0xff }, /* 5  magenta        Dolly   */
+    { 0x0a, 0xdc, 0xd9 }, /* 6  cyan           Turtle  */
+    { 0xbf, 0xbc, 0xc8 }, /* 7  white          Smoke   */
+    { 0x60, 0x5f, 0x6b }, /* 8  bright black   Oyster  */
+    { 0xff, 0x7f, 0x90 }, /* 9  bright red     Salmon  */
+    { 0x00, 0xff, 0xb2 }, /* 10 bright green   Julep   */
+    { 0xe8, 0xfe, 0x96 }, /* 11 bright yellow  Zest    */
+    { 0x8b, 0x75, 0xff }, /* 12 bright blue    Hazy    */
+    { 0xff, 0x84, 0xff }, /* 13 bright magenta Blush   */
+    { 0x68, 0xff, 0xd6 }, /* 14 bright cyan    Bok     */
+    { 0xff, 0xfd, 0xf5 }, /* 15 bright white   (cream) */
 };
 
 uint32_t bvt_palette_lookup(BvtTerm *vt, uint8_t idx)

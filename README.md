@@ -144,6 +144,10 @@ int main(void)
 
 The full API is in [`include/bloom-vt/bloom_vt.h`](include/bloom-vt/bloom_vt.h).
 
+## Acknowledgments
+
+The default 16-color ANSI palette is [CharmTone](https://github.com/charmbracelet/x/tree/main/exp/charmtone), the palette behind [charm.land](https://charm.land) — with thanks to the folks at [Charmbracelet](https://charm.sh) for making the terminal a more colorful place. 🌸
+
 ## License
 
 MIT. See [`COPYING`](COPYING).
