@@ -223,6 +223,11 @@ int bvt_get_scrollback_lines(const BvtTerm *vt)
     return vt ? vt->sb_lines : 0;
 }
 
+int bvt_get_scrollback_capacity(const BvtTerm *vt)
+{
+    return vt ? vt->sb_capacity : 0;
+}
+
 /* bvt_get_scrollback_cell, bvt_get_scrollback_wrapline are implemented
  * in scrollback.c. */
 

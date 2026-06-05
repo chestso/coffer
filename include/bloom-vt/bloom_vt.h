@@ -357,7 +357,12 @@ const BvtCell *bvt_get_cell(const BvtTerm *vt, int row, int col);
 
 void bvt_get_dimensions(const BvtTerm *vt, int *out_rows, int *out_cols);
 
+/* Number of lines currently held in scrollback (grows as content scrolls off,
+ * capped at the configured capacity). */
 int bvt_get_scrollback_lines(const BvtTerm *vt);
+/* Configured scrollback capacity in lines (what bvt_set_scrollback_size set, or
+ * the built-in default). 0 means scrollback is disabled. */
+int bvt_get_scrollback_capacity(const BvtTerm *vt);
 const BvtCell *bvt_get_scrollback_cell(const BvtTerm *vt, int sb_row, int col);
 bool bvt_get_scrollback_wrapline(const BvtTerm *vt, int sb_row);
 
