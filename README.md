@@ -19,6 +19,12 @@ where it replaces libvterm.
   by id, so there is no hardcoded codepoint cap (libvterm caps at 6).
 - **Scrollback** — paged ring buffer; default 1000 lines, configurable.
 - **Reflow** — recomputes wrap on resize; preserves cursor row.
+- **Damage tracking** — the changed region is accumulated as input is
+  parsed; the consumer calls `bvt_damage_flush()` at a controlled time
+  (typically once per frame, before rendering) to receive it via the
+  `damage` callback and repaint only what changed. A cursor-only move
+  (which dirties no grid cell) is folded in — flush damages the old and
+  new cursor cells.
 - **Kitty keyboard protocol** — flags 0x1 (Disambiguate) and 0x8 (Report
   all keys as escape codes) are fully implemented. Push/pop/set/query
   of the flag stack works. Flags 0x2/0x4/0x10 are accepted on the stack
