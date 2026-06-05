@@ -22,6 +22,11 @@ void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor)
     /* Flush any pending cluster before swapping grids. */
     bvt_flush_cluster(vt);
 
+    /* Sixel images belong to the primary grid. We don't keep a separate
+     * per-screen image set yet, so clear on any altscreen switch. */
+    if (vt->sixel)
+        bvt_sixel_clear_all(vt);
+
     if (on) {
         if (save_restore_cursor)
             vt->saved_cursor = vt->cursor;
@@ -143,6 +148,9 @@ void bvt_full_reset(BvtTerm *vt)
                (size_t)vt->rows * vt->cols * sizeof(BvtCell));
         memset(vt->grid->row_flags, 0, (size_t)vt->rows);
     }
+
+    if (vt->sixel)
+        bvt_sixel_clear_all(vt);
 
     bvt_damage_all(vt);
 }

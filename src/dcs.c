@@ -54,6 +54,16 @@ void bvt_dcs_hook(BvtTerm *vt, uint8_t final)
     BvtParser *p = &vt->parser;
     format_intro(vt, final);
     p->dcs_initial_sent = true;
+
+    /* Sixel (final byte 'q') is decoded internally by the engine, not
+     * surfaced to the host dcs callback. The params (P1;P2;P3) were
+     * collected into p->params before the final byte arrived. */
+    p->dcs_is_sixel = (final == 'q');
+    if (p->dcs_is_sixel) {
+        bvt_sixel_begin(vt, p->params, p->param_count);
+        return;
+    }
+
     /* Initial chunk with empty body so the consumer can prepare state. */
     if (vt->callbacks.dcs)
         vt->callbacks.dcs((const char *)p->dcs_intro, NULL, 0, false, vt->callback_user);
@@ -64,6 +74,10 @@ void bvt_dcs_put(BvtTerm *vt, uint8_t b)
     BvtParser *p = &vt->parser;
     if (!p->dcs_initial_sent)
         return;
+    if (p->dcs_is_sixel) {
+        bvt_sixel_put(vt, &b, 1);
+        return;
+    }
     if (vt->callbacks.dcs)
         vt->callbacks.dcs((const char *)p->dcs_intro,
                           (const char *)&b, 1, false, vt->callback_user);
@@ -74,6 +88,12 @@ void bvt_dcs_unhook(BvtTerm *vt)
     BvtParser *p = &vt->parser;
     if (!p->dcs_initial_sent)
         return;
+    if (p->dcs_is_sixel) {
+        bvt_sixel_finish(vt);
+        p->dcs_is_sixel = false;
+        p->dcs_initial_sent = false;
+        return;
+    }
     if (vt->callbacks.dcs)
         vt->callbacks.dcs((const char *)p->dcs_intro, NULL, 0, true, vt->callback_user);
     p->dcs_initial_sent = false;

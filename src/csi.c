@@ -368,6 +368,21 @@ static void mode_set(BvtTerm *vt, bool on)
             if (vt->callbacks.set_mode)
                 vt->callbacks.set_mode(BVT_MODE_SYNC_OUTPUT, on, vt->callback_user);
             break;
+        case 80: /* DECSDM — sixel display (in-place) mode */
+            vt->modes[BVT_MODE_SIXEL_SCROLLING] = on;
+            if (vt->callbacks.set_mode)
+                vt->callbacks.set_mode(BVT_MODE_SIXEL_SCROLLING, on, vt->callback_user);
+            break;
+        case 1070: /* private sixel color registers */
+            vt->modes[BVT_MODE_SIXEL_PRIVATE_REGS] = on;
+            if (vt->callbacks.set_mode)
+                vt->callbacks.set_mode(BVT_MODE_SIXEL_PRIVATE_REGS, on, vt->callback_user);
+            break;
+        case 8452: /* cursor to right of sixel graphic */
+            vt->modes[BVT_MODE_SIXEL_CURSOR_RIGHT] = on;
+            if (vt->callbacks.set_mode)
+                vt->callbacks.set_mode(BVT_MODE_SIXEL_CURSOR_RIGHT, on, vt->callback_user);
+            break;
         default:
             break;
         }
@@ -420,6 +435,31 @@ void bvt_csi_dispatch(BvtTerm *vt, uint8_t final)
         break;
 
     case 'S':
+        if (has_intermediate(vt, '?')) {
+            /* XTSMGRAPHICS — CSI ? Pi ; Pa ; Pv S. Report fixed sixel
+             * capabilities; status 0 = success. Pi 1 = color registers,
+             * Pi 2 = graphics geometry. We ignore Pa (read/set/max) and
+             * always report our maximum. */
+            int pi = param_or(vt, 0, 0);
+            char buf[48];
+            int n = 0;
+            if (pi == 1) {
+                n = snprintf(buf, sizeof(buf), "\x1b[?1;0;%dS", 256);
+            } else if (pi == 2) {
+                int gw = vt->sixel_cell_w > 0 ? vt->cols * vt->sixel_cell_w : 1000;
+                int gh = vt->sixel_cell_h > 0 ? vt->rows * vt->sixel_cell_h : 1000;
+                if (gw > 10000)
+                    gw = 10000;
+                if (gh > 10000)
+                    gh = 10000;
+                n = snprintf(buf, sizeof(buf), "\x1b[?2;0;%d;%dS", gw, gh);
+            } else {
+                n = snprintf(buf, sizeof(buf), "\x1b[?%d;3;0S", pi); /* failure */
+            }
+            if (n > 0)
+                bvt_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+            break;
+        }
         bvt_scroll_up(vt, p1);
         break;
     case 'T':
@@ -579,8 +619,10 @@ void bvt_csi_dispatch(BvtTerm *vt, uint8_t final)
 
     case 'c': /* Primary Device Attributes. */
         if (!has_intermediate(vt, '>')) {
-            /* Respond as VT220 with ANSI colors. */
-            bvt_emit_bytes(vt, (const uint8_t *)"\x1b[?62;22c", 9);
+            /* VT220, with ANSI colors (22) and sixel graphics (4). The
+             * `4` is what sixel-probing apps (img2sixel, lsix, chafa)
+             * look for before emitting sixel. */
+            bvt_emit_bytes(vt, (const uint8_t *)"\x1b[?62;4;22c", 11);
         } else {
             /* Secondary DA: identify as bloom-vt with version 0. */
             bvt_emit_bytes(vt, (const uint8_t *)"\x1b[>1;0;0c", 9);

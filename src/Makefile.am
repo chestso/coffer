@@ -19,6 +19,7 @@ libbloom_vt_a_SOURCES = \
     palette.c \
     osc.c \
     dcs.c \
+    sixel.c \
     esc.c \
     hyperlink.c \
     bloom_vt_internal.h

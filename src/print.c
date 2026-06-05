@@ -65,6 +65,12 @@ void bvt_scroll_up(BvtTerm *vt, int lines)
                 vt->callbacks.sb_pushline(row, vt->cols, wrapline,
                                           vt->callback_user);
         }
+        /* A full-screen scroll moves grid row 0 into history: advance the
+         * sixel absolute-line baseline so anchored images track the text
+         * they sit on, then cull any that scrolled out of scrollback. */
+        vt->sixel_abs_top += lines;
+        if (vt->sixel)
+            bvt_sixel_note_scroll(vt, lines);
     }
 
     /* Move rows up. */
@@ -512,6 +518,8 @@ void bvt_erase_in_display(BvtTerm *vt, int mode)
                    (size_t)vt->cols * sizeof(BvtCell));
             vt->grid->row_flags[r] = 0;
         }
+        if (vt->sixel)
+            bvt_sixel_clear_display_rows(vt, row, vt->rows - 1);
         break;
     case 1:
         bvt_erase_in_line(vt, 1);
@@ -520,12 +528,16 @@ void bvt_erase_in_display(BvtTerm *vt, int mode)
                    (size_t)vt->cols * sizeof(BvtCell));
             vt->grid->row_flags[r] = 0;
         }
+        if (vt->sixel)
+            bvt_sixel_clear_display_rows(vt, 0, row);
         break;
     case 2:
     case 3:
         memset(vt->grid->cells, 0,
                (size_t)vt->rows * vt->cols * sizeof(BvtCell));
         memset(vt->grid->row_flags, 0, (size_t)vt->rows);
+        if (vt->sixel)
+            bvt_sixel_clear_display_rows(vt, 0, vt->rows - 1);
         break;
     default:
         return;

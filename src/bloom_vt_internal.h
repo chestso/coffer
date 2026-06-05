@@ -181,6 +181,7 @@ typedef struct
     bool osc_truncated;
     /* DCS streaming state — passthrough emits chunks via callback */
     bool dcs_initial_sent;
+    bool dcs_is_sixel;                           /* current DCS is a sixel (final byte 'q') — handled internally */
     uint8_t dcs_intro[BVT_INTERMEDIATE_MAX + 4]; /* params + final */
     uint8_t dcs_intro_len;
 } BvtParser;
@@ -293,6 +294,16 @@ struct BvtTerm
     int dmg_cursor_row;
     int dmg_cursor_col;
     bool dmg_cursor_visible;
+
+    /* Sixel graphics (sixel.c). The state is allocated lazily on the
+     * first sixel DCS. `sixel_abs_top` is the absolute line index of grid
+     * row 0 — it advances by one each time a line scrolls off the top
+     * into history, so an image stored with an absolute anchor line
+     * tracks the text it sits on with no per-image bookkeeping. */
+    struct BvtSixelState *sixel;
+    int sixel_cell_w; /* px per cell, 0 = unknown */
+    int sixel_cell_h;
+    long sixel_abs_top;
 };
 
 /* ------------------------------------------------------------------ */
@@ -394,6 +405,21 @@ void bvt_damage_all(BvtTerm *vt);
 /* Scrollback (scrollback.c). */
 void bvt_scrollback_push(BvtTerm *vt, const BvtCell *src_cells, int cols, bool wrapline);
 void bvt_scrollback_clear(BvtTerm *vt);
+
+/* Sixel graphics (sixel.c). The state hangs off vt->sixel, allocated
+ * lazily. All entry points are no-ops when no sixel has been seen. */
+void bvt_sixel_state_free(BvtTerm *vt);
+/* DCS lifecycle, driven from dcs.c when the final byte is 'q'. */
+void bvt_sixel_begin(BvtTerm *vt, const uint32_t *params, int nparams);
+void bvt_sixel_put(BvtTerm *vt, const uint8_t *data, size_t len);
+void bvt_sixel_finish(BvtTerm *vt);
+/* Grid maintenance. note_scroll is called after sixel_abs_top advances by
+ * `lines`; it culls images that have scrolled out of retained scrollback.
+ * clear_display_rows removes foreground images overlapping the inclusive
+ * display-row range [top,bot]; clear_all removes everything. */
+void bvt_sixel_note_scroll(BvtTerm *vt, int lines);
+void bvt_sixel_clear_display_rows(BvtTerm *vt, int top, int bot);
+void bvt_sixel_clear_all(BvtTerm *vt);
 
 /* Page ownership lookup — used by cell accessors that must resolve
  * a cell's grapheme/style entry against the page that owns it. */

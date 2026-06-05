@@ -124,6 +124,8 @@ void bvt_free(BvtTerm *vt)
     if (vt->altgrid)
         bvt_page_free(vt, vt->altgrid);
 
+    bvt_sixel_state_free(vt);
+
     bvt_dealloc(vt, vt->tabstops);
     bvt_dealloc(vt, vt->title);
 
@@ -149,6 +151,10 @@ void bvt_resize(BvtTerm *vt, int rows, int cols)
         return;
     if (rows == vt->rows && cols == vt->cols)
         return;
+    /* Reflow rebuilds the grid with no line identity, so anchored sixel
+     * images can't be followed across a rewrap — drop them on resize. */
+    if (vt->sixel)
+        bvt_sixel_clear_all(vt);
     bvt_reflow(vt, rows, cols);
 }
 

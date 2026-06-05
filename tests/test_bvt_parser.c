@@ -869,7 +869,8 @@ static void test_da1(void)
     BvtTerm *vt = make_term(24, 80);
     g_output_len = 0;
     feed(vt, "\x1b[c");
-    ASSERT_STR_EQ(g_output_buf, "\x1b[?62;22c");
+    /* VT220 (62), sixel graphics (4), ANSI colors (22). */
+    ASSERT_STR_EQ(g_output_buf, "\x1b[?62;4;22c");
     bvt_free(vt);
 }
 

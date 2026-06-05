@@ -158,14 +158,17 @@ typedef enum
     BVT_MODE_CURSOR_BLINK,
     BVT_MODE_REVERSE_VIDEO, /* DECSCNM */
     BVT_MODE_BRACKETED_PASTE,
-    BVT_MODE_MOUSE_X10,         /* DECSET 9 */
-    BVT_MODE_MOUSE_BTN_EVENT,   /* DECSET 1000 */
-    BVT_MODE_MOUSE_DRAG,        /* DECSET 1002 */
-    BVT_MODE_MOUSE_ANY_EVENT,   /* DECSET 1003 */
-    BVT_MODE_MOUSE_SGR,         /* DECSET 1006 */
-    BVT_MODE_FOCUS_REPORTING,   /* DECSET 1004 */
-    BVT_MODE_GRAPHEME_CLUSTERS, /* mode 2027 (Contour) */
-    BVT_MODE_SYNC_OUTPUT,       /* mode 2026 */
+    BVT_MODE_MOUSE_X10,          /* DECSET 9 */
+    BVT_MODE_MOUSE_BTN_EVENT,    /* DECSET 1000 */
+    BVT_MODE_MOUSE_DRAG,         /* DECSET 1002 */
+    BVT_MODE_MOUSE_ANY_EVENT,    /* DECSET 1003 */
+    BVT_MODE_MOUSE_SGR,          /* DECSET 1006 */
+    BVT_MODE_FOCUS_REPORTING,    /* DECSET 1004 */
+    BVT_MODE_GRAPHEME_CLUSTERS,  /* mode 2027 (Contour) */
+    BVT_MODE_SYNC_OUTPUT,        /* mode 2026 */
+    BVT_MODE_SIXEL_SCROLLING,    /* DECSDM, mode 80 — when on, draw sixel in place */
+    BVT_MODE_SIXEL_PRIVATE_REGS, /* mode 1070 — private sixel color registers */
+    BVT_MODE_SIXEL_CURSOR_RIGHT, /* mode 8452 — cursor to right of graphic */
 } BvtMode;
 
 /* ------------------------------------------------------------------ */
@@ -363,6 +366,50 @@ const char *bvt_get_title(const BvtTerm *vt);
 bool bvt_is_altscreen(const BvtTerm *vt);
 bool bvt_get_mode(const BvtTerm *vt, BvtMode mode);
 bool bvt_get_line_continuation(const BvtTerm *vt, int row);
+
+/* ------------------------------------------------------------------ */
+/* Sixel graphics                                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A decoded sixel image, anchored to a grid line. The engine owns the
+ * pixel data and the lifetime; the view returned by bvt_get_sixels() is
+ * valid until the next bvt_input_write()/bvt_get_sixels() call.
+ *
+ * `row` is a unified row coordinate: >= 0 is a visible grid row (0 =
+ * top), < 0 is scrollback depth (-1 = the line most recently scrolled
+ * off). The host maps it to a display position exactly as it does for
+ * cells, accounting for the user's scrollback offset.
+ *
+ * `id` is stable across frames for the same image (use it as a texture
+ * cache key); `version` bumps whenever the pixels at that id change
+ * (animation / in-place frame replacement), so the host re-uploads only
+ * when it must. `layer` is 0 for foreground (drawn over text); layer 1
+ * (background, drawn behind text) is reserved for a future extension.
+ */
+typedef struct
+{
+    uint64_t id;
+    uint32_t version;
+    uint8_t layer;
+    int row;
+    int col;
+    int width_px;
+    int height_px;
+    const uint8_t *rgba; /* width_px * height_px * 4, RGBA, engine-owned */
+} BvtSixel;
+
+/* Inform the engine of the pixel size of one character cell. Needed to
+ * map a decoded image's pixel height to the number of text rows it
+ * occupies (cursor advance, scroll, culling). Call on font load and on
+ * resize. With cell size unset (0), images are still decoded but the
+ * cursor is not advanced past them. */
+void bvt_set_cell_pixels(BvtTerm *vt, int cell_w_px, int cell_h_px);
+
+/* Return the live sixel images. The returned array is owned by the
+ * engine and valid until the next mutation; *out_count receives the
+ * number of images (0 if none). Returns NULL when there are none. */
+const BvtSixel *bvt_get_sixels(BvtTerm *vt, int *out_count);
 
 #ifdef __cplusplus
 }

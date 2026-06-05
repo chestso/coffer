@@ -477,6 +477,15 @@ static void osc_put(BvtParser *p, uint8_t b)
 
 static void dcs_finish(BvtTerm *vt)
 {
+    /* Sixel (final byte 'q') is finalized internally, not surfaced to the
+     * host dcs callback. */
+    if (vt->parser.dcs_is_sixel) {
+        bvt_sixel_finish(vt);
+        vt->parser.dcs_is_sixel = false;
+        vt->parser.dcs_initial_sent = false;
+        vt->parser.dcs_intro_len = 0;
+        return;
+    }
     /* Final empty chunk to signal end of DCS to the consumer. */
     if (vt->parser.dcs_initial_sent && vt->callbacks.dcs) {
         vt->callbacks.dcs((const char *)vt->parser.dcs_intro,

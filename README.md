@@ -19,6 +19,14 @@ where it replaces libvterm.
   by id, so there is no hardcoded codepoint cap (libvterm caps at 6).
 - **Scrollback** — paged ring buffer; default 1000 lines, configurable.
 - **Reflow** — recomputes wrap on resize; preserves cursor row.
+- **Sixel graphics** — DCS sixel images (`DCS q … ST`) are decoded and
+  stored in the engine, anchored to an absolute grid line so they scroll,
+  enter scrollback, and clear with the text they sit on. Decode covers
+  RLE, RGB and DEC HLS color, P2 transparency, and raster attributes;
+  capability is advertised via DA1 (`4`), DECSET 80/1070/8452, and
+  XTSMGRAPHICS. The host declares cell pixel size with
+  `bvt_set_cell_pixels()` and fetches images to draw with
+  `bvt_get_sixels()`.
 - **Damage tracking** — the changed region is accumulated as input is
   parsed; the consumer calls `bvt_damage_flush()` at a controlled time
   (typically once per frame, before rendering) to receive it via the
@@ -64,9 +72,18 @@ design goals. Concretely:
   cursor cluster buffer up to 16 codepoints) are inline in `BvtTerm`.
   The intern tables grow geometrically and amortize to zero; the grapheme
   arena reuses existing entries on hash hit.
+- **Sixel store.** Decoded images live in a dense record array
+  (swap-remove deletion, no fragmentation) with their pixel buffers drawn
+  from a small best-fit free-list pool, so animation that streams
+  same-size frames recycles one buffer instead of churning the heap. A
+  global live-byte budget evicts the oldest image first (the same order
+  they scroll off), and a per-dimension clamp bounds any single image.
+  The store is allocated lazily on the first sixel and freed by
+  `bvt_free`.
 - **Lifecycle.** `bvt_new` / `bvt_free` is the only ownership pair the
   consumer manages. `bvt_free` releases every page, intern table, arena,
-  and tab-stop bitmap through the same allocator that produced them.
+  tab-stop bitmap, and the sixel store through the same allocator that
+  produced them.
 
 `BvtTerm` itself is not internally synchronized; callers own all locking.
 
