@@ -39,6 +39,7 @@ Makefile.in
 .dirstamp
 /build/
 /build-release/
+/build-sym/
 /_build/
 
 # --- Test outputs ---
