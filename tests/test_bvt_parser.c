@@ -1093,8 +1093,8 @@ static void test_sgr_indexed(void)
     const BvtCell *y = bvt_get_cell(vt, 0, 0);
     const BvtStyle *s = bvt_cell_style(vt, y);
     ASSERT_NOT_NULL(s);
-    /* Charm red is 0xed567a per palette.c. */
-    ASSERT_EQ(s->fg_rgb, 0xED567Au);
+    /* CharmTone red (Coral) is 0xff577d per palette.c. */
+    ASSERT_EQ(s->fg_rgb, 0xFF577Du);
     bvt_free(vt);
 }
 
@@ -1165,7 +1165,7 @@ static void test_reflow_preserves_styles(void)
     const BvtStyle *bs = bvt_cell_style(vt, b);
     ASSERT_NOT_NULL(as);
     ASSERT_NOT_NULL(bs);
-    ASSERT_EQ(as->fg_rgb, 0xED567Au); /* red */
+    ASSERT_EQ(as->fg_rgb, 0xFF577Du); /* red */
     ASSERT_TRUE((bs->color_flags & BVT_COLOR_DEFAULT_FG) != 0);
     bvt_free(vt);
 }
