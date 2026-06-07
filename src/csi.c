@@ -550,12 +550,12 @@ void bvt_csi_dispatch(BvtTerm *vt, uint8_t final)
                * and `CSI < s` / `CSI > s` are vendor extensions we
                * do not implement. */
         if (p->intermediate_count == 0)
-            vt->saved_cursor = vt->cursor;
+            *bvt_active_saved_cursor(vt) = vt->cursor;
         break;
     case 'u':
         if (p->intermediate_count == 0) {
             /* CSI u — ANSI.SYS Restore Cursor. */
-            vt->cursor = vt->saved_cursor;
+            vt->cursor = *bvt_active_saved_cursor(vt);
         } else if (has_intermediate(vt, '?')) {
             /* CSI ? u — kitty keyboard query. Reply with the active
              * flags at the top of the stack as `CSI ? <flags> u`. The

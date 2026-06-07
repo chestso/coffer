@@ -29,7 +29,7 @@ void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor)
 
     if (on) {
         if (save_restore_cursor)
-            vt->saved_cursor = vt->cursor;
+            vt->saved_cursor[0] = vt->cursor; /* normal-screen register */
 
         /* Lazily allocate or resize the alt grid to current geometry. */
         if (!vt->altgrid ||
@@ -66,7 +66,7 @@ void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor)
         vt->in_altscreen = false;
         vt->modes[BVT_MODE_ALTSCREEN] = false;
         if (save_restore_cursor)
-            vt->cursor = vt->saved_cursor;
+            vt->cursor = vt->saved_cursor[0]; /* normal-screen register */
     }
 
     bvt_damage_all(vt);
@@ -115,7 +115,7 @@ void bvt_full_reset(BvtTerm *vt)
     vt->cursor.blink = true;
     vt->cursor.pen.color_flags =
         BVT_COLOR_DEFAULT_FG | BVT_COLOR_DEFAULT_BG | BVT_COLOR_DEFAULT_UL;
-    vt->saved_cursor = vt->cursor;
+    vt->saved_cursor[0] = vt->saved_cursor[1] = vt->cursor;
 
     /* Scroll region back to full screen. */
     vt->scroll_top = 0;

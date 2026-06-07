@@ -28,10 +28,10 @@ void bvt_esc_dispatch(BvtTerm *vt, uint8_t final)
 
     switch (final) {
     case '7':
-        vt->saved_cursor = vt->cursor;
+        *bvt_active_saved_cursor(vt) = vt->cursor;
         break; /* DECSC */
     case '8':  /* DECRC */
-        vt->cursor = vt->saved_cursor;
+        vt->cursor = *bvt_active_saved_cursor(vt);
         break;
     case 'n':
         vt->charset_active = 2;

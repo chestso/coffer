@@ -230,7 +230,11 @@ struct BvtTerm
     int sb_capacity;
 
     BvtCursorState cursor;
-    BvtCursorState saved_cursor;
+    /* One saved-cursor register per screen: [0]=normal, [1]=alt. DECSC/DECRC
+     * and the ANSI.SYS CSI s/u forms save/restore the *active* screen's
+     * register, matching xterm — so a TUI's DECSC inside the alt screen can't
+     * clobber the cursor that altscreen 1049 stashed for the normal screen. */
+    BvtCursorState saved_cursor[2];
 
     /* Scroll region (DECSTBM). Inclusive. */
     int scroll_top;
@@ -305,6 +309,13 @@ struct BvtTerm
     int sixel_cell_h;
     long sixel_abs_top;
 };
+
+/* The saved-cursor register for the currently active screen. DECSC/DECRC and
+ * CSI s/u operate on this; altscreen 1049 always uses saved_cursor[0]. */
+static inline BvtCursorState *bvt_active_saved_cursor(BvtTerm *vt)
+{
+    return &vt->saved_cursor[vt->in_altscreen ? 1 : 0];
+}
 
 /* ------------------------------------------------------------------ */
 /* Internal helpers (cross-file)                                       */
