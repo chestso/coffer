@@ -897,12 +897,19 @@ static void test_altscreen_save_restore(void)
 /* Regression: a DECSC/DECRC issued inside the alternate screen must not clobber
  * the cursor that altscreen 1049 saved for the normal screen. ncurses apps
  * (ncdu, etc.) scroll a sub-region with the idiom DECSC / DECSTBM / DECRC / LF /
- * DECSTBM, and ncdu hides its cursor (DECTCEM reset). Before the per-screen
- * saved-cursor split, ncdu's DECSC overwrote 1049's single saved slot, so on
- * exit the cursor was restored to an alt row (the bug's "last line") with
- * visible=false (the "stopped blinking"). Write bare ESC 7 / ESC 8 as the
- * concatenated literal "\x1b" "7" — a naive "\x1b7" is a compile error because
- * \x greedily eats every hex digit (becomes 0x1b7, out of char range). */
+ * DECSTBM. Before the per-screen saved-cursor split, that DECSC overwrote 1049's
+ * single saved slot, so on exit the cursor was restored to an alt row (the bug's
+ * "last line"). The split keeps position correct.
+ *
+ * Separately: cursor visibility (DECTCEM, ?25) is NOT part of the DECSC/DECRC
+ * save register, matching xterm — so 1049l must not restore an old visibility,
+ * and must leave the app's own cnorm (\E[?12l\E[?25h, sent before \E[?1049l by
+ * ncurses' endwin and by bloom-boba) intact. Clobbering it left the shell prompt
+ * with a hidden cursor (the "stopped blinking" symptom).
+ *
+ * Write bare ESC 7 / ESC 8 as the concatenated literal "\x1b" "7" — a naive
+ * "\x1b7" is a compile error because \x greedily eats every hex digit (becomes
+ * 0x1b7, out of char range). */
 static void test_altscreen_decsc_does_not_clobber_1049(void)
 {
     BvtTerm *vt = make_term(10, 80);
@@ -926,11 +933,14 @@ static void test_altscreen_decsc_does_not_clobber_1049(void)
              "7\x1b[3;9r\x1b"
              "8\n\x1b[1;10r\x1b[8;1H");
 
-    feed(vt, "\x1b[?1049l"); /* exit altscreen — restores the MAIN register (slot[0]) */
+    /* Real exit: ncurses' endwin (and bloom-boba's stop) re-shows the cursor
+     * with cnorm, then leaves the alt screen. The ?25h must survive 1049l. */
+    feed(vt, "\x1b[?12l\x1b[?25h"); /* cnorm: steady + visible */
+    feed(vt, "\x1b[?1049l");        /* exit altscreen — restores MAIN register (slot[0]) */
     BvtCursor c = bvt_get_cursor(vt);
     ASSERT_EQ(c.row, 4); /* back where the shell left it, NOT an alt row */
     ASSERT_EQ(c.col, 2);
-    ASSERT_TRUE(c.visible); /* visibility restored — the "stopped blinking" half */
+    ASSERT_TRUE(c.visible); /* app's cnorm ?25h not clobbered — the "stopped blinking" half */
     bvt_free(vt);
 }
 

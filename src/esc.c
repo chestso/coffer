@@ -31,7 +31,7 @@ void bvt_esc_dispatch(BvtTerm *vt, uint8_t final)
         *bvt_active_saved_cursor(vt) = vt->cursor;
         break; /* DECSC */
     case '8':  /* DECRC */
-        vt->cursor = *bvt_active_saved_cursor(vt);
+        bvt_cursor_restore(vt, bvt_active_saved_cursor(vt));
         break;
     case 'n':
         vt->charset_active = 2;

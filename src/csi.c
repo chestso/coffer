@@ -555,7 +555,7 @@ void bvt_csi_dispatch(BvtTerm *vt, uint8_t final)
     case 'u':
         if (p->intermediate_count == 0) {
             /* CSI u — ANSI.SYS Restore Cursor. */
-            vt->cursor = *bvt_active_saved_cursor(vt);
+            bvt_cursor_restore(vt, bvt_active_saved_cursor(vt));
         } else if (has_intermediate(vt, '?')) {
             /* CSI ? u — kitty keyboard query. Reply with the active
              * flags at the top of the stack as `CSI ? <flags> u`. The

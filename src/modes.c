@@ -66,7 +66,7 @@ void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor)
         vt->in_altscreen = false;
         vt->modes[BVT_MODE_ALTSCREEN] = false;
         if (save_restore_cursor)
-            vt->cursor = vt->saved_cursor[0]; /* normal-screen register */
+            bvt_cursor_restore(vt, &vt->saved_cursor[0]); /* normal-screen register */
     }
 
     bvt_damage_all(vt);

@@ -317,6 +317,20 @@ static inline BvtCursorState *bvt_active_saved_cursor(BvtTerm *vt)
     return &vt->saved_cursor[vt->in_altscreen ? 1 : 0];
 }
 
+/* Restore the cursor from a saved register (DECRC, CSI u, altscreen exit).
+ * Cursor visibility (DECTCEM, ?25) and blink (AT&T, ?12) are independent DEC
+ * modes, not part of the DECSC/DECRC save register — so they survive the
+ * restore. Otherwise a TUI's final `?25h` would be clobbered by the cursor
+ * register saved while the cursor was hidden, leaving it stuck invisible. */
+static inline void bvt_cursor_restore(BvtTerm *vt, const BvtCursorState *src)
+{
+    bool visible = vt->cursor.visible;
+    bool blink = vt->cursor.blink;
+    vt->cursor = *src;
+    vt->cursor.visible = visible;
+    vt->cursor.blink = blink;
+}
+
 /* ------------------------------------------------------------------ */
 /* Internal helpers (cross-file)                                       */
 /* ------------------------------------------------------------------ */
