@@ -65,6 +65,32 @@ void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor)
 
         vt->in_altscreen = false;
         vt->modes[BVT_MODE_ALTSCREEN] = false;
+
+        /* The main grid was saved when entering the alt screen. If the
+         * terminal was resized while on the alt screen (e.g. a
+         * fullscreen toggle), the restored grid is stale — its cells
+         * array was allocated at the old dimensions, but vt->rows and
+         * vt->cols now reflect the current (possibly larger) size.
+         * bvt_get_cell uses vt->cols for the stride, so a stale grid
+         * with fewer columns causes a heap buffer overflow when the
+         * renderer reads cells beyond the old allocation.
+         *
+         * Resize the grid to match the current geometry.  Temporarily
+         * roll vt->rows/vt->cols back to the grid's actual allocation
+         * size so bvt_reflow sees a genuine dimension change (it
+         * returns early when new == current).  in_altscreen is already
+         * false so bvt_reflow will reflow (not clamp) the main grid,
+         * re-wrapping long lines instead of truncating them. */
+        if (vt->grid &&
+            (vt->grid->cols != vt->cols ||
+             vt->grid->row_capacity != vt->rows)) {
+            int saved_rows = vt->rows;
+            int saved_cols = vt->cols;
+            vt->rows = vt->grid->row_count;
+            vt->cols = vt->grid->cols;
+            bvt_resize(vt, saved_rows, saved_cols);
+        }
+
         if (save_restore_cursor)
             bvt_cursor_restore(vt, &vt->saved_cursor[0]); /* normal-screen register */
     }
