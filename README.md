@@ -35,8 +35,9 @@ where it replaces libvterm.
   scroll with the text, enter scrollback, and are culled on clear — the same
   ownership model as sixel. The host fetches animations via
   `bvt_get_lotties()` / `bvt_get_lottie_placements()` and advances frames
-  with `bvt_lottie_tick()`. Rasterization (ThorVG) is not yet wired; RGBA
-  buffers are currently zeroed.
+  with `bvt_lottie_tick()`. Rasterization is handled by ThorVG (optional
+  dependency, auto-detected at configure time); when ThorVG is absent the APC
+  sequences are still accepted but RGBA buffers are zeroed.
 - **Damage tracking** — the changed region is accumulated as input is
   parsed; the consumer calls `bvt_damage_flush()` at a controlled time
   (typically once per frame, before rendering) to receive it via the
@@ -47,7 +48,10 @@ where it replaces libvterm.
   all keys as escape codes) are fully implemented. Push/pop/set/query
   of the flag stack works. Flags 0x2/0x4/0x10 are accepted on the stack
   but currently no-ops (waiting on a concrete consumer).
-- **Zero external dependencies** — libc only.
+- **Hyperlinks (OSC 8)** — cells carry a hyperlink id; the host retrieves
+  the URI via `bvt_cell_get_hyperlink()`.
+- **Zero external dependencies** — libc only (ThorVG is optional and
+  auto-detected).
 
 For the project status — what is byte-identical to libvterm, accepted
 divergences, and the deferred items — see [`FOLLOWUPS.md`](FOLLOWUPS.md).
@@ -90,10 +94,17 @@ design goals. Concretely:
   they scroll off), and a per-dimension clamp bounds any single image.
   The store is allocated lazily on the first sixel and freed by
   `bvt_free`.
+- **Lottie store.** Mirrors the sixel architecture: dense record array with
+  swap-remove deletion, a spare buffer pool that recycles same-size RGBA
+  frames, and a global live-byte budget (128 MiB live, 64 MiB retained) that
+  evicts the oldest animation first. ThorVG rasterizes each frame to
+  ARGB8888, which is then un-premultiplied and converted to linear-light
+  RGBA32 for the host compositor. The store is allocated lazily on the first
+  Lottie APC and freed by `bvt_free`.
 - **Lifecycle.** `bvt_new` / `bvt_free` is the only ownership pair the
   consumer manages. `bvt_free` releases every page, intern table, arena,
-  tab-stop bitmap, and the sixel store through the same allocator that
-  produced them.
+  tab-stop bitmap, sixel store, and lottie store through the same allocator
+  that produced them.
 
 `BvtTerm` itself is not internally synchronized; callers own all locking.
 
@@ -103,7 +114,7 @@ Standard GNU autotools workflow:
 
 ```sh
 ./autogen.sh                                # writes ./version, runs autoreconf -fi
-./configure --prefix=$HOME/.local
+./configure --prefix=$HOME/.local           # ThorVG auto-detected; --disable-thorvg to skip
 make
 make check
 make install
@@ -133,7 +144,12 @@ cc app.c $(pkg-config --cflags --libs bloom-vt)
 
 int main(void)
 {
-    BvtTerm *vt = bvt_new(24, 80);  /* 24 rows x 80 cols */
+    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 8;
+    cfg.cell_h_px = 16;
+    BvtTerm *vt = bvt_new(&cfg);
 
     const char *bytes = "hello\033[31m world\033[0m\n";
     bvt_input_write(vt, (const uint8_t *)bytes, strlen(bytes));
