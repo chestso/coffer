@@ -696,6 +696,41 @@ static void test_load_chunk_restart(void)
     bvt_free(vt);
 }
 
+static void test_place_opacity_update(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]},"
+                "\"layer\":\"foreground\",\"opacity\":0.5}");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    const BvtLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].opacity_x256, 128);
+
+    /* Re-place at same position with new opacity — should update, not append */
+    feed_lottie(vt,
+                "{\"cmd\":\"place\",\"id\":1,"
+                "\"placement\":{\"row\":0,\"col\":0,\"rows\":1,\"cols\":2},"
+                "\"layer\":\"foreground\",\"opacity\":0.3}");
+
+    lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].placement_count, 1);
+
+    pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].opacity_x256, 77);
+    ASSERT_EQ(pl[0].rows, 1);
+    ASSERT_EQ(pl[0].cols, 2);
+
+    bvt_free(vt);
+}
+
 /* ------------------------------------------------------------------ */
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
@@ -726,6 +761,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_resize_clears_all);
     RUN_TEST(test_load_chunk);
     RUN_TEST(test_load_chunk_restart);
+    RUN_TEST(test_place_opacity_update);
 
     TEST_SUMMARY();
 }

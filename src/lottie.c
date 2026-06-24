@@ -661,6 +661,28 @@ static BvtLottiePlacement *lt_add_placement(
 }
 
 /* ------------------------------------------------------------------ */
+/* Damage helpers                                                     */
+/* ------------------------------------------------------------------ */
+
+static void lt_damage_placement(BvtTerm *vt, const BvtLottiePlacement *pl)
+{
+    int top = (int)(pl->abs_line - vt->sixel_abs_top);
+    int bot = top + pl->rows - 1;
+    if (top < 0)
+        top = 0;
+    if (bot >= vt->rows)
+        bot = vt->rows - 1;
+    for (int r = top; r <= bot; r++)
+        bvt_damage_row(vt, r);
+}
+
+static void lt_damage_all_placements(BvtTerm *vt, LtRec *rec)
+{
+    for (int i = 0; i < rec->placement_count; i++)
+        lt_damage_placement(vt, &rec->placements[i]);
+}
+
+/* ------------------------------------------------------------------ */
 /* Command handlers                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -876,8 +898,10 @@ static void lt_cmd_load(struct BvtLottieState *st, BvtTerm *vt,
 #endif
 
     long abs_line = vt->sixel_abs_top + prow;
-    lt_add_placement(vt, st, rec, abs_line, pcol, prows, pcols,
-                     layer, opacity);
+    BvtLottiePlacement *pl = lt_add_placement(vt, st, rec, abs_line, pcol,
+                                              prows, pcols, layer, opacity);
+    if (pl)
+        lt_damage_placement(vt, pl);
 
     rec->version++;
 }
@@ -928,15 +952,16 @@ static void lt_cmd_place(struct BvtLottieState *st, BvtTerm *vt,
     }
 
     long abs_line = vt->sixel_abs_top + prow;
-    lt_add_placement(vt, st, rec, abs_line, pcol, prows, pcols,
-                     layer, opacity);
+    BvtLottiePlacement *pl = lt_add_placement(vt, st, rec, abs_line, pcol,
+                                              prows, pcols, layer, opacity);
+    if (pl)
+        lt_damage_placement(vt, pl);
     rec->version++;
 }
 
 static void lt_cmd_play(struct BvtLottieState *st, BvtTerm *vt,
                         const char *json, size_t json_len)
 {
-    (void)vt;
     size_t vlen;
     const char *val;
 
@@ -960,12 +985,12 @@ static void lt_cmd_play(struct BvtLottieState *st, BvtTerm *vt,
         rec->loop = lt_json_bool(val, vlen);
 
     rec->version++;
+    lt_damage_all_placements(vt, rec);
 }
 
 static void lt_cmd_pause(struct BvtLottieState *st, BvtTerm *vt,
                          const char *json, size_t json_len)
 {
-    (void)vt;
     size_t vlen;
     const char *val;
 
@@ -980,12 +1005,12 @@ static void lt_cmd_pause(struct BvtLottieState *st, BvtTerm *vt,
 
     rec->playing = false;
     rec->version++;
+    lt_damage_all_placements(vt, rec);
 }
 
 static void lt_cmd_stop(struct BvtLottieState *st, BvtTerm *vt,
                         const char *json, size_t json_len)
 {
-    (void)vt;
     size_t vlen;
     const char *val;
 
@@ -1003,12 +1028,12 @@ static void lt_cmd_stop(struct BvtLottieState *st, BvtTerm *vt,
     rec->dirty = true;
     lt_rasterize(rec);
     rec->version++;
+    lt_damage_all_placements(vt, rec);
 }
 
 static void lt_cmd_seek(struct BvtLottieState *st, BvtTerm *vt,
                         const char *json, size_t json_len)
 {
-    (void)vt;
     size_t vlen;
     const char *val;
 
@@ -1036,12 +1061,12 @@ static void lt_cmd_seek(struct BvtLottieState *st, BvtTerm *vt,
         lt_rasterize(rec);
     }
     rec->version++;
+    lt_damage_all_placements(vt, rec);
 }
 
 static void lt_cmd_delete(struct BvtLottieState *st, BvtTerm *vt,
                           const char *json, size_t json_len)
 {
-    (void)vt;
     size_t vlen;
     const char *val;
 
@@ -1054,6 +1079,7 @@ static void lt_cmd_delete(struct BvtLottieState *st, BvtTerm *vt,
     if (!rec)
         return;
 
+    lt_damage_all_placements(vt, rec);
     lt_rec_release(vt, st, (int)(rec - st->recs));
 }
 
@@ -1295,6 +1321,7 @@ bool bvt_lottie_tick(BvtTerm *vt, uint64_t now_us)
             r->current_frame = new_frame;
             r->dirty = true;
             lt_rasterize(r);
+            lt_damage_all_placements(vt, r);
             any_advanced = true;
         }
 
