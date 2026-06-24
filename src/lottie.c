@@ -285,12 +285,29 @@ static uint8_t lt_srgb_to_linear(uint8_t v)
 
 static void lt_linearize_rgba(uint8_t *rgba, int w, int h)
 {
+    /* ThorVG renders to ARGB8888 with premultiplied alpha
+     * (little-endian memory: B,G,R,A bytes; uint32 = A<<24|R<<16|G<<8|B).
+     * The host renderer expects RGBA32 (R,G,B,A) with non-premultiplied
+     * alpha, pre-linearized for the linear-light compositing path.
+     * Un-premultiply, swap R<->B, linearize RGB. */
     size_t n = (size_t)w * (size_t)h * 4;
     for (size_t i = 0; i < n; i += 4) {
-        rgba[i + 0] = lt_srgb_to_linear(rgba[i + 0]);
-        rgba[i + 1] = lt_srgb_to_linear(rgba[i + 1]);
-        rgba[i + 2] = lt_srgb_to_linear(rgba[i + 2]);
-        /* alpha stays as-is */
+        uint8_t b = rgba[i + 0];
+        uint8_t g = rgba[i + 1];
+        uint8_t r = rgba[i + 2];
+        uint8_t a = rgba[i + 3];
+
+        if (a > 0) {
+            /* Un-premultiply: divide by alpha, clamp to 255 */
+            r = (uint8_t)((int)r * 255 / a);
+            g = (uint8_t)((int)g * 255 / a);
+            b = (uint8_t)((int)b * 255 / a);
+        }
+
+        rgba[i + 0] = lt_srgb_to_linear(r); /* R */
+        rgba[i + 1] = lt_srgb_to_linear(g); /* G */
+        rgba[i + 2] = lt_srgb_to_linear(b); /* B */
+        /* alpha stays as-is (non-premultiplied) */
     }
 }
 

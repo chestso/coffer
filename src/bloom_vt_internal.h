@@ -45,7 +45,7 @@
 /* ------------------------------------------------------------------ */
 
 #define BVT_PAGE_BYTES         (64u * 1024u)
-#define BVT_OSC_BUF_BYTES      4096u
+#define BVT_OSC_BUF_BYTES      65536u
 #define BVT_CSI_PARAM_MAX      32u
 #define BVT_INTERMEDIATE_MAX   4u
 #define BVT_DEFAULT_SCROLLBACK 1000
