@@ -1,0 +1,1476 @@
+/* lottie.c — Lottie animation subsystem for bloom-vt.
+ *
+ * Parses APC sequences (ESC _ ... ST), manages animation state, rasterizes
+ * frames via ThorVG, and exposes RGBA pixel data through bvt_get_lotties().
+ *
+ * Architecture mirrors sixel.c: engine owns all pixel data, host does
+ * texture cache + compositing only. */
+
+#include "bloom_vt_internal.h"
+
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#ifdef HAVE_THORVG
+#include <thorvg_capi.h>
+#endif
+
+/* ------------------------------------------------------------------ */
+/* Constants                                                          */
+/* ------------------------------------------------------------------ */
+
+#define LT_MAX_ANIMS      64
+#define LT_MAX_PLACEMENTS 32
+#define LT_SPARE_MAX      16
+#define LT_LIVE_MAX       (128 * 1024 * 1024)
+#define LT_RETAIN_MAX     (64 * 1024 * 1024)
+
+/* ------------------------------------------------------------------ */
+/* Types — all defined up front so functions can reference them       */
+/* ------------------------------------------------------------------ */
+
+typedef struct
+{
+    uint8_t *buf;
+    size_t cap;
+} LtSpare;
+
+typedef struct
+{
+    uint64_t id;      /* client-assigned, stable cache key */
+    uint32_t version; /* bumps on any state/pixel change */
+
+    /* Parsed Lottie data */
+    void *json_root; /* parsed JSON tree root (arena-allocated) */
+
+    /* Rasterized pixel buffer (engine-owned, like SxRec.rgba) */
+    uint8_t *rgba;   /* RGBA32 pixel data for current frame */
+    size_t rgba_cap; /* allocated bytes */
+
+    /* Design space from Lottie JSON (w, h fields) */
+    int design_w;
+    int design_h;
+
+    /* Rasterization pixel dimensions (placement cells × cell pixel size) */
+    int px_w;
+    int px_h;
+
+    /* Playback state */
+    int current_frame;
+    int frame_ip;    /* Lottie in-point */
+    int frame_op;    /* Lottie out-point */
+    double frame_fr; /* Lottie framerate */
+    double speed;
+    bool playing;
+    bool loop;
+    bool dirty; /* frame changed, rgba needs re-upload */
+
+    /* Timing */
+    uint64_t last_tick_us;
+
+    /* Placements */
+    BvtLottiePlacement *placements;
+    int placement_count;
+    int placement_cap;
+
+    /* ThorVG rasterization state (only when HAVE_THORVG) */
+#ifdef HAVE_THORVG
+    Tvg_Animation tvg_anim;
+    Tvg_Canvas tvg_canvas;
+#endif
+
+    /* Arena for JSON parse tree */
+    uint8_t *arena_base;
+    size_t arena_offset;
+    size_t arena_cap;
+} LtRec;
+
+/* Chunked upload accumulator */
+typedef struct
+{
+    uint64_t id;
+    uint8_t *buf;
+    size_t buf_len;
+    size_t buf_cap;
+    int chunks_received;
+    int chunks_total;
+} LtChunkAccum;
+
+/* Global Lottie state (analogous to BvtSixelState) */
+struct BvtLottieState
+{
+    LtRec *recs;
+    int rec_count;
+    int rec_cap;
+    uint64_t next_placement_id;
+    size_t live_bytes;
+
+    LtChunkAccum *chunks;
+    int chunk_count;
+    int chunk_cap;
+
+    /* Spare buffer pool for rgba pixel buffers */
+    LtSpare spares[LT_SPARE_MAX];
+    int spare_count;
+    size_t retain_bytes;
+
+    /* Scratch buffer for bvt_get_lotties() snapshots */
+    uint8_t *scratch;
+    size_t scratch_cap;
+
+    /* Scratch buffer for bvt_get_lottie_placements() snapshots */
+    BvtLottiePlacement *pl_scratch;
+    int pl_scratch_cap;
+};
+
+/* ------------------------------------------------------------------ */
+/* Forward declarations for command handlers                          */
+/* ------------------------------------------------------------------ */
+
+static void lt_cmd_load(struct BvtLottieState *st, BvtTerm *vt,
+                        const char *json, size_t json_len);
+static void lt_cmd_load_chunk(struct BvtLottieState *st, BvtTerm *vt,
+                              const char *json, size_t json_len);
+static void lt_cmd_place(struct BvtLottieState *st, BvtTerm *vt,
+                         const char *json, size_t json_len);
+static void lt_cmd_play(struct BvtLottieState *st, BvtTerm *vt,
+                        const char *json, size_t json_len);
+static void lt_cmd_pause(struct BvtLottieState *st, BvtTerm *vt,
+                         const char *json, size_t json_len);
+static void lt_cmd_stop(struct BvtLottieState *st, BvtTerm *vt,
+                        const char *json, size_t json_len);
+static void lt_cmd_seek(struct BvtLottieState *st, BvtTerm *vt,
+                        const char *json, size_t json_len);
+static void lt_cmd_delete(struct BvtLottieState *st, BvtTerm *vt,
+                          const char *json, size_t json_len);
+
+/* ------------------------------------------------------------------ */
+/* Lazy allocation                                                    */
+/* ------------------------------------------------------------------ */
+
+static struct BvtLottieState *lt_state(BvtTerm *vt)
+{
+    if (!vt->lottie) {
+#ifdef HAVE_THORVG
+        tvg_engine_init(0);
+#endif
+        vt->lottie = bvt_alloc(vt, sizeof(*vt->lottie));
+        if (!vt->lottie)
+            return NULL;
+        memset(vt->lottie, 0, sizeof(*vt->lottie));
+    }
+    return vt->lottie;
+}
+
+/* ------------------------------------------------------------------ */
+/* Buffer pool (mirrors SxSpare)                                      */
+/* ------------------------------------------------------------------ */
+
+static uint8_t *lt_buf_alloc(BvtTerm *vt, struct BvtLottieState *st,
+                             size_t need)
+{
+    int best = -1;
+    for (int i = 0; i < st->spare_count; i++) {
+        if (st->spares[i].cap >= need) {
+            if (best < 0 || st->spares[i].cap < st->spares[best].cap)
+                best = i;
+        }
+    }
+    if (best >= 0) {
+        uint8_t *buf = st->spares[best].buf;
+        size_t cap = st->spares[best].cap;
+        st->spares[best] = st->spares[--st->spare_count];
+        st->retain_bytes -= cap;
+        return buf;
+    }
+    return bvt_alloc(vt, need);
+}
+
+static void lt_buf_release(BvtTerm *vt, struct BvtLottieState *st,
+                           uint8_t *buf, size_t cap)
+{
+    if (st->spare_count < LT_SPARE_MAX &&
+        st->retain_bytes + cap <= LT_RETAIN_MAX) {
+        st->spares[st->spare_count].buf = buf;
+        st->spares[st->spare_count].cap = cap;
+        st->spare_count++;
+        st->retain_bytes += cap;
+    } else {
+        bvt_dealloc(vt, buf);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Record management                                                  */
+/* ------------------------------------------------------------------ */
+
+static LtRec *lt_find_by_id(struct BvtLottieState *st, uint64_t id)
+{
+    for (int i = 0; i < st->rec_count; i++) {
+        if (st->recs[i].id == id)
+            return &st->recs[i];
+    }
+    return NULL;
+}
+
+static void lt_rec_release(BvtTerm *vt, struct BvtLottieState *st, int idx)
+{
+    LtRec *r = &st->recs[idx];
+    if (r->rgba) {
+        st->live_bytes -= r->rgba_cap;
+        lt_buf_release(vt, st, r->rgba, r->rgba_cap);
+    }
+    if (r->arena_base)
+        bvt_dealloc(vt, r->arena_base);
+    if (r->placements)
+        bvt_dealloc(vt, r->placements);
+#ifdef HAVE_THORVG
+    if (r->tvg_canvas && r->tvg_anim) {
+        Tvg_Paint pic = tvg_animation_get_picture(r->tvg_anim);
+        tvg_canvas_remove(r->tvg_canvas, pic);
+    }
+    if (r->tvg_anim)
+        tvg_animation_del(r->tvg_anim);
+    if (r->tvg_canvas)
+        tvg_canvas_destroy(r->tvg_canvas);
+    r->tvg_canvas = NULL;
+    r->tvg_anim = NULL;
+#endif
+    st->recs[idx] = st->recs[--st->rec_count];
+}
+
+/* Evict animations until the budget can accommodate `incoming` bytes.
+ * Evicts the animation whose first placement has the smallest abs_line
+ * (oldest on screen), mirroring sixel's eviction policy. */
+static void lt_evict_to_budget(BvtTerm *vt, struct BvtLottieState *st,
+                               size_t incoming)
+{
+    while (st->rec_count > 0 && st->live_bytes + incoming > LT_LIVE_MAX) {
+        int m = 0;
+        long min_line = st->recs[0].placement_count > 0
+                            ? st->recs[0].placements[0].abs_line
+                            : 0;
+        for (int i = 1; i < st->rec_count; ++i) {
+            long line = st->recs[i].placement_count > 0
+                            ? st->recs[i].placements[0].abs_line
+                            : 0;
+            if (line < min_line) {
+                min_line = line;
+                m = i;
+            }
+        }
+        lt_rec_release(vt, st, m);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* ThorVG rasterization                                                */
+/* ------------------------------------------------------------------ */
+
+#ifdef HAVE_THORVG
+static uint8_t lt_srgb_to_linear(uint8_t v)
+{
+    float s = (float)v / 255.0f;
+    float l = s <= 0.04045f ? s / 12.92f
+                            : powf((s + 0.055f) / 1.055f, 2.4f);
+    int out = (int)(l * 255.0f + 0.5f);
+    return (uint8_t)(out < 0 ? 0 : out > 255 ? 255
+                                             : out);
+}
+
+static void lt_linearize_rgba(uint8_t *rgba, int w, int h)
+{
+    size_t n = (size_t)w * (size_t)h * 4;
+    for (size_t i = 0; i < n; i += 4) {
+        rgba[i + 0] = lt_srgb_to_linear(rgba[i + 0]);
+        rgba[i + 1] = lt_srgb_to_linear(rgba[i + 1]);
+        rgba[i + 2] = lt_srgb_to_linear(rgba[i + 2]);
+        /* alpha stays as-is */
+    }
+}
+
+static void lt_rasterize(LtRec *r)
+{
+    if (!r->tvg_anim || !r->tvg_canvas)
+        return;
+    if (r->px_w <= 0 || r->px_h <= 0)
+        return;
+
+    tvg_animation_set_frame(r->tvg_anim, (float)r->current_frame);
+    tvg_canvas_update(r->tvg_canvas);
+    tvg_canvas_draw(r->tvg_canvas, true);
+    tvg_canvas_sync(r->tvg_canvas);
+    lt_linearize_rgba(r->rgba, r->px_w, r->px_h);
+    r->dirty = true;
+}
+
+static bool lt_tvg_init(LtRec *r)
+{
+    r->tvg_anim = tvg_animation_new();
+    if (!r->tvg_anim)
+        return false;
+
+    Tvg_Paint picture = tvg_animation_get_picture(r->tvg_anim);
+    if (!picture)
+        goto fail;
+
+    /* Load Lottie JSON from the arena buffer */
+    if (r->arena_base && r->arena_offset > 0) {
+        Tvg_Result res = tvg_picture_load_data(
+            picture, (const char *)r->arena_base,
+            (uint32_t)r->arena_offset, "lottie+json", NULL, true);
+        if (res != TVG_RESULT_SUCCESS)
+            goto fail;
+    } else {
+        goto fail;
+    }
+
+    /* Scale the animation from design space to pixel dimensions */
+    if (r->design_w > 0 && r->design_h > 0 && r->px_w > 0 && r->px_h > 0)
+        tvg_picture_set_size(picture, (float)r->px_w, (float)r->px_h);
+
+    r->tvg_canvas = tvg_swcanvas_create(TVG_ENGINE_OPTION_DEFAULT);
+    if (!r->tvg_canvas)
+        goto fail;
+
+    tvg_swcanvas_set_target(r->tvg_canvas, (uint32_t *)r->rgba,
+                            (uint32_t)r->px_w,
+                            (uint32_t)r->px_w,
+                            (uint32_t)r->px_h,
+                            TVG_COLORSPACE_ARGB8888);
+    tvg_canvas_add(r->tvg_canvas, picture);
+
+    /* Rasterize the initial frame */
+    lt_rasterize(r);
+    return true;
+
+fail:
+    if (r->tvg_anim && r->tvg_canvas) {
+        Tvg_Paint pic = tvg_animation_get_picture(r->tvg_anim);
+        tvg_canvas_remove(r->tvg_canvas, pic);
+    }
+    if (r->tvg_anim) {
+        tvg_animation_del(r->tvg_anim);
+        r->tvg_anim = NULL;
+    }
+    if (r->tvg_canvas) {
+        tvg_canvas_destroy(r->tvg_canvas);
+        r->tvg_canvas = NULL;
+    }
+    return false;
+}
+#else
+static void lt_rasterize(LtRec *r)
+{
+    (void)r;
+}
+#endif
+
+/* ------------------------------------------------------------------ */
+/* JSON command parsing                                               */
+/* ------------------------------------------------------------------ */
+
+static const char *lt_json_find_key(const char *json, size_t json_len,
+                                    const char *key, size_t *out_len)
+{
+    size_t klen = strlen(key);
+    const char *p = json;
+    const char *end = json + json_len;
+
+    while (p < end && *p != '{')
+        p++;
+    if (p >= end)
+        return NULL;
+    p++;
+
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
+            p++;
+        if (p >= end || *p == '}')
+            break;
+
+        if (*p != '"') {
+            p++;
+            continue;
+        }
+        p++;
+
+        const char *kstart = p;
+        while (p < end && *p != '"') {
+            if (*p == '\\')
+                p++;
+            p++;
+        }
+        size_t found_klen = (size_t)(p - kstart);
+        if (p < end)
+            p++;
+
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
+            p++;
+        if (p < end && *p == ':')
+            p++;
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
+            p++;
+
+        const char *vstart = p;
+        if (p >= end)
+            break;
+
+        if (*p == '"') {
+            p++;
+            while (p < end && *p != '"') {
+                if (*p == '\\')
+                    p++;
+                p++;
+            }
+            if (p < end)
+                p++;
+        } else if (*p == '{' || *p == '[') {
+            char open = *p, close = (*p == '{') ? '}' : ']';
+            int depth = 1;
+            p++;
+            while (p < end && depth > 0) {
+                if (*p == '"') {
+                    p++;
+                    while (p < end && *p != '"') {
+                        if (*p == '\\')
+                            p++;
+                        p++;
+                    }
+                    if (p < end)
+                        p++;
+                    continue;
+                }
+                if (*p == open)
+                    depth++;
+                else if (*p == close)
+                    depth--;
+                p++;
+            }
+        } else if (*p == 't' || *p == 'f' || *p == 'n') {
+            while (p < end && *p >= 'a' && *p <= 'z')
+                p++;
+        } else {
+            while (p < end && ((*p >= '0' && *p <= '9') ||
+                               *p == '.' || *p == '-' ||
+                               *p == '+' || *p == 'e' || *p == 'E'))
+                p++;
+        }
+
+        size_t vlen = (size_t)(p - vstart);
+
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' ||
+                           *p == '\r' || *p == ','))
+            p++;
+
+        if (found_klen == klen && memcmp(kstart, key, klen) == 0) {
+            *out_len = vlen;
+            return vstart;
+        }
+    }
+    return NULL;
+}
+
+static long lt_json_int(const char *val, size_t len)
+{
+    if (!val || len == 0)
+        return 0;
+    char tmp[32];
+    size_t n = len < 31 ? len : 31;
+    memcpy(tmp, val, n);
+    tmp[n] = '\0';
+    return strtol(tmp, NULL, 10);
+}
+
+static double lt_json_double(const char *val, size_t len)
+{
+    if (!val || len == 0)
+        return 0.0;
+    char tmp[64];
+    size_t n = len < 63 ? len : 63;
+    memcpy(tmp, val, n);
+    tmp[n] = '\0';
+    return strtod(tmp, NULL);
+}
+
+static bool lt_json_bool(const char *val, size_t len)
+{
+    return val && len >= 4 && memcmp(val, "true", 4) == 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Base64 decoder                                                     */
+/* ------------------------------------------------------------------ */
+
+static const int8_t b64_table[256] = {
+    ['A'] = 0,
+    ['B'] = 1,
+    ['C'] = 2,
+    ['D'] = 3,
+    ['E'] = 4,
+    ['F'] = 5,
+    ['G'] = 6,
+    ['H'] = 7,
+    ['I'] = 8,
+    ['J'] = 9,
+    ['K'] = 10,
+    ['L'] = 11,
+    ['M'] = 12,
+    ['N'] = 13,
+    ['O'] = 14,
+    ['P'] = 15,
+    ['Q'] = 16,
+    ['R'] = 17,
+    ['S'] = 18,
+    ['T'] = 19,
+    ['U'] = 20,
+    ['V'] = 21,
+    ['W'] = 22,
+    ['X'] = 23,
+    ['Y'] = 24,
+    ['Z'] = 25,
+    ['a'] = 26,
+    ['b'] = 27,
+    ['c'] = 28,
+    ['d'] = 29,
+    ['e'] = 30,
+    ['f'] = 31,
+    ['g'] = 32,
+    ['h'] = 33,
+    ['i'] = 34,
+    ['j'] = 35,
+    ['k'] = 36,
+    ['l'] = 37,
+    ['m'] = 38,
+    ['n'] = 39,
+    ['o'] = 40,
+    ['p'] = 41,
+    ['q'] = 42,
+    ['r'] = 43,
+    ['s'] = 44,
+    ['t'] = 45,
+    ['u'] = 46,
+    ['v'] = 47,
+    ['w'] = 48,
+    ['x'] = 49,
+    ['y'] = 50,
+    ['z'] = 51,
+    ['0'] = 52,
+    ['1'] = 53,
+    ['2'] = 54,
+    ['3'] = 55,
+    ['4'] = 56,
+    ['5'] = 57,
+    ['6'] = 58,
+    ['7'] = 59,
+    ['8'] = 60,
+    ['9'] = 61,
+    ['+'] = 62,
+    ['/'] = 63,
+};
+
+static size_t lt_base64_decode(const uint8_t *in, size_t in_len,
+                               uint8_t *out, size_t out_cap)
+{
+    size_t out_len = 0;
+    uint32_t accum = 0;
+    int bits = 0;
+
+    for (size_t i = 0; i < in_len && out_len < out_cap; i++) {
+        int8_t v = b64_table[in[i]];
+        if (v < 0)
+            continue;
+        accum = (accum << 6) | (uint32_t)v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[out_len++] = (uint8_t)(accum >> bits);
+        }
+    }
+    return out_len;
+}
+
+/* ------------------------------------------------------------------ */
+/* Placement helpers                                                  */
+/* ------------------------------------------------------------------ */
+
+static BvtLottiePlacement *lt_add_placement(
+    BvtTerm *vt, struct BvtLottieState *st, LtRec *rec,
+    long abs_line, int col, int rows, int cols,
+    uint8_t layer, uint8_t opacity)
+{
+    if (rec->placement_count >= rec->placement_cap) {
+        int new_cap = rec->placement_cap ? rec->placement_cap * 2 : 4;
+        if (new_cap > LT_MAX_PLACEMENTS)
+            new_cap = LT_MAX_PLACEMENTS;
+        BvtLottiePlacement *p = bvt_alloc(vt, (size_t)new_cap * sizeof(*p));
+        if (!p)
+            return NULL;
+        if (rec->placements) {
+            memcpy(p, rec->placements,
+                   (size_t)rec->placement_count * sizeof(*p));
+            bvt_dealloc(vt, rec->placements);
+        }
+        rec->placements = p;
+        rec->placement_cap = new_cap;
+    }
+    BvtLottiePlacement *pl = &rec->placements[rec->placement_count++];
+    pl->id = ++st->next_placement_id;
+    pl->abs_line = abs_line;
+    pl->col = col;
+    pl->rows = rows;
+    pl->cols = cols;
+    pl->layer = layer;
+    pl->opacity_x256 = opacity;
+    return pl;
+}
+
+/* ------------------------------------------------------------------ */
+/* Command handlers                                                   */
+/* ------------------------------------------------------------------ */
+
+static void lt_cmd_load(struct BvtLottieState *st, BvtTerm *vt,
+                        const char *json, size_t json_len)
+{
+    size_t vlen;
+    const char *val;
+
+    val = lt_json_find_key(json, json_len, "id", &vlen);
+    if (!val)
+        return;
+    uint64_t id = (uint64_t)lt_json_int(val, vlen);
+
+    const char *lottie_obj = lt_json_find_key(json, json_len, "lottie", &vlen);
+    size_t lottie_obj_len = vlen;
+
+    uint8_t layer = 0;
+    val = lt_json_find_key(json, json_len, "layer", &vlen);
+    if (val && vlen >= 12 && memcmp(val, "\"background\"", 12) == 0)
+        layer = 1;
+
+    uint8_t opacity = 255;
+    val = lt_json_find_key(json, json_len, "opacity", &vlen);
+    if (val)
+        opacity = (uint8_t)(lt_json_double(val, vlen) * 255.0 + 0.5);
+
+    int prow = -1, pcol = -1, prows = 0, pcols = 0;
+    const char *placement = lt_json_find_key(json, json_len, "placement", &vlen);
+    if (placement) {
+        const char *pv;
+        size_t pvlen;
+        pv = lt_json_find_key(placement, vlen, "row", &pvlen);
+        if (pv)
+            prow = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "col", &pvlen);
+        if (pv)
+            pcol = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "rows", &pvlen);
+        if (pv)
+            prows = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "cols", &pvlen);
+        if (pv)
+            pcols = (int)lt_json_int(pv, pvlen);
+    }
+
+    if (prow < 0)
+        prow = vt->cursor.row;
+    if (pcol < 0)
+        pcol = vt->cursor.col;
+
+    int design_w = 0, design_h = 0;
+    int frame_ip = 0, frame_op = 30;
+    double frame_fr = 30.0;
+    if (lottie_obj) {
+        const char *lv;
+        size_t lvlen;
+        lv = lt_json_find_key(lottie_obj, lottie_obj_len, "w", &lvlen);
+        if (lv)
+            design_w = (int)lt_json_int(lv, lvlen);
+        lv = lt_json_find_key(lottie_obj, lottie_obj_len, "h", &lvlen);
+        if (lv)
+            design_h = (int)lt_json_int(lv, lvlen);
+        lv = lt_json_find_key(lottie_obj, lottie_obj_len, "ip", &lvlen);
+        if (lv)
+            frame_ip = (int)lt_json_int(lv, lvlen);
+        lv = lt_json_find_key(lottie_obj, lottie_obj_len, "op", &lvlen);
+        if (lv)
+            frame_op = (int)lt_json_int(lv, lvlen);
+        lv = lt_json_find_key(lottie_obj, lottie_obj_len, "fr", &lvlen);
+        if (lv)
+            frame_fr = lt_json_double(lv, lvlen);
+    }
+
+    if (prows <= 0 && design_h > 0)
+        prows = (design_h + vt->cell_h_px - 1) / vt->cell_h_px;
+    if (pcols <= 0 && design_w > 0)
+        pcols = (design_w + vt->cell_w_px - 1) / vt->cell_w_px;
+    if (prows <= 0)
+        prows = 1;
+    if (pcols <= 0)
+        pcols = 1;
+
+    /* Derive pixel dimensions from placement cells × cell pixel size */
+    int px_w = pcols * vt->cell_w_px;
+    int px_h = prows * vt->cell_h_px;
+
+    /* Ensure design space has a fallback too */
+    if (design_w <= 0)
+        design_w = px_w;
+    if (design_h <= 0)
+        design_h = px_h;
+
+    bool autostart = true;
+    double speed = 1.0;
+    bool loop = true;
+    const char *play = lt_json_find_key(json, json_len, "play", &vlen);
+    if (play) {
+        const char *pv;
+        size_t pvlen;
+        pv = lt_json_find_key(play, vlen, "speed", &pvlen);
+        if (pv)
+            speed = lt_json_double(pv, pvlen);
+        pv = lt_json_find_key(play, vlen, "loop", &pvlen);
+        if (pv)
+            loop = lt_json_bool(pv, pvlen);
+        pv = lt_json_find_key(play, vlen, "autostart", &pvlen);
+        if (pv)
+            autostart = lt_json_bool(pv, pvlen);
+    }
+
+    LtRec *rec = lt_find_by_id(st, id);
+    size_t need = (size_t)px_w * (size_t)px_h * 4;
+    if (need == 0 || need > LT_LIVE_MAX)
+        return; /* single animation larger than the whole budget → drop */
+    lt_evict_to_budget(vt, st, need);
+
+    if (rec) {
+        if (rec->arena_base)
+            bvt_dealloc(vt, rec->arena_base);
+        rec->arena_base = NULL;
+        rec->arena_offset = 0;
+        rec->arena_cap = 0;
+        if (rec->placements)
+            rec->placement_count = 0;
+
+        if (need > rec->rgba_cap) {
+            if (rec->rgba) {
+                st->live_bytes -= rec->rgba_cap;
+                lt_buf_release(vt, st, rec->rgba, rec->rgba_cap);
+            }
+            rec->rgba = lt_buf_alloc(vt, st, need);
+            rec->rgba_cap = need;
+            st->live_bytes += need;
+            if (!rec->rgba) {
+                lt_rec_release(vt, st, (int)(rec - st->recs));
+                return;
+            }
+        }
+    } else {
+        if (st->rec_count >= st->rec_cap) {
+            int new_cap = st->rec_cap ? st->rec_cap * 2 : 8;
+            if (new_cap > LT_MAX_ANIMS)
+                new_cap = LT_MAX_ANIMS;
+            LtRec *new_recs = bvt_alloc(vt, (size_t)new_cap * sizeof(LtRec));
+            if (!new_recs)
+                return;
+            if (st->recs) {
+                memcpy(new_recs, st->recs,
+                       (size_t)st->rec_count * sizeof(LtRec));
+                bvt_dealloc(vt, st->recs);
+            }
+            st->recs = new_recs;
+            st->rec_cap = new_cap;
+        }
+        rec = &st->recs[st->rec_count++];
+        memset(rec, 0, sizeof(*rec));
+        rec->id = id;
+        rec->version = 1;
+
+        rec->rgba = lt_buf_alloc(vt, st, need);
+        rec->rgba_cap = need;
+        st->live_bytes += need;
+        if (!rec->rgba) {
+            st->rec_count--;
+            return;
+        }
+    }
+
+    if (lottie_obj) {
+        size_t arena_need = lottie_obj_len + 1;
+        rec->arena_base = bvt_alloc(vt, arena_need);
+        if (rec->arena_base) {
+            rec->arena_cap = arena_need;
+            rec->arena_offset = lottie_obj_len;
+            memcpy(rec->arena_base, lottie_obj, lottie_obj_len);
+            rec->arena_base[lottie_obj_len] = '\0';
+        }
+    }
+
+    rec->design_w = design_w;
+    rec->design_h = design_h;
+    rec->px_w = px_w;
+    rec->px_h = px_h;
+    rec->frame_ip = frame_ip;
+    rec->frame_op = frame_op;
+    rec->frame_fr = frame_fr;
+    rec->current_frame = frame_ip;
+    rec->speed = speed;
+    rec->loop = loop;
+    rec->playing = autostart;
+    rec->dirty = true;
+
+#ifdef HAVE_THORVG
+    /* Destroy any previous ThorVG state for this rec (re-load) */
+    if (rec->tvg_canvas && rec->tvg_anim) {
+        Tvg_Paint pic = tvg_animation_get_picture(rec->tvg_anim);
+        tvg_canvas_remove(rec->tvg_canvas, pic);
+    }
+    if (rec->tvg_anim) {
+        tvg_animation_del(rec->tvg_anim);
+        rec->tvg_anim = NULL;
+    }
+    if (rec->tvg_canvas) {
+        tvg_canvas_destroy(rec->tvg_canvas);
+        rec->tvg_canvas = NULL;
+    }
+    /* Initialize ThorVG and rasterize the first frame */
+    if (!lt_tvg_init(rec))
+        memset(rec->rgba, 0, rec->rgba_cap);
+#else
+    memset(rec->rgba, 0, rec->rgba_cap);
+#endif
+
+    long abs_line = vt->sixel_abs_top + prow;
+    lt_add_placement(vt, st, rec, abs_line, pcol, prows, pcols,
+                     layer, opacity);
+
+    rec->version++;
+}
+
+static void lt_cmd_place(struct BvtLottieState *st, BvtTerm *vt,
+                         const char *json, size_t json_len)
+{
+    size_t vlen;
+    const char *val;
+
+    val = lt_json_find_key(json, json_len, "id", &vlen);
+    if (!val)
+        return;
+    uint64_t id = (uint64_t)lt_json_int(val, vlen);
+
+    LtRec *rec = lt_find_by_id(st, id);
+    if (!rec)
+        return;
+
+    uint8_t layer = 0;
+    val = lt_json_find_key(json, json_len, "layer", &vlen);
+    if (val && vlen >= 12 && memcmp(val, "\"background\"", 12) == 0)
+        layer = 1;
+
+    uint8_t opacity = 255;
+    val = lt_json_find_key(json, json_len, "opacity", &vlen);
+    if (val)
+        opacity = (uint8_t)(lt_json_double(val, vlen) * 255.0 + 0.5);
+
+    const char *placement = lt_json_find_key(json, json_len, "placement", &vlen);
+    int prow = vt->cursor.row, pcol = vt->cursor.col;
+    int prows = 1, pcols = 1;
+    if (placement) {
+        const char *pv;
+        size_t pvlen;
+        pv = lt_json_find_key(placement, vlen, "row", &pvlen);
+        if (pv)
+            prow = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "col", &pvlen);
+        if (pv)
+            pcol = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "rows", &pvlen);
+        if (pv)
+            prows = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "cols", &pvlen);
+        if (pv)
+            pcols = (int)lt_json_int(pv, pvlen);
+    }
+
+    long abs_line = vt->sixel_abs_top + prow;
+    lt_add_placement(vt, st, rec, abs_line, pcol, prows, pcols,
+                     layer, opacity);
+    rec->version++;
+}
+
+static void lt_cmd_play(struct BvtLottieState *st, BvtTerm *vt,
+                        const char *json, size_t json_len)
+{
+    (void)vt;
+    size_t vlen;
+    const char *val;
+
+    val = lt_json_find_key(json, json_len, "id", &vlen);
+    if (!val)
+        return;
+    uint64_t id = (uint64_t)lt_json_int(val, vlen);
+
+    LtRec *rec = lt_find_by_id(st, id);
+    if (!rec)
+        return;
+
+    rec->playing = true;
+
+    val = lt_json_find_key(json, json_len, "speed", &vlen);
+    if (val)
+        rec->speed = lt_json_double(val, vlen);
+
+    val = lt_json_find_key(json, json_len, "loop", &vlen);
+    if (val)
+        rec->loop = lt_json_bool(val, vlen);
+
+    rec->version++;
+}
+
+static void lt_cmd_pause(struct BvtLottieState *st, BvtTerm *vt,
+                         const char *json, size_t json_len)
+{
+    (void)vt;
+    size_t vlen;
+    const char *val;
+
+    val = lt_json_find_key(json, json_len, "id", &vlen);
+    if (!val)
+        return;
+    uint64_t id = (uint64_t)lt_json_int(val, vlen);
+
+    LtRec *rec = lt_find_by_id(st, id);
+    if (!rec)
+        return;
+
+    rec->playing = false;
+    rec->version++;
+}
+
+static void lt_cmd_stop(struct BvtLottieState *st, BvtTerm *vt,
+                        const char *json, size_t json_len)
+{
+    (void)vt;
+    size_t vlen;
+    const char *val;
+
+    val = lt_json_find_key(json, json_len, "id", &vlen);
+    if (!val)
+        return;
+    uint64_t id = (uint64_t)lt_json_int(val, vlen);
+
+    LtRec *rec = lt_find_by_id(st, id);
+    if (!rec)
+        return;
+
+    rec->playing = false;
+    rec->current_frame = rec->frame_ip;
+    rec->dirty = true;
+    lt_rasterize(rec);
+    rec->version++;
+}
+
+static void lt_cmd_seek(struct BvtLottieState *st, BvtTerm *vt,
+                        const char *json, size_t json_len)
+{
+    (void)vt;
+    size_t vlen;
+    const char *val;
+
+    val = lt_json_find_key(json, json_len, "id", &vlen);
+    if (!val)
+        return;
+    uint64_t id = (uint64_t)lt_json_int(val, vlen);
+
+    LtRec *rec = lt_find_by_id(st, id);
+    if (!rec)
+        return;
+
+    val = lt_json_find_key(json, json_len, "frame", &vlen);
+    if (!val)
+        return;
+    int frame = (int)lt_json_int(val, vlen);
+    if (frame < rec->frame_ip)
+        frame = rec->frame_ip;
+    if (frame >= rec->frame_op)
+        frame = rec->frame_op - 1;
+
+    if (rec->current_frame != frame) {
+        rec->current_frame = frame;
+        rec->dirty = true;
+        lt_rasterize(rec);
+    }
+    rec->version++;
+}
+
+static void lt_cmd_delete(struct BvtLottieState *st, BvtTerm *vt,
+                          const char *json, size_t json_len)
+{
+    (void)vt;
+    size_t vlen;
+    const char *val;
+
+    val = lt_json_find_key(json, json_len, "id", &vlen);
+    if (!val)
+        return;
+    uint64_t id = (uint64_t)lt_json_int(val, vlen);
+
+    LtRec *rec = lt_find_by_id(st, id);
+    if (!rec)
+        return;
+
+    lt_rec_release(vt, st, (int)(rec - st->recs));
+}
+
+/* ------------------------------------------------------------------ */
+/* Chunked upload                                                     */
+/* ------------------------------------------------------------------ */
+
+static LtChunkAccum *lt_find_chunk(struct BvtLottieState *st, uint64_t id)
+{
+    for (int i = 0; i < st->chunk_count; i++) {
+        if (st->chunks[i].id == id)
+            return &st->chunks[i];
+    }
+    return NULL;
+}
+
+static LtChunkAccum *lt_chunk_alloc(struct BvtLottieState *st, BvtTerm *vt,
+                                    uint64_t id)
+{
+    if (st->chunk_count >= st->chunk_cap) {
+        int new_cap = st->chunk_cap ? st->chunk_cap * 2 : 4;
+        LtChunkAccum *new_chunks = bvt_alloc(vt, (size_t)new_cap * sizeof(LtChunkAccum));
+        if (!new_chunks)
+            return NULL;
+        if (st->chunks) {
+            memcpy(new_chunks, st->chunks,
+                   (size_t)st->chunk_count * sizeof(LtChunkAccum));
+            bvt_dealloc(vt, st->chunks);
+        }
+        st->chunks = new_chunks;
+        st->chunk_cap = new_cap;
+    }
+    LtChunkAccum *c = &st->chunks[st->chunk_count++];
+    memset(c, 0, sizeof(*c));
+    c->id = id;
+    return c;
+}
+
+static void lt_chunk_discard(BvtTerm *vt, struct BvtLottieState *st,
+                             LtChunkAccum *c)
+{
+    if (c->buf)
+        bvt_dealloc(vt, c->buf);
+    *c = st->chunks[--st->chunk_count];
+}
+
+static void lt_cmd_load_chunk(struct BvtLottieState *st, BvtTerm *vt,
+                              const char *json, size_t json_len)
+{
+    size_t vlen;
+    const char *val;
+
+    val = lt_json_find_key(json, json_len, "id", &vlen);
+    if (!val)
+        return;
+    uint64_t id = (uint64_t)lt_json_int(val, vlen);
+
+    val = lt_json_find_key(json, json_len, "seq", &vlen);
+    if (!val)
+        return;
+    int seq = (int)lt_json_int(val, vlen);
+
+    val = lt_json_find_key(json, json_len, "total", &vlen);
+    if (!val)
+        return;
+    int total = (int)lt_json_int(val, vlen);
+    if (total <= 0 || seq < 0 || seq >= total)
+        return;
+
+    const char *data_val = lt_json_find_key(json, json_len, "data", &vlen);
+    if (!data_val)
+        return;
+
+    /* Strip surrounding quotes from the string value */
+    const uint8_t *b64_in = (const uint8_t *)data_val;
+    size_t b64_len = vlen;
+    if (b64_len >= 2 && b64_in[0] == '"' && b64_in[b64_len - 1] == '"') {
+        b64_in++;
+        b64_len -= 2;
+    }
+
+    LtChunkAccum *c = lt_find_chunk(st, id);
+    if (seq == 0) {
+        if (c)
+            lt_chunk_discard(vt, st, c);
+        c = lt_chunk_alloc(st, vt, id);
+        if (!c)
+            return;
+        c->chunks_total = total;
+    } else {
+        if (!c || c->chunks_total != total)
+            return;
+    }
+
+    /* Decode the base64 data field */
+    size_t dec_cap = b64_len;
+    uint8_t *decoded = bvt_alloc(vt, dec_cap + 1);
+    if (!decoded) {
+        lt_chunk_discard(vt, st, c);
+        return;
+    }
+    size_t dec_len = lt_base64_decode(b64_in, b64_len, decoded, dec_cap);
+
+    if (c->buf_len + dec_len > c->buf_cap) {
+        size_t new_cap = (c->buf_len + dec_len) * 2;
+        uint8_t *new_buf = bvt_alloc(vt, new_cap);
+        if (!new_buf) {
+            bvt_dealloc(vt, decoded);
+            lt_chunk_discard(vt, st, c);
+            return;
+        }
+        if (c->buf_len > 0)
+            memcpy(new_buf, c->buf, c->buf_len);
+        if (c->buf)
+            bvt_dealloc(vt, c->buf);
+        c->buf = new_buf;
+        c->buf_cap = new_cap;
+    }
+    memcpy(c->buf + c->buf_len, decoded, dec_len);
+    c->buf_len += dec_len;
+    c->chunks_received++;
+    bvt_dealloc(vt, decoded);
+
+    if (c->chunks_received == c->chunks_total) {
+        char *full_json = (char *)c->buf;
+        size_t full_len = c->buf_len;
+        full_json[full_len] = '\0';
+
+        /* Build a synthetic load command wrapping the concatenated Lottie JSON */
+        size_t synth_cap = full_len + 64;
+        char *synth = bvt_alloc(vt, synth_cap);
+        if (synth) {
+            int n = snprintf(synth, synth_cap,
+                             "{\"cmd\":\"load\",\"id\":%llu,\"lottie\":",
+                             (unsigned long long)id);
+            if (n > 0 && (size_t)n < synth_cap) {
+                memcpy(synth + n, full_json, full_len);
+                size_t synth_len = (size_t)n + full_len;
+                /* Close the outer JSON object */
+                if (synth_len + 2 <= synth_cap) {
+                    synth[synth_len++] = '}';
+                    synth[synth_len] = '\0';
+                    lt_cmd_load(st, vt, synth, synth_len);
+                }
+            }
+            bvt_dealloc(vt, synth);
+        }
+
+        lt_chunk_discard(vt, st, c);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* APC dispatch                                                       */
+/* ------------------------------------------------------------------ */
+
+void bvt_lottie_apc_dispatch(BvtTerm *vt, const uint8_t *body, size_t body_len)
+{
+    struct BvtLottieState *st = lt_state(vt);
+    if (!st)
+        return;
+
+    size_t dec_cap = body_len;
+    uint8_t *decoded = bvt_alloc(vt, dec_cap + 1);
+    if (!decoded)
+        return;
+    size_t dec_len = lt_base64_decode(body, body_len, decoded, dec_cap);
+    decoded[dec_len] = '\0';
+
+    size_t cmd_len;
+    const char *cmd = lt_json_find_key((const char *)decoded, dec_len,
+                                       "cmd", &cmd_len);
+    if (!cmd) {
+        bvt_dealloc(vt, decoded);
+        return;
+    }
+
+    if (cmd_len == 6 && memcmp(cmd, "\"load\"", 6) == 0)
+        lt_cmd_load(st, vt, (const char *)decoded, dec_len);
+    else if (cmd_len == 7 && memcmp(cmd, "\"place\"", 7) == 0)
+        lt_cmd_place(st, vt, (const char *)decoded, dec_len);
+    else if (cmd_len == 6 && memcmp(cmd, "\"play\"", 6) == 0)
+        lt_cmd_play(st, vt, (const char *)decoded, dec_len);
+    else if (cmd_len == 7 && memcmp(cmd, "\"pause\"", 7) == 0)
+        lt_cmd_pause(st, vt, (const char *)decoded, dec_len);
+    else if (cmd_len == 6 && memcmp(cmd, "\"stop\"", 6) == 0)
+        lt_cmd_stop(st, vt, (const char *)decoded, dec_len);
+    else if (cmd_len == 6 && memcmp(cmd, "\"seek\"", 6) == 0)
+        lt_cmd_seek(st, vt, (const char *)decoded, dec_len);
+    else if (cmd_len == 8 && memcmp(cmd, "\"delete\"", 8) == 0)
+        lt_cmd_delete(st, vt, (const char *)decoded, dec_len);
+    else if (cmd_len == 12 && memcmp(cmd, "\"load-chunk\"", 12) == 0)
+        lt_cmd_load_chunk(st, vt, (const char *)decoded, dec_len);
+
+    bvt_dealloc(vt, decoded);
+}
+
+/* ------------------------------------------------------------------ */
+/* Public API                                                         */
+/* ------------------------------------------------------------------ */
+
+bool bvt_lottie_tick(BvtTerm *vt, uint64_t now_us)
+{
+    struct BvtLottieState *st = vt->lottie;
+    if (!st || st->rec_count == 0)
+        return false;
+
+    bool any_advanced = false;
+
+    for (int i = 0; i < st->rec_count; i++) {
+        LtRec *r = &st->recs[i];
+        if (!r->playing)
+            continue;
+
+        if (r->last_tick_us == 0) {
+            r->last_tick_us = now_us;
+            continue;
+        }
+
+        uint64_t elapsed = now_us - r->last_tick_us;
+        double frame_delta = (double)elapsed * r->speed * r->frame_fr / 1e6;
+        int delta_int = (int)frame_delta;
+        if (delta_int <= 0)
+            continue;
+
+        int new_frame = r->current_frame + delta_int;
+        if (new_frame >= r->frame_op) {
+            if (r->loop) {
+                new_frame = r->frame_ip +
+                            (new_frame - r->frame_ip) %
+                                (r->frame_op - r->frame_ip);
+            } else {
+                new_frame = r->frame_op - 1;
+                r->playing = false;
+            }
+        }
+
+        if (new_frame != r->current_frame) {
+            r->current_frame = new_frame;
+            r->dirty = true;
+            lt_rasterize(r);
+            any_advanced = true;
+        }
+
+        r->last_tick_us += (uint64_t)((double)delta_int * 1e6 /
+                                      (r->speed * r->frame_fr));
+        r->version++;
+    }
+
+    return any_advanced;
+}
+
+const BvtLottie *bvt_get_lotties(BvtTerm *vt, int *out_count)
+{
+    struct BvtLottieState *st = vt->lottie;
+    if (!st || st->rec_count == 0) {
+        *out_count = 0;
+        return NULL;
+    }
+
+    size_t total = (size_t)st->rec_count * sizeof(BvtLottie);
+    if (total > st->scratch_cap) {
+        size_t new_cap = total * 2;
+        uint8_t *new_scratch = bvt_alloc(vt, new_cap);
+        if (!new_scratch) {
+            *out_count = 0;
+            return NULL;
+        }
+        if (st->scratch)
+            bvt_dealloc(vt, st->scratch);
+        st->scratch = new_scratch;
+        st->scratch_cap = new_cap;
+    }
+
+    for (int i = 0; i < st->rec_count; i++) {
+        LtRec *r = &st->recs[i];
+        BvtLottie *l = &((BvtLottie *)st->scratch)[i];
+        l->id = r->id;
+        l->version = r->version;
+        l->canvas_w = r->px_w;
+        l->canvas_h = r->px_h;
+        l->rgba = r->rgba;
+        l->current_frame = r->current_frame;
+        l->frame_count = r->frame_op - r->frame_ip;
+        l->playing = r->playing;
+        l->speed = r->speed;
+        l->loop = r->loop;
+        l->placement_count = r->placement_count;
+        r->dirty = false;
+    }
+
+    *out_count = st->rec_count;
+    return (BvtLottie *)st->scratch;
+}
+
+const BvtLottiePlacement *bvt_get_lottie_placements(BvtTerm *vt, uint64_t id,
+                                                    int *out_count)
+{
+    struct BvtLottieState *st = vt->lottie;
+    if (!st) {
+        *out_count = 0;
+        return NULL;
+    }
+
+    LtRec *rec = lt_find_by_id(st, id);
+    if (!rec || rec->placement_count == 0) {
+        *out_count = 0;
+        return NULL;
+    }
+
+    int need = rec->placement_count;
+    if (need > st->pl_scratch_cap) {
+        int ncap = st->pl_scratch_cap ? st->pl_scratch_cap * 2 : 8;
+        while (ncap < need)
+            ncap *= 2;
+        BvtLottiePlacement *ns = bvt_alloc(vt, (size_t)ncap * sizeof(*ns));
+        if (!ns) {
+            *out_count = 0;
+            return NULL;
+        }
+        if (st->pl_scratch)
+            bvt_dealloc(vt, st->pl_scratch);
+        st->pl_scratch = ns;
+        st->pl_scratch_cap = ncap;
+    }
+
+    for (int i = 0; i < need; i++) {
+        st->pl_scratch[i] = rec->placements[i];
+        st->pl_scratch[i].row =
+            (int)(rec->placements[i].abs_line - vt->sixel_abs_top);
+    }
+
+    *out_count = need;
+    return st->pl_scratch;
+}
+
+/* ------------------------------------------------------------------ */
+/* Grid maintenance                                                   */
+/* ------------------------------------------------------------------ */
+
+void bvt_lottie_note_scroll(BvtTerm *vt, int lines)
+{
+    struct BvtLottieState *st = vt->lottie;
+    if (!st || st->rec_count == 0)
+        return;
+    (void)lines;
+
+    int cap = vt->sb_capacity;
+    for (int i = 0; i < st->rec_count;) {
+        bool any_visible = false;
+        for (int j = 0; j < st->recs[i].placement_count; j++) {
+            long depth = vt->sixel_abs_top -
+                         st->recs[i].placements[j].abs_line;
+            long bottom_depth = depth - st->recs[i].placements[j].rows + 1;
+            if (bottom_depth <= cap) {
+                any_visible = true;
+                break;
+            }
+        }
+        if (!any_visible)
+            lt_rec_release(vt, st, i);
+        else
+            ++i;
+    }
+}
+
+void bvt_lottie_clear_display_rows(BvtTerm *vt, int top, int bot)
+{
+    struct BvtLottieState *st = vt->lottie;
+    if (!st)
+        return;
+    if (st->rec_count == 0)
+        return;
+
+    for (int i = 0; i < st->rec_count;) {
+        bool removed_any = false;
+        for (int j = 0; j < st->recs[i].placement_count;) {
+            BvtLottiePlacement *pl = &st->recs[i].placements[j];
+            if (pl->layer != 0) {
+                ++j;
+                continue;
+            }
+            int ptop = (int)(pl->abs_line - vt->sixel_abs_top);
+            int pbot = ptop + pl->rows - 1;
+            if (ptop <= bot && pbot >= top) {
+                st->recs[i].placements[j] =
+                    st->recs[i].placements[--st->recs[i].placement_count];
+                removed_any = true;
+            } else {
+                ++j;
+            }
+        }
+        if (removed_any)
+            st->recs[i].version++;
+
+        if (st->recs[i].placement_count == 0)
+            lt_rec_release(vt, st, i);
+        else
+            ++i;
+    }
+}
+
+void bvt_lottie_clear_all(BvtTerm *vt)
+{
+    struct BvtLottieState *st = vt->lottie;
+    if (!st)
+        return;
+
+    while (st->rec_count > 0)
+        lt_rec_release(vt, st, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Lifecycle                                                          */
+/* ------------------------------------------------------------------ */
+
+void bvt_lottie_state_free(BvtTerm *vt)
+{
+    struct BvtLottieState *st = vt->lottie;
+    if (!st)
+        return;
+
+    bvt_lottie_clear_all(vt);
+
+    if (st->recs)
+        bvt_dealloc(vt, st->recs);
+
+    for (int i = 0; i < st->chunk_count; i++) {
+        if (st->chunks[i].buf)
+            bvt_dealloc(vt, st->chunks[i].buf);
+    }
+    if (st->chunks)
+        bvt_dealloc(vt, st->chunks);
+
+    for (int i = 0; i < st->spare_count; i++)
+        bvt_dealloc(vt, st->spares[i].buf);
+
+    if (st->scratch)
+        bvt_dealloc(vt, st->scratch);
+
+    if (st->pl_scratch)
+        bvt_dealloc(vt, st->pl_scratch);
+
+    bvt_dealloc(vt, st);
+    vt->lottie = NULL;
+
+#ifdef HAVE_THORVG
+    tvg_engine_term();
+#endif
+}

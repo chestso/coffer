@@ -156,7 +156,8 @@ typedef enum
     BVT_STATE_DCS_PASSTHROUGH,
     BVT_STATE_DCS_IGNORE,
     BVT_STATE_OSC_STRING,
-    BVT_STATE_SOS_PM_APC_STRING,
+    BVT_STATE_SOS_PM_STRING,
+    BVT_STATE_APC_STRING,
 } BvtParserState;
 
 typedef struct
@@ -179,6 +180,10 @@ typedef struct
     uint8_t osc_buf[BVT_OSC_BUF_BYTES];
     uint16_t osc_len;
     bool osc_truncated;
+    /* APC accumulator */
+    uint8_t apc_buf[BVT_OSC_BUF_BYTES];
+    uint16_t apc_len;
+    bool apc_truncated;
     /* DCS streaming state — passthrough emits chunks via callback */
     bool dcs_initial_sent;
     bool dcs_is_sixel;                           /* current DCS is a sixel (final byte 'q') — handled internally */
@@ -305,9 +310,13 @@ struct BvtTerm
      * into history, so an image stored with an absolute anchor line
      * tracks the text it sits on with no per-image bookkeeping. */
     struct BvtSixelState *sixel;
-    int sixel_cell_w; /* px per cell, 0 = unknown */
-    int sixel_cell_h;
+    int cell_w_px; /* px per cell, set at creation */
+    int cell_h_px;
     long sixel_abs_top;
+
+    /* Lottie animations (lottie.c). Lazily allocated on first APC.
+     * Shares sixel_abs_top for absolute-line anchoring. */
+    struct BvtLottieState *lottie;
 };
 
 /* The saved-cursor register for the currently active screen. DECSC/DECRC and
@@ -445,6 +454,14 @@ void bvt_sixel_finish(BvtTerm *vt);
 void bvt_sixel_note_scroll(BvtTerm *vt, int lines);
 void bvt_sixel_clear_display_rows(BvtTerm *vt, int top, int bot);
 void bvt_sixel_clear_all(BvtTerm *vt);
+
+/* Lottie animations (lottie.c). Lazily allocated, same pattern as sixel.
+ * All entry points are no-ops when no animation has been loaded. */
+void bvt_lottie_state_free(BvtTerm *vt);
+void bvt_lottie_apc_dispatch(BvtTerm *vt, const uint8_t *body, size_t body_len);
+void bvt_lottie_note_scroll(BvtTerm *vt, int lines);
+void bvt_lottie_clear_display_rows(BvtTerm *vt, int top, int bot);
+void bvt_lottie_clear_all(BvtTerm *vt);
 
 /* Page ownership lookup — used by cell accessors that must resolve
  * a cell's grapheme/style entry against the page that owns it. */

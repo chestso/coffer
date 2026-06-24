@@ -446,8 +446,8 @@ void bvt_csi_dispatch(BvtTerm *vt, uint8_t final)
             if (pi == 1) {
                 n = snprintf(buf, sizeof(buf), "\x1b[?1;0;%dS", 256);
             } else if (pi == 2) {
-                int gw = vt->sixel_cell_w > 0 ? vt->cols * vt->sixel_cell_w : 1000;
-                int gh = vt->sixel_cell_h > 0 ? vt->rows * vt->sixel_cell_h : 1000;
+                int gw = vt->cols * vt->cell_w_px;
+                int gh = vt->rows * vt->cell_h_px;
                 if (gw > 10000)
                     gw = 10000;
                 if (gh > 10000)

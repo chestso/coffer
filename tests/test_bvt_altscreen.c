@@ -24,7 +24,12 @@
 
 static BvtTerm *make_term(int rows, int cols)
 {
-    BvtTerm *vt = bvt_new(rows, cols);
+    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    cfg.rows = rows;
+    cfg.cols = cols;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    BvtTerm *vt = bvt_new(&cfg);
     bvt_set_scrollback_size(vt, 100);
     bvt_set_reflow(vt, true);
     return vt;

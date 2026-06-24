@@ -55,14 +55,15 @@ void bvt_dealloc(BvtTerm *vt, void *ptr)
 /* Lifecycle                                                           */
 /* ------------------------------------------------------------------ */
 
-BvtTerm *bvt_new(int rows, int cols)
+BvtTerm *bvt_new(const BvtConfig *cfg)
 {
-    return bvt_new_with_allocator(rows, cols, NULL);
+    return bvt_new_with_allocator(cfg, NULL);
 }
 
-BvtTerm *bvt_new_with_allocator(int rows, int cols, const BvtAllocator *alloc)
+BvtTerm *bvt_new_with_allocator(const BvtConfig *cfg, const BvtAllocator *alloc)
 {
-    if (rows <= 0 || cols <= 0)
+    if (!cfg || cfg->rows <= 0 || cfg->cols <= 0 ||
+        cfg->cell_w_px <= 0 || cfg->cell_h_px <= 0)
         return NULL;
 
     const BvtAllocator *a = alloc ? alloc : &BVT_STDLIB_ALLOCATOR;
@@ -72,11 +73,15 @@ BvtTerm *bvt_new_with_allocator(int rows, int cols, const BvtAllocator *alloc)
 
     memset(vt, 0, sizeof(*vt));
     vt->alloc = *a;
-    vt->rows = rows;
-    vt->cols = cols;
+    vt->rows = cfg->rows;
+    vt->cols = cfg->cols;
+    vt->cell_w_px = cfg->cell_w_px;
+    vt->cell_h_px = cfg->cell_h_px;
     vt->scroll_top = 0;
-    vt->scroll_bottom = rows - 1;
-    vt->sb_capacity = BVT_DEFAULT_SCROLLBACK;
+    vt->scroll_bottom = cfg->rows - 1;
+    vt->sb_capacity = cfg->scrollback >= 0 ? cfg->scrollback : BVT_DEFAULT_SCROLLBACK;
+    vt->reflow_enabled = cfg->reflow;
+    vt->ambiguous_wide = cfg->ambiguous_wide;
     vt->cursor.visible = true;
     vt->cursor.blink = true;
     /* Mirror the initial cursor so the first flush doesn't spuriously damage. */
@@ -91,12 +96,12 @@ BvtTerm *bvt_new_with_allocator(int rows, int cols, const BvtAllocator *alloc)
     bvt_parser_init(&vt->parser);
 
     /* Tab stops every 8 columns by default. */
-    vt->tabstops = vt->alloc.alloc((size_t)cols, vt->alloc.user);
+    vt->tabstops = vt->alloc.alloc((size_t)cfg->cols, vt->alloc.user);
     if (!vt->tabstops) {
         vt->alloc.free(vt, vt->alloc.user);
         return NULL;
     }
-    for (int i = 0; i < cols; ++i)
+    for (int i = 0; i < cfg->cols; ++i)
         vt->tabstops[i] = (i % 8 == 0) ? 1u : 0u;
 
     /* Grid + altgrid pages allocated lazily once grid.c is implemented. */
@@ -125,6 +130,7 @@ void bvt_free(BvtTerm *vt)
         bvt_page_free(vt, vt->altgrid);
 
     bvt_sixel_state_free(vt);
+    bvt_lottie_state_free(vt);
 
     bvt_dealloc(vt, vt->tabstops);
     bvt_dealloc(vt, vt->title);
@@ -155,6 +161,8 @@ void bvt_resize(BvtTerm *vt, int rows, int cols)
      * images can't be followed across a rewrap — drop them on resize. */
     if (vt->sixel)
         bvt_sixel_clear_all(vt);
+    if (vt->lottie)
+        bvt_lottie_clear_all(vt);
     bvt_reflow(vt, rows, cols);
 }
 

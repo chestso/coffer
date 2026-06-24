@@ -105,7 +105,12 @@ static BvtTerm *run_cmd(const char *cmd, int rows, int cols,
     PtyContext *pty = pty_create(rows, cols, argv);
     if (!pty)
         return NULL;
-    BvtTerm *vt = bvt_new(rows, cols);
+    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    cfg.rows = rows;
+    cfg.cols = cols;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    BvtTerm *vt = bvt_new(&cfg);
     if (!vt) {
         pty_destroy(pty);
         return NULL;
@@ -296,7 +301,12 @@ static void test_cf_brick_inline_preserves_history(void)
                            NULL };
     PtyContext *pty = pty_create(rows, cols, argv);
     ASSERT_NOT_NULL(pty);
-    BvtTerm *vt = bvt_new(rows, cols);
+    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    cfg.rows = rows;
+    cfg.cols = cols;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    BvtTerm *vt = bvt_new(&cfg);
     ASSERT_NOT_NULL(vt);
 
     /* Output callback writes back to the PTY so cf's DSR query is answered. */
@@ -391,7 +401,12 @@ static void test_dsr_after_natural_scroll(void)
                            NULL };
     PtyContext *pty = pty_create(rows, cols, argv);
     ASSERT_NOT_NULL(pty);
-    BvtTerm *vt = bvt_new(rows, cols);
+    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    cfg.rows = rows;
+    cfg.cols = cols;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    BvtTerm *vt = bvt_new(&cfg);
     ASSERT_NOT_NULL(vt);
 
     g_dsr_len = 0;

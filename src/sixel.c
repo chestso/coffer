@@ -612,8 +612,8 @@ void bvt_sixel_finish(BvtTerm *vt)
     int col = st->anchor_col;
     uint8_t layer = 0;
 
-    int cell_h = vt->sixel_cell_h > 0 ? vt->sixel_cell_h : h;
-    int cell_w = vt->sixel_cell_w > 0 ? vt->sixel_cell_w : w;
+    int cell_h = vt->cell_h_px;
+    int cell_w = vt->cell_w_px;
     int rows_tall = (h + cell_h - 1) / cell_h;
     int cols_wide = (w + cell_w - 1) / cell_w;
     if (rows_tall < 1)
@@ -758,10 +758,10 @@ void bvt_sixel_state_free(BvtTerm *vt)
 
 void bvt_set_cell_pixels(BvtTerm *vt, int cell_w_px, int cell_h_px)
 {
-    if (!vt)
+    if (!vt || cell_w_px <= 0 || cell_h_px <= 0)
         return;
-    vt->sixel_cell_w = cell_w_px > 0 ? cell_w_px : 0;
-    vt->sixel_cell_h = cell_h_px > 0 ? cell_h_px : 0;
+    vt->cell_w_px = cell_w_px;
+    vt->cell_h_px = cell_h_px;
 }
 
 const BvtSixel *bvt_get_sixels(BvtTerm *vt, int *out_count)

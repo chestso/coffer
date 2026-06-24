@@ -20,8 +20,13 @@ libbloom_vt_a_SOURCES = \
     osc.c \
     dcs.c \
     sixel.c \
+    lottie.c \
     esc.c \
     hyperlink.c \
     bloom_vt_internal.h
 
 libbloom_vt_a_CPPFLAGS = -I$(top_srcdir)/include
+
+if HAVE_THORVG
+libbloom_vt_a_CPPFLAGS += $(THORVG_CFLAGS)
+endif

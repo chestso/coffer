@@ -1,7 +1,8 @@
 # bloom-vt
 
 A standalone virtual terminal engine in C — parser, grid, scrollback, reflow,
-charsets, kitty keyboard protocol — with no external dependencies. Extracted
+charsets, kitty keyboard protocol, sixel and Lottie graphics — with no
+external dependencies. Extracted
 from [bloom-terminal](https://github.com/thomas-christensen/bloom-terminal),
 where it replaces libvterm.
 
@@ -27,6 +28,15 @@ where it replaces libvterm.
   XTSMGRAPHICS. The host declares cell pixel size with
   `bvt_set_cell_pixels()` and fetches images to draw with
   `bvt_get_sixels()`.
+- **Lottie graphics** — APC sequences (`ESC _ … ST`) with base64-encoded JSON
+  payloads load, place, and control Lottie animations on the grid. Eight
+  commands (load, load-chunk, place, play, pause, stop, seek, delete) manage
+  animation state, per-frame RGBA buffers, and placement tracking. Animations
+  scroll with the text, enter scrollback, and are culled on clear — the same
+  ownership model as sixel. The host fetches animations via
+  `bvt_get_lotties()` / `bvt_get_lottie_placements()` and advances frames
+  with `bvt_lottie_tick()`. Rasterization (ThorVG) is not yet wired; RGBA
+  buffers are currently zeroed.
 - **Damage tracking** — the changed region is accumulated as input is
   parsed; the consumer calls `bvt_damage_flush()` at a controlled time
   (typically once per frame, before rendering) to receive it via the

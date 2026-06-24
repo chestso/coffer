@@ -298,16 +298,36 @@ typedef struct
     void *user;
 } BvtAllocator;
 
+/* Configuration for bvt_new(). Zero-initialize then set fields; unset
+ * fields (0 / false) use defaults. Rows, cols, and cell pixel size
+ * are required and must be > 0. */
+#define BVT_CONFIG_DEFAULTS                                                                                              \
+    {                                                                                                                    \
+        .rows = 0, .cols = 0, .cell_w_px = 0, .cell_h_px = 0, .scrollback = -1, .reflow = false, .ambiguous_wide = false \
+    }
+typedef struct
+{
+    int rows;            /* grid height (required > 0) */
+    int cols;            /* grid width  (required > 0) */
+    int cell_w_px;       /* pixel width of one cell  (required > 0) */
+    int cell_h_px;       /* pixel height of one cell (required > 0) */
+    int scrollback;      /* scrollback lines (-1 = default 1000, 0 = off) */
+    bool reflow;         /* reflow text on resize (default false) */
+    bool ambiguous_wide; /* treat ambiguous-width chars as wide (default false) */
+} BvtConfig;
+
 /* ------------------------------------------------------------------ */
 /* Lifecycle                                                           */
 /* ------------------------------------------------------------------ */
 
-/* Create a terminal. Returns NULL on allocation failure. */
-BvtTerm *bvt_new(int rows, int cols);
+/* Create a terminal from a config struct. Returns NULL on allocation
+ * failure or if required fields (rows, cols, cell_w_px, cell_h_px)
+ * are <= 0. */
+BvtTerm *bvt_new(const BvtConfig *cfg);
 
 /* Variant that takes an allocator. The allocator is copied; the user
  * pointer must outlive the term. Pass NULL to use the stdlib. */
-BvtTerm *bvt_new_with_allocator(int rows, int cols, const BvtAllocator *alloc);
+BvtTerm *bvt_new_with_allocator(const BvtConfig *cfg, const BvtAllocator *alloc);
 
 void bvt_free(BvtTerm *vt);
 
@@ -404,17 +424,81 @@ typedef struct
     const uint8_t *rgba; /* width_px * height_px * 4, RGBA, engine-owned */
 } BvtSixel;
 
-/* Inform the engine of the pixel size of one character cell. Needed to
- * map a decoded image's pixel height to the number of text rows it
- * occupies (cursor advance, scroll, culling). Call on font load and on
- * resize. With cell size unset (0), images are still decoded but the
- * cursor is not advanced past them. */
+/* Update the pixel size of one character cell. Call on font load and on
+ * resize. The cell pixel size is always known (set at creation), but this
+ * updates it when it changes. */
 void bvt_set_cell_pixels(BvtTerm *vt, int cell_w_px, int cell_h_px);
 
 /* Return the live sixel images. The returned array is owned by the
  * engine and valid until the next mutation; *out_count receives the
  * number of images (0 if none). Returns NULL when there are none. */
 const BvtSixel *bvt_get_sixels(BvtTerm *vt, int *out_count);
+
+/* --- Lottie animations ------------------------------------------------- */
+
+/* A placement of a Lottie animation on the terminal grid. Anchored by
+ * absolute line so the animation scrolls with text. `layer` is 0 for
+ * foreground (drawn over text), 1 for background (drawn behind text).
+ * `opacity_x256` is the per-placement opacity scaled to 0–255. */
+typedef struct
+{
+    uint64_t id;
+    long abs_line;
+    int row; /* display-relative row (abs_line - sixel_abs_top) */
+    int col;
+    int rows;
+    int cols;
+    uint8_t layer;
+    uint8_t opacity_x256;
+} BvtLottiePlacement;
+
+/* A Lottie animation snapshot, returned by bvt_get_lotties(). Engine-owned.
+ * `rgba` is the rasterized RGBA32 pixel data for the current frame,
+ * valid until the next bvt_input_write()/bvt_get_lotties() call.
+ * Placements are queried separately via bvt_get_lottie_placements(). */
+typedef struct
+{
+    uint64_t id;
+    uint32_t version;
+    int canvas_w;        /* rasterization width in pixels (placement cells × cell px) */
+    int canvas_h;        /* rasterization height in pixels (placement cells × cell px) */
+    const uint8_t *rgba; /* canvas_w * canvas_h * 4, RGBA32, engine-owned */
+    int current_frame;
+    int frame_count;
+    bool playing;
+    double speed;
+    bool loop;
+    int placement_count;
+} BvtLottie;
+
+/* Return the live Lottie animations. The returned array is a contiguous
+ * array of BvtLottie structs (NO interleaved placement data), owned by the
+ * engine and valid until the next mutation; *out_count receives the
+ * number of animations (0 if none). Returns NULL when there are none.
+ * Use bvt_get_lottie_placements() to query placements for each animation. */
+const BvtLottie *bvt_get_lotties(BvtTerm *vt, int *out_count);
+
+/* Return the placements for a specific animation. The returned array is
+ * owned by the engine and valid until the next mutation. *out_count
+ * receives the number of placements (0 if none). Returns NULL if the
+ * animation has no placements or doesn't exist. */
+const BvtLottiePlacement *bvt_get_lottie_placements(BvtTerm *vt, uint64_t id,
+                                                    int *out_count);
+
+/* Advance all playing Lottie animations to the frame appropriate for
+ * the given timestamp (microseconds). Re-rasterizes any whose frame
+ * changed. Call once per frame before bvt_get_lotties(). Returns true
+ * if any animation advanced (pixel data changed). */
+bool bvt_lottie_tick(BvtTerm *vt, uint64_t now_us);
+
+/* Notify the Lottie subsystem of a scroll event (cull scrolled-off
+ * placements). Called automatically after scroll; also available for
+ * manual invocation. */
+void bvt_lottie_note_scroll(BvtTerm *vt, int lines);
+
+/* Remove foreground-layer placements overlapping the inclusive display-row
+ * range [top,bot]. Background placements survive. */
+void bvt_lottie_clear_display_rows(BvtTerm *vt, int top, int bot);
 
 #ifdef __cplusplus
 }

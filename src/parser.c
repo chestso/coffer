@@ -597,9 +597,13 @@ static void state_escape(BvtTerm *vt, uint8_t b)
         return; /* P */
     case 0x58:
     case 0x5e:
+        p->state = BVT_STATE_SOS_PM_STRING;
+        return; /* X ^ */
     case 0x5f:
-        p->state = BVT_STATE_SOS_PM_APC_STRING;
-        return; /* X ^ _ */
+        p->state = BVT_STATE_APC_STRING;
+        p->apc_len = 0;
+        p->apc_truncated = false;
+        return; /* _ */
     default:
         bvt_esc_dispatch(vt, b);
         p->state = BVT_STATE_GROUND;
@@ -845,11 +849,39 @@ static void state_osc_string(BvtTerm *vt, uint8_t b)
     osc_put(p, b);
 }
 
-static void state_sos_pm_apc(BvtTerm *vt, uint8_t b)
+static void state_sos_pm(BvtTerm *vt, uint8_t b)
 {
     (void)vt;
     (void)b;
     /* Swallow until terminated by ESC \ / 0x9C / 0x18 / 0x1A. */
+}
+
+static void apc_put(BvtParser *p, uint8_t b)
+{
+    if (p->apc_len < BVT_OSC_BUF_BYTES) {
+        p->apc_buf[p->apc_len++] = b;
+    } else {
+        p->apc_truncated = true;
+    }
+}
+
+static void state_apc_string(BvtTerm *vt, uint8_t b)
+{
+    BvtParser *p = &vt->parser;
+    /* BEL terminates per xterm extension. ST (ESC \ or 0x9C) handled
+     * by anywhere_transition / state_escape. */
+    if (b == 0x07) {
+        if (!p->apc_truncated)
+            bvt_lottie_apc_dispatch(vt, p->apc_buf, p->apc_len);
+        p->state = BVT_STATE_GROUND;
+        return;
+    }
+    if (b < 0x20) {
+        /* C0 controls other than BEL abort the APC string. */
+        p->state = BVT_STATE_GROUND;
+        return;
+    }
+    apc_put(p, b);
 }
 
 /* Special: ESCAPE state on 0x5C (\) terminates strings (ST). */
@@ -911,6 +943,21 @@ void bvt_parser_feed(BvtTerm *vt, const uint8_t *bytes, size_t len)
             continue;
         }
 
+        /* APC follows the same pattern as OSC. */
+        if (p->state == BVT_STATE_APC_STRING) {
+            if (b == 0x1b) {
+                /* ESC \ pending — finish APC, then go to ESCAPE. */
+                if (!p->apc_truncated)
+                    bvt_lottie_apc_dispatch(vt, p->apc_buf, p->apc_len);
+                p->state = BVT_STATE_ESCAPE;
+                clear_seq(p);
+                p->utf8_state = UTF8_ACCEPT;
+                continue;
+            }
+            state_apc_string(vt, b);
+            continue;
+        }
+
         if (anywhere_transition(vt, b))
             continue;
 
@@ -960,8 +1007,11 @@ void bvt_parser_feed(BvtTerm *vt, const uint8_t *bytes, size_t len)
             break;
         case BVT_STATE_OSC_STRING: /* handled above */
             break;
-        case BVT_STATE_SOS_PM_APC_STRING:
-            state_sos_pm_apc(vt, b);
+        case BVT_STATE_SOS_PM_STRING:
+            state_sos_pm(vt, b);
+            break;
+        case BVT_STATE_APC_STRING:
+            state_apc_string(vt, b);
             break;
         }
     }

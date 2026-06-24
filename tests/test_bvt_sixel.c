@@ -22,7 +22,12 @@ static void on_output(const uint8_t *bytes, size_t len, void *u)
 
 static BvtTerm *make_term(int rows, int cols)
 {
-    BvtTerm *vt = bvt_new(rows, cols);
+    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    cfg.rows = rows;
+    cfg.cols = cols;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    BvtTerm *vt = bvt_new(&cfg);
     BvtCallbacks cb = { 0 };
     cb.output = on_output;
     bvt_set_callbacks(vt, &cb, NULL);

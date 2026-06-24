@@ -1,0 +1,729 @@
+/* test_bvt_lottie.c — unit tests for the Lottie animation subsystem.
+ *
+ * Tests OSC 837 dispatch, load/place/delete commands, playback state,
+ * frame advancement (bvt_lottie_tick), query API (bvt_get_lotties),
+ * scroll/clear culling, and chunked upload. */
+
+#include "bloom_vt_internal.h"
+#include "test_helpers.h"
+#include <bloom-vt/bloom_vt.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ------------------------------------------------------------------ */
+/* Test infrastructure                                                */
+/* ------------------------------------------------------------------ */
+
+static char g_out[1024];
+static size_t g_out_len;
+
+static void on_output(const uint8_t *bytes, size_t len, void *u)
+{
+    (void)u;
+    if (g_out_len + len >= sizeof(g_out))
+        return;
+    memcpy(g_out + g_out_len, bytes, len);
+    g_out_len += len;
+    g_out[g_out_len] = '\0';
+}
+
+static BvtTerm *make_term(int rows, int cols)
+{
+    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    cfg.rows = rows;
+    cfg.cols = cols;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    BvtTerm *vt = bvt_new(&cfg);
+    BvtCallbacks cb = { 0 };
+    cb.output = on_output;
+    bvt_set_callbacks(vt, &cb, NULL);
+    g_out_len = 0;
+    g_out[0] = '\0';
+    return vt;
+}
+
+static void feed(BvtTerm *vt, const char *s)
+{
+    bvt_input_write(vt, (const uint8_t *)s, strlen(s));
+}
+
+/* Helper: base64-encode a string. Returns malloc'd buffer. */
+static char *b64_enc(const char *src)
+{
+    static const char b64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t len = strlen(src);
+    size_t out_len = 4 * ((len + 2) / 3);
+    char *out = malloc(out_len + 1);
+    size_t i, j;
+    for (i = 0, j = 0; i < len; i += 3) {
+        uint32_t a = (uint8_t)src[i];
+        uint32_t b = (i + 1 < len) ? (uint8_t)src[i + 1] : 0;
+        uint32_t c = (i + 2 < len) ? (uint8_t)src[i + 2] : 0;
+        uint32_t t = (a << 16) | (b << 8) | c;
+        out[j++] = b64[(t >> 18) & 0x3F];
+        out[j++] = b64[(t >> 12) & 0x3F];
+        out[j++] = (i + 1 < len) ? b64[(t >> 6) & 0x3F] : '=';
+        out[j++] = (i + 2 < len) ? b64[t & 0x3F] : '=';
+    }
+    out[j] = '\0';
+    return out;
+}
+
+/* Feed an APC with a JSON payload (auto-base64-encoded). */
+static void feed_lottie(BvtTerm *vt, const char *json)
+{
+    char *b64 = b64_enc(json);
+    char seq[4096];
+    snprintf(seq, sizeof(seq), "\033_%s\033\\", b64);
+    feed(vt, seq);
+    free(b64);
+}
+
+/* Feed a load-chunk APC. The data parameter is a raw string that will
+ * be base64-encoded into the "data" field. The rest of the JSON is built
+ * automatically. */
+static void feed_chunk(BvtTerm *vt, uint64_t id, int seq, int total,
+                       const char *data)
+{
+    char *data_b64 = b64_enc(data);
+    char json[8192];
+    snprintf(json, sizeof(json),
+             "{\"cmd\":\"load-chunk\",\"id\":%llu,\"seq\":%d,\"total\":%d,"
+             "\"data\":\"%s\"}",
+             (unsigned long long)id, seq, total, data_b64);
+    free(data_b64);
+    feed_lottie(vt, json);
+}
+
+/* Get placements for a specific animation. */
+static const BvtLottiePlacement *get_placements(BvtTerm *vt, const BvtLottie *l)
+{
+    int pl_count = 0;
+    return bvt_get_lottie_placements(vt, l->id, &pl_count);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Load and query                                              */
+/* ------------------------------------------------------------------ */
+
+static void test_load_basic(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":24,\"layers\":[]},"
+                "\"placement\":{\"row\":5,\"col\":10,\"rows\":4,\"cols\":4},"
+                "\"layer\":\"foreground\"}");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_NOT_NULL(lotties);
+
+    const BvtLottie *l = &lotties[0];
+    ASSERT_EQ((long long)l->id, 1);
+    ASSERT_TRUE(l->version > 0);
+    ASSERT_EQ(l->canvas_w, 40);
+    ASSERT_EQ(l->canvas_h, 24);
+    ASSERT_EQ(l->current_frame, 0);
+    ASSERT_EQ(l->frame_count, 60);
+    ASSERT_TRUE(l->playing);
+    ASSERT_EQ(l->placement_count, 1);
+
+    const BvtLottiePlacement *pl = get_placements(vt, l);
+    ASSERT_EQ(pl[0].col, 10);
+    ASSERT_EQ(pl[0].rows, 4);
+    ASSERT_EQ(pl[0].cols, 4);
+    ASSERT_EQ(pl[0].layer, 0);
+
+    bvt_free(vt);
+}
+
+static void test_load_background(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":2,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":80,\"h\":24,\"layers\":[]},"
+                "\"layer\":\"background\",\"opacity\":0.5}");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    const BvtLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].layer, 1);
+    ASSERT_TRUE(pl[0].opacity_x256 > 100 && pl[0].opacity_x256 < 150);
+
+    bvt_free(vt);
+}
+
+static void test_load_multiple(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]}}");
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":2,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":60,\"ip\":0,\"op\":120,"
+                "\"w\":40,\"h\":40,\"layers\":[]}}");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 2);
+
+    /* Find by id — order is not guaranteed */
+    const BvtLottie *l1 = NULL, *l2 = NULL;
+    for (int i = 0; i < count; i++) {
+        if (lotties[i].id == 1)
+            l1 = &lotties[i];
+        if (lotties[i].id == 2)
+            l2 = &lotties[i];
+    }
+    ASSERT_NOT_NULL(l1);
+    ASSERT_NOT_NULL(l2);
+    ASSERT_EQ(l1->frame_count, 30);
+    ASSERT_EQ(l2->frame_count, 120);
+    ASSERT_EQ(l1->canvas_w, 20);
+    ASSERT_EQ(l1->canvas_h, 24);
+    ASSERT_EQ(l2->canvas_w, 40);
+    ASSERT_EQ(l2->canvas_h, 42);
+
+    bvt_free(vt);
+}
+
+static void test_load_replace(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]}}");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    uint32_t v1 = lotties[0].version;
+
+    /* Replace with same id */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":60,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":40,\"layers\":[]}}");
+
+    lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_TRUE(lotties[0].version > v1);
+    ASSERT_EQ(lotties[0].frame_count, 60);
+    ASSERT_EQ(lotties[0].canvas_w, 40);
+    ASSERT_EQ(lotties[0].canvas_h, 42);
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Place command                                               */
+/* ------------------------------------------------------------------ */
+
+static void test_place_multiple(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]}}");
+
+    feed_lottie(vt,
+                "{\"cmd\":\"place\",\"id\":1,"
+                "\"placement\":{\"row\":0,\"col\":0,\"rows\":2,\"cols\":2},"
+                "\"layer\":\"foreground\"}");
+
+    feed_lottie(vt,
+                "{\"cmd\":\"place\",\"id\":1,"
+                "\"placement\":{\"row\":0,\"col\":78,\"rows\":2,\"cols\":2},"
+                "\"layer\":\"background\",\"opacity\":0.8}");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].placement_count, 3); /* 1 from load + 2 from place */
+
+    const BvtLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[1].col, 0);
+    ASSERT_EQ(pl[1].layer, 0);
+    ASSERT_EQ(pl[2].col, 78);
+    ASSERT_EQ(pl[2].layer, 1);
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Delete command                                              */
+/* ------------------------------------------------------------------ */
+
+static void test_delete(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]}}");
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":2,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]}}");
+
+    int count = 0;
+    bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 2);
+
+    feed_lottie(vt, "{\"cmd\":\"delete\",\"id\":1}");
+
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ((long long)lotties[0].id, 2);
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Playback control                                            */
+/* ------------------------------------------------------------------ */
+
+static void test_play_pause_stop(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    /* Load with autostart=false */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":24,\"layers\":[]},"
+                "\"play\":{\"autostart\":false}}");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_FALSE(lotties[0].playing);
+
+    /* Play */
+    feed_lottie(vt, "{\"cmd\":\"play\",\"id\":1}");
+    lotties = bvt_get_lotties(vt, &count);
+    ASSERT_TRUE(lotties[0].playing);
+
+    /* Pause */
+    feed_lottie(vt, "{\"cmd\":\"pause\",\"id\":1}");
+    lotties = bvt_get_lotties(vt, &count);
+    ASSERT_FALSE(lotties[0].playing);
+
+    /* Play again, then stop (should reset to frame 0) */
+    feed_lottie(vt, "{\"cmd\":\"play\",\"id\":1}");
+    bvt_lottie_tick(vt, 1000000); /* advance 1 second */
+    bvt_lottie_tick(vt, 2000000); /* advance more */
+
+    feed_lottie(vt, "{\"cmd\":\"stop\",\"id\":1}");
+    lotties = bvt_get_lotties(vt, &count);
+    ASSERT_FALSE(lotties[0].playing);
+    ASSERT_EQ(lotties[0].current_frame, 0);
+
+    bvt_free(vt);
+}
+
+static void test_seek(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":24,\"layers\":[]}}");
+
+    feed_lottie(vt, "{\"cmd\":\"seek\",\"id\":1,\"frame\":15}");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(lotties[0].current_frame, 15);
+
+    /* Seek out of range — clamp */
+    feed_lottie(vt, "{\"cmd\":\"seek\",\"id\":1,\"frame\":999}");
+    lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(lotties[0].current_frame, 59); /* op-1 */
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Frame advancement (bvt_lottie_tick)                         */
+/* ------------------------------------------------------------------ */
+
+static void test_tick_advances_frame(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":24,\"layers\":[]}}");
+
+    /* First tick sets baseline */
+    bool advanced = bvt_lottie_tick(vt, 1000000); /* t = 1s */
+    ASSERT_FALSE(advanced);                       /* no delta yet */
+
+    /* 1 second later = 30 frames at 30fps */
+    advanced = bvt_lottie_tick(vt, 2000000);
+    ASSERT_TRUE(advanced);
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_TRUE(lotties[0].current_frame >= 29);
+    ASSERT_TRUE(lotties[0].current_frame <= 31); /* tolerance for rounding */
+
+    bvt_free(vt);
+}
+
+static void test_tick_loops(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":10,\"ip\":0,\"op\":10,"
+                "\"w\":40,\"h\":24,\"layers\":[]},"
+                "\"play\":{\"loop\":true}}");
+
+    bvt_lottie_tick(vt, 1000000);
+    /* 1.5 seconds = 15 frames at 10fps. op=10, so should loop.
+     * 15 frames past 0: 15 % 10 = 5 → frame 5 */
+    bool advanced = bvt_lottie_tick(vt, 2500000);
+    ASSERT_TRUE(advanced);
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_TRUE(lotties[0].playing);
+    ASSERT_TRUE(lotties[0].current_frame >= 4);
+    ASSERT_TRUE(lotties[0].current_frame <= 6);
+
+    bvt_free(vt);
+}
+
+static void test_tick_no_loop_stops(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":10,\"ip\":0,\"op\":10,"
+                "\"w\":40,\"h\":24,\"layers\":[]},"
+                "\"play\":{\"loop\":false}}");
+
+    bvt_lottie_tick(vt, 1000000);
+    /* 10 seconds = 100 frames at 10fps. Exceeds op=10, no loop → stops. */
+    bvt_lottie_tick(vt, 11000000);
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_FALSE(lotties[0].playing);
+    ASSERT_EQ(lotties[0].current_frame, 9); /* op - 1 */
+
+    bvt_free(vt);
+}
+
+static void test_tick_paused_no_advance(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":24,\"layers\":[]}}");
+
+    feed_lottie(vt, "{\"cmd\":\"pause\",\"id\":1}");
+
+    bvt_lottie_tick(vt, 1000000);
+    bool advanced = bvt_lottie_tick(vt, 2000000);
+    ASSERT_FALSE(advanced);
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(lotties[0].current_frame, 0);
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Scroll/clear culling                                        */
+/* ------------------------------------------------------------------ */
+
+static void test_scroll_cull(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+    bvt_set_scrollback_size(vt, 5);
+
+    /* Place animation at the last row */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]},"
+                "\"placement\":{\"row\":23,\"col\":0,\"rows\":1,\"cols\":1}}");
+
+    int count = 0;
+    bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    /* Move cursor to bottom of screen so subsequent linefeeds scroll */
+    feed(vt, "\033[24;1H");
+    /* Scroll 30 lines by sending 30 linefeeds */
+    for (int i = 0; i < 30; i++)
+        feed(vt, "\n");
+
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 0);
+
+    bvt_free(vt);
+}
+
+static void test_clear_display_rows_foreground(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]},"
+                "\"placement\":{\"row\":5,\"col\":0,\"rows\":2,\"cols\":2},"
+                "\"layer\":\"foreground\"}");
+
+    int count = 0;
+    bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    /* ED 2 — clear entire screen should remove foreground placements */
+    feed(vt, "\033[2J");
+
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 0); /* foreground placement removed, no placements
+                          * left → record removed */
+
+    bvt_free(vt);
+}
+
+static void test_clear_preserves_background(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":80,\"h\":144,\"layers\":[]},"
+                "\"placement\":{\"row\":0,\"col\":0,\"rows\":24,\"cols\":80},"
+                "\"layer\":\"background\"}");
+
+    /* ED 2 — clear entire screen */
+    feed(vt, "\033[2J");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1); /* background placement survives */
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: No lottie state — all no-ops                                */
+/* ------------------------------------------------------------------ */
+
+static void test_no_lottie_noop(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    /* These should all be safe no-ops when no animation has been loaded */
+    bvt_lottie_tick(vt, 1000000);
+    bvt_lottie_note_scroll(vt, 10);
+    bvt_lottie_clear_display_rows(vt, 0, 23);
+    bvt_lottie_clear_all(vt);
+
+    int count = -1;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 0);
+    ASSERT_NULL(lotties);
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Version bump on mutations                                   */
+/* ------------------------------------------------------------------ */
+
+static void test_version_bumps_on_state_change(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":24,\"layers\":[]}}");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    uint32_t v0 = lotties[0].version;
+
+    feed_lottie(vt, "{\"cmd\":\"pause\",\"id\":1}");
+    lotties = bvt_get_lotties(vt, &count);
+    ASSERT_TRUE(lotties[0].version > v0);
+
+    uint32_t v1 = lotties[0].version;
+    feed_lottie(vt, "{\"cmd\":\"play\",\"id\":1}");
+    lotties = bvt_get_lotties(vt, &count);
+    ASSERT_TRUE(lotties[0].version > v1);
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Speed multiplier                                            */
+/* ------------------------------------------------------------------ */
+
+static void test_speed_multiplier(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":120,"
+                "\"w\":40,\"h\":24,\"layers\":[]},"
+                "\"play\":{\"speed\":2.0}}");
+
+    bvt_lottie_tick(vt, 1000000);
+    /* 0.5s later at 2x speed = 30 frames */
+    bool advanced = bvt_lottie_tick(vt, 1500000);
+    ASSERT_TRUE(advanced);
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_TRUE(lotties[0].current_frame >= 28);
+    ASSERT_TRUE(lotties[0].current_frame <= 32);
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Resize clears all                                           */
+/* ------------------------------------------------------------------ */
+
+static void test_resize_clears_all(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]}}");
+
+    int count = 0;
+    bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    bvt_resize(vt, 40, 120);
+
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 0);
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Chunked upload                                              */
+/* ------------------------------------------------------------------ */
+
+static void test_load_chunk(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    /* Split a Lottie JSON into 3 chunks */
+    const char *part0 = "{\"v\":\"5.6.0\",\"fr\":30,";
+    const char *part1 = "\"ip\":0,\"op\":30,";
+    const char *part2 = "\"w\":20,\"h\":20,\"layers\":[]}";
+
+    feed_chunk(vt, 1, 0, 3, part0);
+    feed_chunk(vt, 1, 1, 3, part1);
+    feed_chunk(vt, 1, 2, 3, part2);
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].id, 1);
+    ASSERT_EQ(lotties[0].canvas_w, 20);
+    ASSERT_EQ(lotties[0].canvas_h, 24);
+    ASSERT_EQ(lotties[0].frame_count, 30);
+    ASSERT_EQ(lotties[0].playing, true);
+
+    bvt_free(vt);
+}
+
+static void test_load_chunk_restart(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+
+    /* Start a chunked upload for id 1, then restart it */
+    feed_chunk(vt, 1, 0, 3, "{\"v\":\"5.6");
+    feed_chunk(vt, 1, 1, 3, "old data");
+    /* Restart with seq=0 — should discard previous */
+    feed_chunk(vt, 1, 0, 2, "{\"v\":\"5.6.0\",\"fr\":30,");
+    feed_chunk(vt, 1, 1, 2, "\"ip\":0,\"op\":30,\"w\":20,\"h\":20,\"layers\":[]}");
+
+    int count = 0;
+    const BvtLottie *lotties = bvt_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].id, 1);
+    ASSERT_EQ(lotties[0].canvas_w, 20);
+    ASSERT_EQ(lotties[0].canvas_h, 24);
+
+    bvt_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Main                                                               */
+/* ------------------------------------------------------------------ */
+
+int main(int argc, char *argv[])
+{
+    test_parse_args(argc, argv);
+    printf("test_bvt_lottie\n");
+
+    RUN_TEST(test_no_lottie_noop);
+    RUN_TEST(test_load_basic);
+    RUN_TEST(test_load_background);
+    RUN_TEST(test_load_multiple);
+    RUN_TEST(test_load_replace);
+    RUN_TEST(test_place_multiple);
+    RUN_TEST(test_delete);
+    RUN_TEST(test_play_pause_stop);
+    RUN_TEST(test_seek);
+    RUN_TEST(test_tick_advances_frame);
+    RUN_TEST(test_tick_loops);
+    RUN_TEST(test_tick_no_loop_stops);
+    RUN_TEST(test_tick_paused_no_advance);
+    RUN_TEST(test_scroll_cull);
+    RUN_TEST(test_clear_display_rows_foreground);
+    RUN_TEST(test_clear_preserves_background);
+    RUN_TEST(test_version_bumps_on_state_change);
+    RUN_TEST(test_speed_multiplier);
+    RUN_TEST(test_resize_clears_all);
+    RUN_TEST(test_load_chunk);
+    RUN_TEST(test_load_chunk_restart);
+
+    TEST_SUMMARY();
+}

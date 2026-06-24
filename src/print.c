@@ -36,6 +36,7 @@ static void cursor_clamp(BvtTerm *vt)
 
 void bvt_scroll_up(BvtTerm *vt, int lines)
 {
+    bvt_grid_ensure(vt);
     if (!vt->grid || lines <= 0)
         return;
     int top = vt->scroll_top;
@@ -71,6 +72,8 @@ void bvt_scroll_up(BvtTerm *vt, int lines)
         vt->sixel_abs_top += lines;
         if (vt->sixel)
             bvt_sixel_note_scroll(vt, lines);
+        if (vt->lottie)
+            bvt_lottie_note_scroll(vt, lines);
     }
 
     /* Move rows up. */
@@ -507,6 +510,7 @@ void bvt_delete_lines(BvtTerm *vt, int count)
 
 void bvt_erase_in_display(BvtTerm *vt, int mode)
 {
+    bvt_grid_ensure(vt);
     if (!vt->grid)
         return;
     int row = vt->cursor.row;
@@ -520,6 +524,8 @@ void bvt_erase_in_display(BvtTerm *vt, int mode)
         }
         if (vt->sixel)
             bvt_sixel_clear_display_rows(vt, row, vt->rows - 1);
+        if (vt->lottie)
+            bvt_lottie_clear_display_rows(vt, row, vt->rows - 1);
         break;
     case 1:
         bvt_erase_in_line(vt, 1);
@@ -530,6 +536,8 @@ void bvt_erase_in_display(BvtTerm *vt, int mode)
         }
         if (vt->sixel)
             bvt_sixel_clear_display_rows(vt, 0, row);
+        if (vt->lottie)
+            bvt_lottie_clear_display_rows(vt, 0, row);
         break;
     case 2:
     case 3:
@@ -538,6 +546,8 @@ void bvt_erase_in_display(BvtTerm *vt, int mode)
         memset(vt->grid->row_flags, 0, (size_t)vt->rows);
         if (vt->sixel)
             bvt_sixel_clear_display_rows(vt, 0, vt->rows - 1);
+        if (vt->lottie)
+            bvt_lottie_clear_display_rows(vt, 0, vt->rows - 1);
         break;
     default:
         return;

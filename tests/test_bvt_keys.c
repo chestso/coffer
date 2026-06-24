@@ -22,7 +22,12 @@ static void on_output(const uint8_t *bytes, size_t len, void *u)
 
 static BvtTerm *make_term(void)
 {
-    BvtTerm *vt = bvt_new(24, 80);
+    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    BvtTerm *vt = bvt_new(&cfg);
     BvtCallbacks cb = { 0 };
     cb.output = on_output;
     bvt_set_callbacks(vt, &cb, NULL);
@@ -332,7 +337,12 @@ static void on_set_mode(BvtMode m, bool on, void *u)
 
 static void test_ris_fires_set_mode_callback(void)
 {
-    BvtTerm *vt = bvt_new(24, 80);
+    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    BvtTerm *vt = bvt_new(&cfg);
     BvtCallbacks cb = { 0 };
     cb.output = on_output;
     cb.set_mode = on_set_mode;

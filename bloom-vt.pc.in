@@ -8,4 +8,4 @@ Description: Standalone virtual terminal engine (UAX-aware grapheme clustering, 
 URL: https://github.com/thomas-christensen/bloom-vt
 Version: @BLOOM_VT_VERSION@
 Cflags: -I${includedir}
-Libs: -L${libdir} -lbloom-vt
+Libs: -L${libdir} -lbloom-vt @THORVG_LIBS@ -lm
