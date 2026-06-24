@@ -621,7 +621,20 @@ static BvtLottiePlacement *lt_add_placement(
     long abs_line, int col, int rows, int cols,
     uint8_t layer, uint8_t opacity)
 {
+    for (int i = 0; i < rec->placement_count; i++) {
+        if (rec->placements[i].abs_line == abs_line &&
+            rec->placements[i].col == col) {
+            rec->placements[i].rows = rows;
+            rec->placements[i].cols = cols;
+            rec->placements[i].layer = layer;
+            rec->placements[i].opacity_x256 = opacity;
+            return &rec->placements[i];
+        }
+    }
+
     if (rec->placement_count >= rec->placement_cap) {
+        if (rec->placement_cap >= LT_MAX_PLACEMENTS)
+            return NULL;
         int new_cap = rec->placement_cap ? rec->placement_cap * 2 : 4;
         if (new_cap > LT_MAX_PLACEMENTS)
             new_cap = LT_MAX_PLACEMENTS;

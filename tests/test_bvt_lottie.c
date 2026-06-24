@@ -258,13 +258,15 @@ static void test_place_multiple(void)
     int count = 0;
     const BvtLottie *lotties = bvt_get_lotties(vt, &count);
     ASSERT_EQ(count, 1);
-    ASSERT_EQ(lotties[0].placement_count, 3); /* 1 from load + 2 from place */
+    ASSERT_EQ(lotties[0].placement_count, 2); /* load+place at (0,0) dedup'd, +1 at (0,78) */
 
     const BvtLottiePlacement *pl = get_placements(vt, &lotties[0]);
-    ASSERT_EQ(pl[1].col, 0);
-    ASSERT_EQ(pl[1].layer, 0);
-    ASSERT_EQ(pl[2].col, 78);
-    ASSERT_EQ(pl[2].layer, 1);
+    ASSERT_EQ(pl[0].col, 0);
+    ASSERT_EQ(pl[0].layer, 0);
+    ASSERT_EQ(pl[0].rows, 2);
+    ASSERT_EQ(pl[0].cols, 2);
+    ASSERT_EQ(pl[1].col, 78);
+    ASSERT_EQ(pl[1].layer, 1);
 
     bvt_free(vt);
 }
