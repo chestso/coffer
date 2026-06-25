@@ -141,7 +141,7 @@ Rendering — clickable link styling, hover state, click dispatch — is
 
 - **Kitty graphics protocol.**
 - **Synchronized output** (mode 2026) — easy to add once parser is solid.
-- **Image-cell underlay protocol** — sixel scrolling is **[bloom-terminal]**'s
+- **Image-cell background protocol** — sixel scrolling is **[bloom-terminal]**'s
   domain (handled by its sixel layer).
 - **Right-to-left text shaping** — handled at HarfBuzz in **[bloom-terminal]**,
   not at the VT layer.
