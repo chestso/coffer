@@ -27,9 +27,35 @@ AM_INIT_AUTOMAKE([1.14 foreign subdir-objects -Wall -Werror])
 AM_SILENT_RULES([yes])
 
 dnl Programs
+user_cflags="$CFLAGS"
 AC_PROG_CC
 AC_PROG_RANLIB
 AM_PROG_AR
+
+dnl Build mode selection (--enable-release > --enable-debug > default ASan)
+AC_ARG_ENABLE([debug],
+  [AS_HELP_STRING([--enable-debug],
+    [unsanitized debug build (-O0 -g3, no ASan)])],
+  [enable_debug=$enableval],
+  [enable_debug=no])
+
+AC_ARG_ENABLE([release],
+  [AS_HELP_STRING([--enable-release],
+    [optimized release build (-O3 -DNDEBUG)])],
+  [enable_release=$enableval],
+  [enable_release=no])
+
+if test "x$enable_release" = "xyes"; then
+  CFLAGS="-O3 -DNDEBUG"
+  AC_MSG_NOTICE([Release mode: CFLAGS set to -O3 -DNDEBUG])
+elif test "x$enable_debug" = "xyes"; then
+  CFLAGS="-O0 -g3"
+  AC_MSG_NOTICE([Debug mode: CFLAGS set to -O0 -g3])
+elif test "x$user_cflags" = "x"; then
+  CFLAGS="-O1 -g3 -fno-omit-frame-pointer -fno-common -fsanitize=address,undefined -fno-sanitize-recover=undefined"
+  LDFLAGS="-fsanitize=address,undefined $LDFLAGS"
+  AC_MSG_NOTICE([ASan+UBSan mode (default): CFLAGS=$CFLAGS])
+fi
 
 dnl Headers / types
 AC_CHECK_HEADERS([stdlib.h string.h])
