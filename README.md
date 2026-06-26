@@ -110,7 +110,8 @@ design goals. Concretely:
 
 ## Build and install
 
-Standard GNU autotools workflow:
+Standard GNU autotools workflow. On Windows, use an MSYS2 UCRT64 shell
+with MinGW-w64 GCC.
 
 ```sh
 ./autogen.sh                                # writes ./version, runs autoreconf -fi
@@ -119,6 +120,25 @@ make
 make check
 make install
 ```
+
+On Windows (MSYS2 UCRT64):
+
+```sh
+./autogen.sh
+mkdir build && cd build
+../configure --prefix="$MINGW_PREFIX"       # ThorVG auto-detected; --disable-thorvg to skip
+make -j$(nproc)
+make check                                  # POSIX-only PTY tests are skipped automatically
+make install
+```
+
+Build mode flags for `./configure` (all platforms):
+
+| Flag               | Effect                                                                |
+| ------------------ | --------------------------------------------------------------------- |
+| _(default)_        | ASan + UBSan on POSIX; unsanitized debug (`-O1 -g3`) on Windows/MinGW |
+| `--enable-debug`   | Unsanitized debug (`-O0 -g3`)                                         |
+| `--enable-release` | Optimized (`-O3 -DNDEBUG`)                                            |
 
 Optional targets:
 

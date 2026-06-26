@@ -28,6 +28,9 @@ Makefile.in
 /tests/test_bvt_parser
 /tests/test_bvt_keys
 /tests/test_bvt_pty
+/tests/test_bvt_sixel
+/tests/test_bvt_lottie
+/tests/test_bvt_altscreen
 
 # --- Build artifacts ---
 *.o
@@ -51,6 +54,11 @@ Makefile.in
 /compile_commands.json
 /.cache/
 /.clangd
+
+# --- Windows ---
+*.exe
+*.dll
+*.pdb
 
 # --- Editors / OS ---
 .vscode/

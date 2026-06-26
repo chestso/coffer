@@ -14,7 +14,8 @@ EXTRA_DIST = \
     README.md \
     COPYING \
     FOLLOWUPS.md \
-    .clang-format
+    .clang-format \
+    .gitattributes
 
 # Format target — runs clang-format on C/C++ and prettier on Markdown.
 # Requires the tools to be installed; logs a warning if they are not.

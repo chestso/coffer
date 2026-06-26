@@ -12,6 +12,7 @@ AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIRS([m4])
 AC_USE_SYSTEM_EXTENSIONS
+AC_CANONICAL_HOST
 
 dnl Recompute the version at configure time so a rebuild after new commits
 dnl picks up the current version without needing to re-run autoreconf. Falls
@@ -26,11 +27,18 @@ AC_MSG_NOTICE([bloom-vt version: $BLOOM_VT_VERSION])
 AM_INIT_AUTOMAKE([1.14 foreign subdir-objects -Wall -Werror])
 AM_SILENT_RULES([yes])
 
+dnl Detect target platform
+case "$host_os" in
+  mingw*|msys*) host_windows=yes ;;
+  *)            host_windows=no ;;
+esac
+AM_CONDITIONAL([HOST_WINDOWS], [test "x$host_windows" = "xyes"])
+
 dnl Programs
 user_cflags="$CFLAGS"
 AC_PROG_CC
-AC_PROG_RANLIB
 AM_PROG_AR
+AC_PROG_RANLIB
 
 dnl Build mode selection (--enable-release > --enable-debug > default ASan)
 AC_ARG_ENABLE([debug],
@@ -52,9 +60,17 @@ elif test "x$enable_debug" = "xyes"; then
   CFLAGS="-O0 -g3"
   AC_MSG_NOTICE([Debug mode: CFLAGS set to -O0 -g3])
 elif test "x$user_cflags" = "x"; then
-  CFLAGS="-O1 -g3 -fno-omit-frame-pointer -fno-common -fsanitize=address,undefined -fno-sanitize-recover=undefined"
-  LDFLAGS="-fsanitize=address,undefined $LDFLAGS"
-  AC_MSG_NOTICE([ASan+UBSan mode (default): CFLAGS=$CFLAGS])
+  dnl ASan/UBSan is not available on Windows/MinGW. Fall back to
+  dnl unsanitized debug when building natively on Windows (MinGW
+  dnl does not ship libasan/libubsan).
+  if test "x$host_windows" = "xyes"; then
+    CFLAGS="-O1 -g3 -fno-omit-frame-pointer -fno-common"
+    AC_MSG_NOTICE([Debug mode (no ASan on Windows): CFLAGS=$CFLAGS])
+  else
+    CFLAGS="-O1 -g3 -fno-omit-frame-pointer -fno-common -fsanitize=address,undefined -fno-sanitize-recover=undefined"
+    LDFLAGS="-fsanitize=address,undefined $LDFLAGS"
+    AC_MSG_NOTICE([ASan+UBSan mode (default): CFLAGS=$CFLAGS])
+  fi
 fi
 
 dnl Headers / types
@@ -62,10 +78,13 @@ AC_CHECK_HEADERS([stdlib.h string.h])
 AC_TYPE_SIZE_T
 
 dnl Optional: openpty() lives in libutil on Linux/glibc, libc on macOS.
-dnl test_bvt_pty links against it; record the result for tests/Makefile.am.
-AC_SEARCH_LIBS([openpty], [util], [], [
-    AC_MSG_WARN([openpty() not found - test_bvt_pty will not link])
-])
+dnl On Windows, ConPTY replaces openpty entirely.
+dnl test_bvt_pty links against it on POSIX; on Windows it uses pty_w32.c.
+if test "x$host_windows" = "xno"; then
+  AC_SEARCH_LIBS([openpty], [util], [], [
+      AC_MSG_WARN([openpty() not found - test_bvt_pty will not link])
+  ])
+fi
 
 dnl Optional: ThorVG for Lottie animation rasterization.
 dnl When found, bloom-vt links libthorvg-1 and the lottie subsystem produces

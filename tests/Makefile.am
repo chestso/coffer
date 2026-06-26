@@ -13,11 +13,21 @@ else
 AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src -I$(srcdir)
 endif
 
+# Platform-specific PTY implementation
+if HOST_WINDOWS
+PTY_SOURCE = pty_w32.c
+PTY_LDADD = -lkernel32
+else
+PTY_SOURCE = pty.c
+PTY_LDADD =
+endif
+
 test_bvt_parser_SOURCES = test_bvt_parser.c test_common.c
 test_bvt_sixel_SOURCES  = test_bvt_sixel.c  test_common.c
 test_bvt_lottie_SOURCES = test_bvt_lottie.c test_common.c
 test_bvt_keys_SOURCES   = test_bvt_keys.c   test_common.c
-test_bvt_pty_SOURCES    = test_bvt_pty.c    test_common.c pty.c bloom_pty.h common.h
+test_bvt_pty_SOURCES    = test_bvt_pty.c    test_common.c $(PTY_SOURCE) bloom_pty.h common.h
+test_bvt_pty_LDADD      = $(LDADD) $(PTY_LDADD)
 test_bvt_altscreen_SOURCES = test_bvt_altscreen.c test_common.c
 
-EXTRA_DIST = test_helpers.h common.h bloom_pty.h
+EXTRA_DIST = test_helpers.h common.h bloom_pty.h pty_w32.c

@@ -10,13 +10,17 @@
 #include "test_helpers.h"
 #include <bloom-vt/bloom_vt.h>
 
-#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <poll.h>
 #include <time.h>
 #include <unistd.h>
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -24,17 +28,57 @@
 
 static long long now_ms(void)
 {
+#ifdef _WIN32
+    return (long long)GetTickCount64();
+#else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
 }
 
 /* Drain PTY output until the child exits or `timeout_ms` elapses. */
 static void drain_pty(BvtTerm *vt, PtyContext *pty, int timeout_ms)
 {
     long long deadline = now_ms() + timeout_ms;
-    int fd = pty_get_master_fd(pty);
     char buf[4096];
+#ifdef _WIN32
+    /* On Windows, use WaitForMultipleObjects on the output handle and
+     * the child process handle. No fd-based poll available. */
+    HANDLE handles[2];
+    handles[0] = (HANDLE)pty_get_output_handle(pty);
+    handles[1] = (HANDLE)pty_get_process_handle(pty);
+    while (now_ms() < deadline) {
+        int wait = (int)(deadline - now_ms());
+        if (wait <= 0)
+            break;
+        DWORD r = WaitForMultipleObjects(2, handles, FALSE,
+                                         (DWORD)wait);
+        if (r == WAIT_TIMEOUT) {
+            if (!pty_is_running(pty)) {
+                ssize_t n = pty_read(pty, buf, sizeof(buf));
+                if (n > 0)
+                    bvt_input_write(vt, (const uint8_t *)buf, (size_t)n);
+                break;
+            }
+            continue;
+        }
+        if (r == WAIT_OBJECT_0) {
+            /* Output handle is readable */
+            ssize_t n = pty_read(pty, buf, sizeof(buf));
+            if (n <= 0)
+                break;
+            bvt_input_write(vt, (const uint8_t *)buf, (size_t)n);
+        } else {
+            /* Process exited or error — drain final bytes */
+            ssize_t n = pty_read(pty, buf, sizeof(buf));
+            if (n > 0)
+                bvt_input_write(vt, (const uint8_t *)buf, (size_t)n);
+            break;
+        }
+    }
+#else
+    int fd = pty_get_master_fd(pty);
     while (now_ms() < deadline) {
         struct pollfd pfd = { .fd = fd, .events = POLLIN };
         int wait = (int)(deadline - now_ms());
@@ -60,6 +104,7 @@ static void drain_pty(BvtTerm *vt, PtyContext *pty, int timeout_ms)
         if (pfd.revents & (POLLHUP | POLLERR))
             break;
     }
+#endif
 }
 
 /* Search the visible grid for a UTF-8 substring (ASCII-only callers).
@@ -96,12 +141,17 @@ static void cb_output_to_pty(const uint8_t *bytes, size_t len, void *user)
         (void)pty_write(pty, (const char *)bytes, len);
 }
 
-/* Spawn `sh -c cmd`, drain up to timeout_ms, return the BvtTerm grid for
- * inspection. Caller frees the term and pty. */
+/* Spawn `sh -c cmd` (POSIX) or `cmd /c cmd` (Windows), drain up to
+ * timeout_ms, return the BvtTerm grid for inspection. Caller frees
+ * the term and pty. */
 static BvtTerm *run_cmd(const char *cmd, int rows, int cols,
                         int timeout_ms, PtyContext **out_pty)
 {
+#ifdef _WIN32
+    char *const argv[] = { "cmd.exe", "/c", (char *)cmd, NULL };
+#else
     char *const argv[] = { "sh", "-c", (char *)cmd, NULL };
+#endif
     PtyContext *pty = pty_create(rows, cols, argv);
     if (!pty)
         return NULL;
@@ -147,6 +197,11 @@ static void test_sgr_red(void)
     /* Print "red" with SGR 31, reset, then "plain". The text content should
      * land on the grid; style attribution is checked via bvt_cell_style if
      * we want — for now we just verify both segments appear. */
+#ifdef _WIN32
+    /* Windows cmd.exe doesn't support printf escape sequences; skip. */
+    printf("    (skipping on Windows: needs POSIX printf)\n");
+    return;
+#else
     PtyContext *pty = NULL;
     BvtTerm *vt = run_cmd("printf '\\033[31mred\\033[0m plain'", 24, 80, 1000, &pty);
     ASSERT_NOT_NULL(vt);
@@ -155,11 +210,17 @@ static void test_sgr_red(void)
     ASSERT_TRUE(find_row_with(vt, "plain") >= 0);
     bvt_free(vt);
     pty_destroy(pty);
+#endif
 }
 
 static void test_tput_cursor(void)
 {
     /* tput cup 5 10 then echo X — we expect 'X' near row 5 col 10. */
+#ifdef _WIN32
+    /* tput is not available on Windows; skip. */
+    printf("    (skipping on Windows: needs tput)\n");
+    return;
+#else
     PtyContext *pty = NULL;
     BvtTerm *vt = run_cmd("tput cup 5 10; printf X", 24, 80, 2000, &pty);
     ASSERT_NOT_NULL(vt);
@@ -178,12 +239,18 @@ static void test_tput_cursor(void)
     ASSERT_TRUE(found >= 0);
     bvt_free(vt);
     pty_destroy(pty);
+#endif
 }
 
 static void test_zwj_family_full(void)
 {
     /* 7-codepoint ZWJ family: 👨‍👩‍👧‍👦 = U+1F468 ZWJ U+1F469 ZWJ U+1F467 ZWJ U+1F466.
      * libvterm truncates at chars[6]; bvt must keep all 7 in one cluster. */
+#ifdef _WIN32
+    /* printf \x escape sequences not supported by cmd.exe; skip. */
+    printf("    (skipping on Windows: needs POSIX printf)\n");
+    return;
+#else
     PtyContext *pty = NULL;
     BvtTerm *vt = run_cmd(
         "printf '\\xf0\\x9f\\x91\\xa8\\xe2\\x80\\x8d\\xf0\\x9f\\x91\\xa9"
@@ -215,11 +282,17 @@ static void test_zwj_family_full(void)
     ASSERT_TRUE(found >= 0);
     bvt_free(vt);
     pty_destroy(pty);
+#endif
 }
 
 static void test_cjk_echo(void)
 {
     /* CJK ideographs are width=2 — assert the cell has width 2. */
+#ifdef _WIN32
+    /* printf \x escape sequences not supported by cmd.exe; skip. */
+    printf("    (skipping on Windows: needs POSIX printf)\n");
+    return;
+#else
     PtyContext *pty = NULL;
     BvtTerm *vt = run_cmd("printf '\\xe4\\xbd\\xa0\\xe5\\xa5\\xbd'", /* 你好 */
                           24, 80, 1000, &pty);
@@ -246,12 +319,18 @@ static void test_cjk_echo(void)
     ASSERT_TRUE(found >= 0);
     bvt_free(vt);
     pty_destroy(pty);
+#endif
 }
 
 static void test_altscreen_swap(void)
 {
     /* tput smcup, write FOO, tput rmcup. After rmcup we should be back on
      * the primary screen with FOO not visible. */
+#ifdef _WIN32
+    /* tput is not available on Windows; skip. */
+    printf("    (skipping on Windows: needs tput)\n");
+    return;
+#else
     PtyContext *pty = NULL;
     BvtTerm *vt = run_cmd("tput smcup; printf 'FOO_ALT'; sleep 0.05; tput rmcup",
                           24, 80, 2000, &pty);
@@ -261,6 +340,7 @@ static void test_altscreen_swap(void)
     ASSERT_TRUE(find_row_with(vt, "FOO_ALT") < 0);
     bvt_free(vt);
     pty_destroy(pty);
+#endif
 }
 
 /* Reproducer for the "cf menu wipes the screen" report. cf is a brick TUI
@@ -286,6 +366,11 @@ static void cb_capture_dsr(const uint8_t *b, size_t n, void *u)
  * Skipped if the cf binary isn't installed. */
 static void test_cf_brick_inline_preserves_history(void)
 {
+#ifdef _WIN32
+    /* cf is a Unix-only Haskell TUI; skip on Windows. */
+    printf("    (skipping on Windows: Unix-only TUI)\n");
+    return;
+#else
     if (access("/home/thomasc/.local/bin/cf", X_OK) != 0) {
         printf("    (skipping: cf not installed)\n");
         return;
@@ -391,10 +476,16 @@ static void test_cf_brick_inline_preserves_history(void)
 
     bvt_free(vt);
     pty_destroy(pty);
+#endif
 }
 
 static void test_dsr_after_natural_scroll(void)
 {
+#ifdef _WIN32
+    /* DSR test uses sh -c with seq; skip on Windows. */
+    printf("    (skipping on Windows: needs POSIX shell)\n");
+    return;
+#else
     int rows = 24, cols = 80;
     char *const argv[] = { "sh", "-c",
                            "for i in $(seq 1 16); do echo line$i; done; printf '\\033[6n'",
@@ -421,12 +512,18 @@ static void test_dsr_after_natural_scroll(void)
     ASSERT_STR_EQ(g_dsr_buf, "\x1b[17;1R");
     bvt_free(vt);
     pty_destroy(pty);
+#endif
 }
 
 static void test_scrollback_push(void)
 {
     /* Print 50 lines into a 24-row terminal; expect ≥ 25 lines pushed to
      * scrollback and the most recent lines visible at the bottom. */
+#ifdef _WIN32
+    /* Uses seq in a for loop; skip on Windows. */
+    printf("    (skipping on Windows: needs POSIX shell)\n");
+    return;
+#else
     PtyContext *pty = NULL;
     BvtTerm *vt = run_cmd("for i in $(seq 1 50); do echo line$i; done",
                           24, 80, 3000, &pty);
@@ -439,6 +536,7 @@ static void test_scrollback_push(void)
     ASSERT_TRUE(find_row_with(vt, "line50") >= 0);
     bvt_free(vt);
     pty_destroy(pty);
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -449,7 +547,8 @@ int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
 
-    /* Required before pty_create — pty.c installs a SIGCHLD handler. */
+    /* Required before pty_create — pty.c installs a SIGCHLD handler
+     * (no-op on Windows, where child exit is detected via process handle). */
     if (pty_signal_init() != 0) {
         fprintf(stderr, "pty_signal_init failed\n");
         return 1;
