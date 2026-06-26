@@ -1,4 +1,4 @@
-#! /bin/sh
+#!/usr/bin/sh
 # Attempt to guess a canonical system name.
 #   Copyright 1992-2025 Free Software Foundation, Inc.
 
@@ -957,9 +957,6 @@ EOF
 	;;
     amd64:CYGWIN*:*:* | x86_64:CYGWIN*:*:*)
 	GUESS=x86_64-pc-cygwin
-	;;
-    amd64:MSYS*:*:* | x86_64:MSYS*:*:*)
-	GUESS=x86_64-unknown-msys
 	;;
     prep*:SunOS:5.*:*)
 	SUN_REL=`echo "$UNAME_RELEASE" | sed -e 's/[^.]*//'`
