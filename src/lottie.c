@@ -1531,3 +1531,12 @@ void bvt_lottie_state_free(BvtTerm *vt)
     tvg_engine_term();
 #endif
 }
+
+bool bvt_have_lottie(void)
+{
+#ifdef HAVE_THORVG
+    return true;
+#else
+    return false;
+#endif
+}

@@ -500,6 +500,11 @@ void bvt_lottie_note_scroll(BvtTerm *vt, int lines);
  * range [top,bot]. Background placements survive. */
 void bvt_lottie_clear_display_rows(BvtTerm *vt, int top, int bot);
 
+/* Returns true if bloom-vt was built with ThorVG (Lottie rasterization
+ * produces real pixels). Returns false if ThorVG was absent or disabled
+ * at build time — APC sequences are accepted but produce blank frames. */
+bool bvt_have_lottie(void);
+
 #ifdef __cplusplus
 }
 #endif
