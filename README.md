@@ -110,8 +110,7 @@ design goals. Concretely:
 
 ## Build and install
 
-Standard GNU autotools workflow. On Windows, use an MSYS2 UCRT64 shell
-with MinGW-w64 GCC.
+Standard GNU autotools workflow:
 
 ```sh
 ./autogen.sh                                # writes ./version, runs autoreconf -fi
@@ -121,7 +120,24 @@ make check
 make install
 ```
 
-On Windows (MSYS2 UCRT64):
+On Windows, use MSYS2 UCRT64 with MinGW-w64 GCC. The recommended way is the
+helper script, which can be launched from any shell (git-bash, cmd,
+PowerShell, or an MSYS2 shell) and re-execs into a real MSYS2 UCRT64 shell so
+`/ucrt64` is mounted and `$MINGW_PREFIX` resolves correctly:
+
+```sh
+./scripts/build-ucrt64.sh            # autogen + configure + make + check
+./scripts/build-ucrt64.sh --install  # build, then make install
+```
+
+Extra args are forwarded to `configure`:
+
+```sh
+./scripts/build-ucrt64.sh --enable-release
+./scripts/build-ucrt64.sh --disable-thorvg    # skip optional Lottie rasterizer
+```
+
+To build manually inside an MSYS2 UCRT64 shell:
 
 ```sh
 ./autogen.sh
@@ -131,6 +147,12 @@ make -j$(nproc)
 make check                                  # POSIX-only PTY tests are skipped automatically
 make install
 ```
+
+> Note: building from outside an MSYS2 UCRT64 shell (e.g. plain git-bash) with
+> `--prefix="$MINGW_PREFIX"` fails because `/ucrt64` is not mounted and
+> `$MINGW_PREFIX` is empty, which makes autotools reject the backslash-bearing
+> Windows path as an "unsafe srcdir". Use `./scripts/build-ucrt64.sh`, which
+> re-execs into the correct shell first.
 
 Build mode flags for `./configure` (all platforms):
 
