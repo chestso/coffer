@@ -95,6 +95,18 @@ void bvt_osc_dispatch(BvtTerm *vt, const uint8_t *data, size_t len)
     case 8:
         osc8_dispatch(vt, body, body_len);
         break;
+    case 5555:
+        /* OSC 5555 — Lottie APC carrier for ConPTY on Windows.
+         *
+         * Windows ConPTY strips APC (ESC _) sequences even with
+         * PSEUDOCONSOLE_PASSTHROUGH_MODE on some builds.  To get
+         * Lottie commands through, the client encodes the APC
+         * payload (base64 of the JSON command) inside OSC 5555,
+         * which ConPTY does pass through.  The body after the
+         * semicolon is identical to what would have been the APC
+         * string body. */
+        bvt_lottie_apc_dispatch(vt, body, body_len);
+        break;
     default:
         if (vt->callbacks.osc) {
             /* The data is in osc_buf which is uint8_t[]; the

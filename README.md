@@ -38,6 +38,19 @@ where it replaces libvterm.
   with `bvt_lottie_tick()`. Rasterization is handled by ThorVG (optional
   dependency, auto-detected at configure time); when ThorVG is absent the APC
   sequences are still accepted but RGBA buffers are zeroed.
+- **Windows ConPTY note:** Windows ConPTY intercepts and re-serialises VT output
+  through conhost's VtEngine, which recognises CSI, OSC, and DCS but _not_ APC
+  (`ESC _`). APC sequences are silently dropped — the same limitation that
+  prevents the kitty image protocol from working on Windows (Windows Terminal
+  issue #8389, open since 2020). `PSEUDOCONSOLE_PASSTHROUGH_MODE` (flag 0x8,
+  Windows 11 22H2+) is intended to relay the raw VT stream unmodified, but on
+  some builds the flag is accepted by `CreatePseudoConsole` yet unknown
+  sequences are still stripped. As a workaround, the Lottie client on Windows
+  carries the same base64-encoded JSON payload inside **OSC 5555** (`ESC ] 5555 ; \<base64\> BEL`), which ConPTY does pass through because OSC is a recognised VT
+  family. bloom-vt routes OSC code 5555 to `bvt_lottie_apc_dispatch()`, so the
+  payload is processed identically regardless of carrier. This mirrors how
+  iTerm2's image protocol works on Windows (OSC 1337) — encode image data in
+  OSC instead of APC.
 - **Damage tracking** — the changed region is accumulated as input is
   parsed; the consumer calls `bvt_damage_flush()` at a controlled time
   (typically once per frame, before rendering) to receive it via the
