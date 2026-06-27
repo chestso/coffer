@@ -318,10 +318,24 @@ static void lt_rasterize(LtRec *r)
     if (r->px_w <= 0 || r->px_h <= 0)
         return;
 
-    tvg_animation_set_frame(r->tvg_anim, (float)r->current_frame);
+    Tvg_Result sf_res =
+        tvg_animation_set_frame(r->tvg_anim, (float)r->current_frame);
+    /* ThorVG 1.0 on Windows returns INSUFFICIENT_CONDITION on the first
+     * set_frame call after loading a Lottie animation.  Performing a
+     * full draw cycle at a different frame index forces ThorVG to fully
+     * initialise the animation; the target frame can then be set. */
+    if (sf_res != TVG_RESULT_SUCCESS) {
+        float warm = (float)r->current_frame + 1.0f;
+        tvg_animation_set_frame(r->tvg_anim, warm);
+        tvg_canvas_update(r->tvg_canvas);
+        tvg_canvas_draw(r->tvg_canvas, true);
+        tvg_canvas_sync(r->tvg_canvas);
+        tvg_animation_set_frame(r->tvg_anim, (float)r->current_frame);
+    }
     tvg_canvas_update(r->tvg_canvas);
     tvg_canvas_draw(r->tvg_canvas, true);
     tvg_canvas_sync(r->tvg_canvas);
+
     lt_linearize_rgba(r->rgba, r->px_w, r->px_h);
     r->dirty = true;
 }
