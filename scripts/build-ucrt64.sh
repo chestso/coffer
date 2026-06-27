@@ -21,6 +21,9 @@
 #
 # Can be launched from any shell (git-bash, cmd, PowerShell, or an MSYS2
 # shell); it re-execs into a real MSYS2 UCRT64 shell via msys2_shell.cmd.
+# The prerequisites (gcc, autotools, and optionally ThorVG for Lottie
+# rasterization) must already be installed — see the README Windows
+# section for the pacman command. This script never runs pacman itself.
 #
 # Usage:
 #   ./scripts/build-ucrt64.sh            # autogen + configure + make + check
@@ -77,20 +80,44 @@ export PATH="$FIXSH_DIR:$PATH"
 trap 'rm -rf "$FIXSH_DIR"' EXIT
 echo "==> Applied sh workaround (shadowed /usr/bin/sh with bash copy)"
 
-# Ensure build dependencies are installed. ThorVG is optional (Lottie
-# rasterization); configure auto-detects it, so install it by default but
-# allow skipping with --disable-thorvg via a no-op (configure handles that).
-echo "==> Ensuring build dependencies (pacman -S --needed)"
-pacman -S --noconfirm --needed \
-	mingw-w64-ucrt-x86_64-gcc \
-	mingw-w64-ucrt-x86_64-autotools \
-	mingw-w64-ucrt-x86_64-thorvg 2>&1 | tail -3 || true
+# Sanitize ACLOCAL_PATH. When this script is re-execed into the MSYS2
+# shell from a Windows parent (git-bash/cmd/PowerShell), ACLOCAL_PATH
+# may arrive as a Windows-style value ("C:\...\ucrt64\share\aclocal;C:\
+# ...\usr\share\aclocal") — backslashes and ';' separators. MSYS2's
+# aclocal (a perl script) splits on ':' (not ';') and can't stat those
+# mangled paths, so autoreconf dies with:
+#   aclocal-1.18: error: file '/Users/.../usr/share/aclocal/progtest.m4'
+#   does not exist
+# (the drive-letter prefix gets eaten, leaving a path missing its /c/
+# mount). /etc/profile would set the correct POSIX value interactively,
+# but non-interactive `msys2_shell.cmd -c` shells inherit the broken
+# Windows env verbatim. Convert each element to a POSIX path (cygpath)
+# and join with ':'; if anything looks off, fall back to unsetting it —
+# aclocal's built-in default (/usr/share/aclocal) is correct on its own.
+if [ -n "${ACLOCAL_PATH:-}" ]; then
+	sane=""
+	IFS=';' read -ra _ac_elems <<<"$ACLOCAL_PATH"
+	for _el in "${_ac_elems[@]}"; do
+		[ -z "$_el" ] && continue
+		if _posix="$(cygpath -u "$_el" 2>/dev/null)"; then
+			sane="${sane:+$sane:}$_posix"
+		fi
+	done
+	if [ -n "$sane" ]; then
+		export ACLOCAL_PATH="$sane"
+		echo "==> Sanitized ACLOCAL_PATH -> $ACLOCAL_PATH"
+	else
+		unset ACLOCAL_PATH
+		echo "==> Unset unusable ACLOCAL_PATH (aclocal defaults apply)"
+	fi
+fi
 
-# Always regenerate the autotools files so maintainer-mode rebuilds don't
-# trigger aclocal with a broken m4 path mid-build. Use autogen.sh (not bare
-# autoreconf) so ./version is written from git first — autoreconf alone would
-# bake 0.0.0-unknown into PACKAGE_VERSION on a fresh clone (version is
-# gitignored).
+# Always regenerate the autotools files. The ACLOCAL_PATH sanitization
+# above is what makes this reliable (without it, aclocal scans mangled
+# Windows paths and autoreconf dies). Use autogen.sh (not bare
+# autoreconf) so ./version is written from git first — autoreconf alone
+# would bake 0.0.0-unknown into PACKAGE_VERSION on a fresh clone (version
+# is gitignored).
 echo "==> ./autogen.sh"
 ./autogen.sh
 

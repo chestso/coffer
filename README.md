@@ -120,10 +120,26 @@ make check
 make install
 ```
 
-On Windows, use MSYS2 UCRT64 with MinGW-w64 GCC. The recommended way is the
-helper script, which can be launched from any shell (git-bash, cmd,
-PowerShell, or an MSYS2 shell) and re-execs into a real MSYS2 UCRT64 shell so
-`/ucrt64` is mounted and `$MINGW_PREFIX` resolves correctly:
+On Windows, use MSYS2 UCRT64 with MinGW-w64 GCC.
+
+### Prerequisites
+
+Install [MSYS2](https://www.msys2.org/), then in a UCRT64 shell (`msys2_shell.cmd -ucrt64`):
+
+```sh
+pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-autotools
+
+# Optional: ThorVG enables Lottie rasterization (auto-detected by configure)
+pacman -S mingw-w64-ucrt-x86_64-thorvg
+```
+
+### Building
+
+The recommended way is the helper script, which can be launched from any shell
+(git-bash, cmd, PowerShell, or an MSYS2 shell) and re-execs into a real MSYS2
+UCRT64 shell so `/ucrt64` is mounted and `$MINGW_PREFIX` resolves correctly.
+It assumes the [prerequisites](#prerequisites) above are already installed —
+the script never runs `pacman` itself:
 
 ```sh
 ./scripts/build-ucrt64.sh            # autogen + configure + make + check
@@ -153,6 +169,34 @@ make install
 > `$MINGW_PREFIX` is empty, which makes autotools reject the backslash-bearing
 > Windows path as an "unsafe srcdir". Use `./scripts/build-ucrt64.sh`, which
 > re-execs into the correct shell first.
+
+### `autoreconf` fails on scoop-installed MSYS2 (sh workaround)
+
+On some MSYS2 installs (notably scoop-managed), `/usr/bin/sh` and
+`/usr/bin/bash` are the same binary. When bash is invoked as `sh` — as
+`libtoolize` does via `#!/usr/bin/env sh` — its POSIX-mode `test -d` builtin
+intermittently fails to see `/ucrt64` paths (a mount-table visibility race),
+aborting `autoreconf` with:
+
+```
+libtoolize: error: $pkgauxdir is not a directory: '/ucrt64/share/libtool/build-aux'
+```
+
+`build-ucrt64.sh` applies the workaround automatically (shadowing `sh` with a
+bash copy earlier on `PATH`). It also sanitizes `ACLOCAL_PATH` — which arrives
+as a Windows-style value (backslashes, `;` separators) when the script is
+re-execed from a Windows parent — converting it to POSIX paths so `aclocal`
+can stat them. Both fixes happen before `autogen.sh` runs.
+
+To do the `sh` workaround manually before running `autogen.sh`:
+
+```sh
+FIXSH=$(mktemp -d /tmp/bloom-fixsh.XXXXXX)
+cp /usr/bin/bash "$FIXSH/sh"
+export PATH="$FIXSH:$PATH"
+./autogen.sh          # now succeeds
+rm -rf "$FIXSH"
+```
 
 Build mode flags for `./configure` (all platforms):
 
