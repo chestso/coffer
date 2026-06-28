@@ -37,7 +37,10 @@ where it replaces libvterm.
   `bvt_get_lotties()` / `bvt_get_lottie_placements()` and advances frames
   with `bvt_lottie_tick()`. Rasterization is handled by ThorVG (optional
   dependency, auto-detected at configure time); when ThorVG is absent the APC
-  sequences are still accepted but RGBA buffers are zeroed.
+  sequences are still accepted but RGBA buffers are zeroed. A Python TUI
+  player ([plotty](https://codeberg.org/thomasc/bloom-terminal/src/branch/master/bloom-terminal/contrib/plotty))
+  provides interactive playback with keyboard controls for pause, seek,
+  speed, opacity, and layer toggling.
 - **Windows ConPTY note:** Windows ConPTY intercepts and re-serialises VT output
   through conhost's VtEngine, which recognises CSI, OSC, and DCS but _not_ APC
   (`ESC _`). APC sequences are silently dropped — the same limitation that
