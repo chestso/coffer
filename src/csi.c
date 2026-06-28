@@ -129,6 +129,12 @@ static void sgr_dispatch(BvtTerm *vt)
         uint32_t s = p->params[i++];
         switch (s) {
         case 0:
+            /* A trailing semicolon (e.g. \e[48;2;R;G;B;m) creates an
+             * empty zero-valued parameter at the end.  Ignore it — it
+             * does NOT mean "reset all attributes".  ConPTY on Windows
+             * emits SGR sequences with trailing semicolons. */
+            if (!p->param_present && i - 1 == p->param_count - 1)
+                break;
             reset_pen(vt);
             break;
         case 1:
