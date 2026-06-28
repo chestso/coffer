@@ -989,6 +989,7 @@ static void lt_cmd_play(struct BvtLottieState *st, BvtTerm *vt,
         return;
 
     rec->playing = true;
+    rec->last_tick_us = 0;
 
     val = lt_json_find_key(json, json_len, "speed", &vlen);
     if (val)
