@@ -114,9 +114,9 @@ static void test_csi_erase_line(void)
     const BvtCell *b = bvt_get_cell(vt, 0, 1);
     ASSERT_EQ(b->cp, (uint32_t)'b');
     const BvtCell *c = bvt_get_cell(vt, 0, 2);
-    ASSERT_EQ(c->cp, 0u); /* erased */
+    ASSERT_EQ(c->cp, 0x20u); /* erased — BCE blank (space) */
     const BvtCell *d = bvt_get_cell(vt, 0, 3);
-    ASSERT_EQ(d->cp, 0u);
+    ASSERT_EQ(d->cp, 0x20u);
     bvt_free(vt);
 }
 
@@ -958,14 +958,14 @@ static void test_ich_dch(void)
     /* Now: A B C _ _ D — last char shifted off. */
     ASSERT_EQ(bvt_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
     ASSERT_EQ(bvt_get_cell(vt, 0, 2)->cp, (uint32_t)'C');
-    ASSERT_EQ(bvt_get_cell(vt, 0, 3)->cp, 0u);
-    ASSERT_EQ(bvt_get_cell(vt, 0, 4)->cp, 0u);
+    ASSERT_EQ(bvt_get_cell(vt, 0, 3)->cp, 0x20u);
+    ASSERT_EQ(bvt_get_cell(vt, 0, 4)->cp, 0x20u);
     ASSERT_EQ(bvt_get_cell(vt, 0, 5)->cp, (uint32_t)'D');
     /* Now DCH 2 at col 3 → cells D shift left, last 2 are blank. */
     feed(vt, "\x1b[2P");
     ASSERT_EQ(bvt_get_cell(vt, 0, 3)->cp, (uint32_t)'D');
-    ASSERT_EQ(bvt_get_cell(vt, 0, 4)->cp, 0u);
-    ASSERT_EQ(bvt_get_cell(vt, 0, 5)->cp, 0u);
+    ASSERT_EQ(bvt_get_cell(vt, 0, 4)->cp, 0x20u);
+    ASSERT_EQ(bvt_get_cell(vt, 0, 5)->cp, 0x20u);
     bvt_free(vt);
 }
 
@@ -977,7 +977,7 @@ static void test_il_dl(void)
     feed(vt, "\x1b[L");    /* IL 1 — insert blank line at row 2 */
     /* Result: AAA, _, BBB, CCC. (DDD shifted off bottom.) */
     ASSERT_EQ(bvt_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
-    ASSERT_EQ(bvt_get_cell(vt, 1, 0)->cp, 0u);
+    ASSERT_EQ(bvt_get_cell(vt, 1, 0)->cp, 0x20u);
     ASSERT_EQ(bvt_get_cell(vt, 2, 0)->cp, (uint32_t)'B');
     ASSERT_EQ(bvt_get_cell(vt, 3, 0)->cp, (uint32_t)'C');
     /* DL 1 at row 2 (the blank) — undo. */

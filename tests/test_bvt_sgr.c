@@ -175,6 +175,48 @@ static void test_sgr_multi_attr_trailing_semicolon(void)
     bvt_free(vt);
 }
 
+/* BCE (Back Color Erase): \e[K should extend the background colour to
+ * the end of the line, not produce default-background cells.  ConPTY
+ * on Windows emits \e[K after text with a truecolour background, so
+ * erased cells must carry the active pen's style. */
+static void test_bce_erase_in_line(void)
+{
+    BvtTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b[48;2;128;128;255mHi\x1b[K");
+
+    const BvtCell *c3 = bvt_get_cell(vt, 0, 3);
+    const BvtStyle *s3 = bvt_cell_style(vt, c3);
+    ASSERT_TRUE((s3->color_flags & BVT_COLOR_DEFAULT_BG) == 0);
+    ASSERT_EQ(s3->bg_rgb, 0x008080FFu);
+
+    const BvtCell *c79 = bvt_get_cell(vt, 0, 79);
+    const BvtStyle *s79 = bvt_cell_style(vt, c79);
+    ASSERT_TRUE((s79->color_flags & BVT_COLOR_DEFAULT_BG) == 0);
+    ASSERT_EQ(s79->bg_rgb, 0x008080FFu);
+
+    bvt_free(vt);
+}
+
+/* BCE: erase-in-display mode 0 should extend background to end of
+ * display.  The rows below the cursor are filled entirely. */
+static void test_bce_erase_in_display(void)
+{
+    BvtTerm *vt = make_term(4, 10);
+    feed(vt, "\x1b[48;5;196mX\x1b[J");
+
+    /* Row 0: cell 1..9 should have the 256-col background. */
+    const BvtCell *c1 = bvt_get_cell(vt, 0, 1);
+    const BvtStyle *s1 = bvt_cell_style(vt, c1);
+    ASSERT_TRUE((s1->color_flags & BVT_COLOR_DEFAULT_BG) == 0);
+
+    /* Row 1: cell 0 should have the 256-col background. */
+    const BvtCell *c10 = bvt_get_cell(vt, 1, 0);
+    const BvtStyle *s10 = bvt_cell_style(vt, c10);
+    ASSERT_TRUE((s10->color_flags & BVT_COLOR_DEFAULT_BG) == 0);
+
+    bvt_free(vt);
+}
+
 int main(int argc, char **argv)
 {
     test_parse_args(argc, argv);
@@ -188,6 +230,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_sgr_combined_trailing_semicolon);
     RUN_TEST(test_sgr_reset_bg);
     RUN_TEST(test_sgr_multi_attr_trailing_semicolon);
+    RUN_TEST(test_bce_erase_in_line);
+    RUN_TEST(test_bce_erase_in_display);
 
     TEST_SUMMARY();
 }
