@@ -105,8 +105,8 @@ void bvt_scroll_up(BvtTerm *vt, int lines)
     int clear_start = bot - lines + 1;
     for (int i = 0; i < lines; ++i)
         erase_cells(vt,
-                     &vt->grid->cells[(size_t)(clear_start + i) * vt->cols],
-                     vt->cols);
+                    &vt->grid->cells[(size_t)(clear_start + i) * vt->cols],
+                    vt->cols);
     memset(&vt->grid->row_flags[clear_start], 0, (size_t)lines);
 
     bvt_damage_all(vt);
@@ -138,8 +138,8 @@ void bvt_scroll_down(BvtTerm *vt, int lines)
     }
     for (int i = 0; i < lines; ++i)
         erase_cells(vt,
-                     &vt->grid->cells[(size_t)(top + i) * vt->cols],
-                     vt->cols);
+                    &vt->grid->cells[(size_t)(top + i) * vt->cols],
+                    vt->cols);
     memset(&vt->grid->row_flags[top], 0, (size_t)lines);
 
     bvt_damage_all(vt);
@@ -493,8 +493,8 @@ void bvt_insert_lines(BvtTerm *vt, int count)
     }
     for (int i = 0; i < count; ++i)
         erase_cells(vt,
-                     &vt->grid->cells[(size_t)(row + i) * vt->cols],
-                     vt->cols);
+                    &vt->grid->cells[(size_t)(row + i) * vt->cols],
+                    vt->cols);
     memset(&vt->grid->row_flags[row], 0, (size_t)count);
     bvt_damage_all(vt);
     vt->cursor.col = 0;
@@ -523,8 +523,8 @@ void bvt_delete_lines(BvtTerm *vt, int count)
     int clear_start = vt->scroll_bottom - count + 1;
     for (int i = 0; i < count; ++i)
         erase_cells(vt,
-                     &vt->grid->cells[(size_t)(clear_start + i) * vt->cols],
-                     vt->cols);
+                    &vt->grid->cells[(size_t)(clear_start + i) * vt->cols],
+                    vt->cols);
     memset(&vt->grid->row_flags[clear_start], 0, (size_t)count);
     bvt_damage_all(vt);
     vt->cursor.col = 0;
@@ -542,7 +542,7 @@ void bvt_erase_in_display(BvtTerm *vt, int mode)
         bvt_erase_in_line(vt, 0);
         for (int r = row + 1; r < vt->rows; ++r) {
             erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
-                         vt->cols);
+                        vt->cols);
             vt->grid->row_flags[r] = 0;
         }
         if (vt->sixel)
@@ -554,7 +554,7 @@ void bvt_erase_in_display(BvtTerm *vt, int mode)
         bvt_erase_in_line(vt, 1);
         for (int r = 0; r < row; ++r) {
             erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
-                         vt->cols);
+                        vt->cols);
             vt->grid->row_flags[r] = 0;
         }
         if (vt->sixel)
@@ -566,7 +566,7 @@ void bvt_erase_in_display(BvtTerm *vt, int mode)
     case 3:
         for (int r = 0; r < vt->rows; ++r)
             erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
-                         vt->cols);
+                        vt->cols);
         memset(vt->grid->row_flags, 0, (size_t)vt->rows);
         if (vt->sixel)
             bvt_sixel_clear_display_rows(vt, 0, vt->rows - 1);
