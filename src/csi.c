@@ -320,6 +320,11 @@ static void mode_set(BvtTerm *vt, bool on)
             vt->cursor.col = 0;
             vt->cursor.pending_wrap = false;
             break;
+        case 7: /* DECAWM auto-wrap mode */
+            vt->modes[BVT_MODE_DECAWM] = on;
+            if (!on)
+                vt->cursor.pending_wrap = false;
+            break;
         case 25: /* DECTCEM cursor visible */
             vt->modes[BVT_MODE_CURSOR_VISIBLE] = on;
             vt->cursor.visible = on;

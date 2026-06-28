@@ -248,7 +248,7 @@ static void commit_cluster(BvtTerm *vt, const uint32_t *cps, uint32_t len)
         return;
     }
 
-    /* Deferred wrap. */
+    /* Deferred wrap — only when DECAWM is on. */
     if (vt->cursor.pending_wrap) {
         if (vt->cursor.row >= 0 && vt->cursor.row < vt->rows)
             vt->grid->row_flags[vt->cursor.row] |= BVT_CELL_WRAPLINE;
@@ -261,8 +261,8 @@ static void commit_cluster(BvtTerm *vt, const uint32_t *cps, uint32_t len)
     }
     cursor_clamp(vt);
 
-    /* Wide cluster at right margin → wrap first. */
-    if (width == 2 && vt->cursor.col == vt->cols - 1) {
+    /* Wide cluster at right margin → wrap first (DECAWM only). */
+    if (width == 2 && vt->cursor.col == vt->cols - 1 && vt->modes[BVT_MODE_DECAWM]) {
         if (vt->cursor.row >= 0 && vt->cursor.row < vt->rows)
             vt->grid->row_flags[vt->cursor.row] |= BVT_CELL_WRAPLINE;
         vt->cursor.col = 0;
@@ -293,8 +293,14 @@ static void commit_cluster(BvtTerm *vt, const uint32_t *cps, uint32_t len)
     bvt_damage_cell(vt, vt->cursor.row, vt->cursor.col);
 
     if (vt->cursor.col + width >= vt->cols) {
-        vt->cursor.col = vt->cols - 1;
-        vt->cursor.pending_wrap = true;
+        if (vt->modes[BVT_MODE_DECAWM]) {
+            vt->cursor.col = vt->cols - 1;
+            vt->cursor.pending_wrap = true;
+        } else {
+            /* No autowrap: character at right margin overwrites
+             * the last column and cursor stays put. */
+            vt->cursor.col = vt->cols - 1;
+        }
     } else {
         vt->cursor.col += width;
     }
@@ -387,6 +393,7 @@ void bvt_erase_in_line(BvtTerm *vt, int mode)
     int row = vt->cursor.row;
     if (row < 0 || row >= vt->rows)
         return;
+    vt->cursor.pending_wrap = false;
     BvtCell *line = &vt->grid->cells[(size_t)row * vt->cols];
     int from = 0, to = vt->cols;
     switch (mode) {
@@ -461,6 +468,7 @@ void bvt_erase_chars(BvtTerm *vt, int count)
 {
     if (!vt->grid || count <= 0)
         return;
+    vt->cursor.pending_wrap = false;
     int row = vt->cursor.row;
     int col = vt->cursor.col;
     if (row < 0 || row >= vt->rows || col < 0 || col >= vt->cols)

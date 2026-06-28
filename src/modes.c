@@ -126,6 +126,7 @@ void bvt_full_reset(BvtTerm *vt)
     memset(vt->modes, 0, sizeof(vt->modes));
     vt->modes[BVT_MODE_CURSOR_VISIBLE] = true;
     vt->modes[BVT_MODE_CURSOR_BLINK] = true;
+    vt->modes[BVT_MODE_DECAWM] = true;
 
     if (vt->callbacks.set_mode) {
         for (size_t i = 0; i < sizeof(prev_modes) / sizeof(prev_modes[0]); ++i) {

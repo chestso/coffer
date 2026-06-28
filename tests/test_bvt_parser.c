@@ -1343,6 +1343,117 @@ static void test_wrap(void)
     bvt_free(vt);
 }
 
+/* Regression: DECAWM (DECSET ?7 / DECRST ?7) — auto-wrap mode.
+ *
+ * Bubble Tea v2's renderer disables auto-wrap (DECRST ?7) before
+ * writing to the bottom-right cell, then re-enables it (DECSET ?7).
+ * Without DECAWM support, bloom-vt always wrapped, causing the
+ * bottom row to scroll up and corrupt the info bar. */
+
+/* DECAWM is on by default — writing past the right margin sets
+ * pending_wrap and the next print wraps to the next line. */
+static void test_decawm_default_on(void)
+{
+    BvtTerm *vt = make_term(3, 5);
+    ASSERT_TRUE(vt->modes[BVT_MODE_DECAWM]);
+    feed(vt, "abcde"); /* fill row 0 exactly — pending_wrap set */
+    ASSERT_TRUE(vt->cursor.pending_wrap);
+    feed(vt, "f"); /* deferred wrap resolves: 'f' lands on row 1 */
+    ASSERT_FALSE(vt->cursor.pending_wrap);
+    ASSERT_EQ(bvt_get_cell(vt, 1, 0)->cp, (uint32_t)'f');
+    bvt_free(vt);
+}
+
+/* DECRST ?7 disables auto-wrap — writing past the right margin
+ * does NOT set pending_wrap; the cursor stays at the last column
+ * and subsequent prints overwrite that cell. */
+static void test_decawm_off_no_wrap(void)
+{
+    BvtTerm *vt = make_term(3, 5);
+    feed(vt, "\x1b[?7l"); /* DECAWM off */
+    ASSERT_FALSE(vt->modes[BVT_MODE_DECAWM]);
+    feed(vt, "abcde"); /* fills row 0, cursor at col 4 */
+    ASSERT_FALSE(vt->cursor.pending_wrap);
+    BvtCursor cur = bvt_get_cursor(vt);
+    ASSERT_EQ(cur.col, 4); /* stays at last column */
+    feed(vt, "X");         /* overwrites col 4 instead of wrapping */
+    ASSERT_EQ(bvt_get_cell(vt, 0, 4)->cp, (uint32_t)'X');
+    ASSERT_EQ(bvt_get_cell(vt, 1, 0)->cp, 0u); /* row 1 untouched */
+    bvt_free(vt);
+}
+
+/* DECSET ?7 re-enables auto-wrap after it was disabled. */
+static void test_decawm_reenable(void)
+{
+    BvtTerm *vt = make_term(3, 5);
+    feed(vt, "\x1b[?7l"); /* off */
+    feed(vt, "\x1b[?7h"); /* on again */
+    ASSERT_TRUE(vt->modes[BVT_MODE_DECAWM]);
+    feed(vt, "abcde"); /* fill row, pending_wrap set */
+    ASSERT_TRUE(vt->cursor.pending_wrap);
+    feed(vt, "f"); /* wraps to next line */
+    ASSERT_EQ(bvt_get_cell(vt, 1, 0)->cp, (uint32_t)'f');
+    bvt_free(vt);
+}
+
+/* The critical scenario: writing to the bottom-right cell with
+ * DECAWM off must NOT scroll the screen. This is the exact
+ * sequence Bubble Tea v2 uses (DECRST 7, write, DECSET 7). */
+static void test_decawm_bottom_right_no_scroll(void)
+{
+    BvtTerm *vt = make_term(3, 5);
+    /* Write identifiable content on each row. */
+    feed(vt, "AAAAA\r\nBBBBB\r\nCCCCC");
+    /* Verify initial state. */
+    ASSERT_EQ(bvt_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
+    ASSERT_EQ(bvt_get_cell(vt, 1, 0)->cp, (uint32_t)'B');
+    ASSERT_EQ(bvt_get_cell(vt, 2, 0)->cp, (uint32_t)'C');
+    /* Cursor is at bottom-right (row 2, col 4) with pending_wrap. */
+    ASSERT_TRUE(vt->cursor.pending_wrap);
+
+    /* Bubble Tea's putCellLR sequence: disable autowrap, reposition,
+     * write the cell, re-enable autowrap. */
+    feed(vt, "\x1b[?7l");                  /* DECAWM off */
+    ASSERT_FALSE(vt->cursor.pending_wrap); /* cleared by DECRST */
+    feed(vt, "\x1b[3;5H");                 /* CUP to bottom-right (row 2, col 4) */
+    feed(vt, "X");                         /* overwrites col 4 — NO scroll */
+    ASSERT_EQ(bvt_get_cell(vt, 2, 4)->cp, (uint32_t)'X');
+    /* Row 0 must still be 'A' — the screen did NOT scroll. */
+    ASSERT_EQ(bvt_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
+    ASSERT_EQ(bvt_get_cell(vt, 1, 0)->cp, (uint32_t)'B');
+    feed(vt, "\x1b[?7h"); /* DECAWM back on */
+    ASSERT_TRUE(vt->modes[BVT_MODE_DECAWM]);
+    bvt_free(vt);
+}
+
+/* Erase-in-line (ESC[K) must clear pending_wrap, matching xterm. */
+static void test_erase_in_line_clears_pending_wrap(void)
+{
+    BvtTerm *vt = make_term(3, 5);
+    feed(vt, "abcde"); /* fill row, pending_wrap set */
+    ASSERT_TRUE(vt->cursor.pending_wrap);
+    feed(vt, "\x1b[K"); /* erase to end of line */
+    ASSERT_FALSE(vt->cursor.pending_wrap);
+    bvt_free(vt);
+}
+
+/* Wide character at right margin with DECAWM off does not wrap. */
+static void test_decawm_off_wide_at_margin(void)
+{
+    BvtTerm *vt = make_term(3, 5);
+    feed(vt, "\x1b[?7l");
+    feed(vt, "\x1b[1;4H"); /* CUP to col 3 (0-indexed col 3) */
+    /* Writing a width-2 char at col 3 in a 5-col grid: col 3 + width 2
+     * = col 5 >= cols. With DECAWM off, it overwrites at col 3. */
+    feed(vt, "\xE3\x81\x82"); /* あ — width 2 */
+    /* The wide char should be written at col 3, not wrapped. */
+    ASSERT_EQ(bvt_get_cell(vt, 0, 3)->cp, 0x3042u);
+    ASSERT_EQ(bvt_get_cell(vt, 0, 3)->width, 2);
+    /* Row 1 should be untouched — no wrap occurred. */
+    ASSERT_EQ(bvt_get_cell(vt, 1, 0)->cp, 0u);
+    bvt_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -1413,5 +1524,11 @@ int main(int argc, char *argv[])
     RUN_TEST(test_reflow_preserves_styles);
     RUN_TEST(test_reflow_disabled);
     RUN_TEST(test_wrap);
+    RUN_TEST(test_decawm_default_on);
+    RUN_TEST(test_decawm_off_no_wrap);
+    RUN_TEST(test_decawm_reenable);
+    RUN_TEST(test_decawm_bottom_right_no_scroll);
+    RUN_TEST(test_erase_in_line_clears_pending_wrap);
+    RUN_TEST(test_decawm_off_wide_at_margin);
     TEST_SUMMARY();
 }

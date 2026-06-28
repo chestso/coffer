@@ -156,6 +156,7 @@ typedef enum
     BVT_MODE_ALTSCREEN,
     BVT_MODE_CURSOR_VISIBLE,
     BVT_MODE_CURSOR_BLINK,
+    BVT_MODE_DECAWM,        /* Auto-Wrap Mode, DECSET ?7 — default on */
     BVT_MODE_REVERSE_VIDEO, /* DECSCNM */
     BVT_MODE_BRACKETED_PASTE,
     BVT_MODE_MOUSE_X10,          /* DECSET 9 */
