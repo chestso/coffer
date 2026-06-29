@@ -909,7 +909,7 @@ static void test_altscreen_save_restore(void)
  * Separately: cursor visibility (DECTCEM, ?25) is NOT part of the DECSC/DECRC
  * save register, matching xterm — so 1049l must not restore an old visibility,
  * and must leave the app's own cnorm (\E[?12l\E[?25h, sent before \E[?1049l by
- * ncurses' endwin and by bloom-boba) intact. Clobbering it left the shell prompt
+ * ncurses' endwin and by boba) intact. Clobbering it left the shell prompt
  * with a hidden cursor (the "stopped blinking" symptom).
  *
  * Write bare ESC 7 / ESC 8 as the concatenated literal "\x1b" "7" — a naive
@@ -938,7 +938,7 @@ static void test_altscreen_decsc_does_not_clobber_1049(void)
              "7\x1b[3;9r\x1b"
              "8\n\x1b[1;10r\x1b[8;1H");
 
-    /* Real exit: ncurses' endwin (and bloom-boba's stop) re-shows the cursor
+    /* Real exit: ncurses' endwin (and boba's stop) re-shows the cursor
      * with cnorm, then leaves the alt screen. The ?25h must survive 1049l. */
     feed(vt, "\x1b[?12l\x1b[?25h"); /* cnorm: steady + visible */
     feed(vt, "\x1b[?1049l");        /* exit altscreen — restores MAIN register (slot[0]) */
