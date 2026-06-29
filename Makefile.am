@@ -1,6 +1,6 @@
 # Top-level Makefile.am for bloom-vt
 
-SUBDIRS = src include tests
+SUBDIRS = src include tests contrib
 
 ACLOCAL_AMFLAGS = -I m4
 
@@ -23,7 +23,7 @@ EXTRA_DIST = \
 format:
 	@if command -v clang-format >/dev/null 2>&1; then \
 	    echo "Formatting C/C++ with clang-format..."; \
-	    find $(top_srcdir)/src $(top_srcdir)/include $(top_srcdir)/tests \
+	    find $(top_srcdir)/src $(top_srcdir)/include $(top_srcdir)/tests $(top_srcdir)/contrib \
 	        \( -name '*.c' -o -name '*.h' \) -print0 \
 	        | xargs -0 clang-format -i; \
 	else \

@@ -126,6 +126,8 @@ AC_CONFIG_FILES([
     src/Makefile
     include/Makefile
     tests/Makefile
+    contrib/Makefile
+    contrib/bvt-debug/Makefile
     bloom-vt.pc
 ])
 
