@@ -6,7 +6,7 @@ vocabulary, the engine-side state machine, the public C API, rasterization,
 memory management, and interaction with VT subsystems (scroll, clear, resize).
 
 For the host-side renderer design (texture cache, compositing, linear-light
-pipeline), see the bloom-terminal documentation.
+pipeline), see the portty documentation.
 
 ---
 

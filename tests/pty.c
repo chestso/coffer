@@ -165,8 +165,8 @@ PtyContext *pty_create(int rows, int cols, char *const argv[])
         // matterhorn, etc.) can parse it. 24-bit colour still works via
         // Tc/RGB flags and COLORTERM=truecolor for apps using modern
         // detection. Apps that want the full ncurses-parseable entry
-        // with 24-bit setaf/setab/Setulc can set TERM=bloom-terminal-256color.
-        setenv("TERM", "bloom-terminal-vty-256color", 1);
+        // with 24-bit setaf/setab/Setulc can set TERM=portty-256color.
+        setenv("TERM", "portty-vty-256color", 1);
 
         // Point to our installed terminfo database
 #ifdef BLOOM_DATADIR
@@ -209,7 +209,7 @@ PtyContext *pty_create(int rows, int cols, char *const argv[])
         // Advertise kitty keyboard protocol support to TUIs that
         // gate progressive enhancement on TERM_PROGRAM rather than
         // probing via XTVERSION. Claude Code, Helix, and Neovim all
-        // allowlist a small set of TERM_PROGRAM values; bloom-terminal
+        // allowlist a small set of TERM_PROGRAM values; portty
         // isn't in that list, so we identify as `ghostty` — the
         // architecturally closest peer (in-process VT engine, no
         // libvterm) — to opt into the kitty kb push that Shift+Enter,

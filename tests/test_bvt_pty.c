@@ -380,7 +380,7 @@ static void test_cf_brick_inline_preserves_history(void)
                            /* Fill the screen with 16 prompts, then run cf. cf is a brick TUI
                             * that draws inline (no altscreen) and uses DSR 6 to discover the
                             * cursor row before drawing. Matches the user-reported geometry
-                            * (`bloom-terminal -g 120x40`). */
+                            * (`portty -g 120x40`). */
                            "for i in $(seq 1 16); do echo \"prompt $i\"; done; "
                            "/home/thomasc/.local/bin/cf",
                            NULL };

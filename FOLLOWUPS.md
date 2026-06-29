@@ -3,10 +3,10 @@
 Living checklist for bloom-vt. Promote items to PRs as they get worked
 on. Order is roughly priority, not strict dependency.
 
-Scope: this file tracks bloom-vt only. Items relating to bloom-terminal's
+Scope: this file tracks bloom-vt only. Items relating to portty's
 wrapper of bloom-vt (PNG harness, SDL3 / GTK4 platform layers, renderer
-work) live in bloom-terminal's own roadmap and are tagged here as
-**[bloom-terminal]** when referenced for context.
+work) live in portty's own roadmap and are tagged here as
+**[portty]** when referenced for context.
 
 ## Headless interactive testing infrastructure
 
@@ -16,22 +16,22 @@ work) live in bloom-terminal's own roadmap and are tagged here as
   asserts on `bvt_get_cell` / `bvt_get_cursor` / `bvt_get_scrollback_lines` /
   `bvt_get_title`. **Status: done.** In tree and runs under `make check`.
 
-- **[bloom-terminal] B. `bloom-terminal -P --exec CMD [--wait MS]`** —
-  visual A/B harness in bloom-terminal's `src/png_mode.c`.
-- **[bloom-terminal] C. `bloom-terminal --headless --trace=PATH`** —
+- **[portty] B. `portty -P --exec CMD [--wait MS]`** —
+  visual A/B harness in portty's `src/png_mode.c`.
+- **[portty] C. `portty --headless --trace=PATH`** —
   full-stack harness with stubbed SDL3 and a synthetic key protocol on
   stdin.
-- **[bloom-terminal] D. `--exec` with input scripting** — extends B with
+- **[portty] D. `--exec` with input scripting** — extends B with
   `--input=BYTES` for full keystroke-to-PNG round-trip regression tests.
 
-B / C / D live in bloom-terminal's roadmap, not this one.
+B / C / D live in portty's roadmap, not this one.
 
-`scripts/pty_record.py` (in bloom-terminal) is a simpler cousin to C —
+`scripts/pty_record.py` (in portty) is a simpler cousin to C —
 Python, no SDL, no bloom-vt — for diagnosing what a TUI emits _before_
 any terminal renders it. Useful when a TUI's progressive enhancement
 seems to silently fail: often the answer is that the TUI never tried.
 
-## [bloom-terminal] Soak test status (PNG mode A/B via `-P --exec`)
+## [portty] Soak test status (PNG mode A/B via `-P --exec`)
 
 **Byte-identical to libvterm** (acceptance: pass without further work):
 
@@ -69,9 +69,9 @@ assertions instead):
 
 - htop / btop / live monitors
 
-## [bloom-terminal] Manual interactive sweep (workstation with display only)
+## [portty] Manual interactive sweep (workstation with display only)
 
-Run the binary directly with `BLOOM_TERMINAL_VT=bloomvt`:
+Run the binary directly with `PORTTY_VT=bloomvt`:
 
 - `vim`, `nvim`, `emacs -nw`
 - `htop`, `btop`, `lazygit`, `claude-code`
@@ -83,11 +83,11 @@ Run the binary directly with `BLOOM_TERMINAL_VT=bloomvt`:
 
 ## Extraction history (done)
 
-bloom-vt was extracted from bloom-terminal across steps 15–18:
+bloom-vt was extracted from portty across steps 15–18:
 
 - Step 15 (d5e62d8 + aae22d7): bloom-vt became the default and only
-  backend in bloom-terminal. libvterm, `term_vt.c`, the
-  `BLOOM_TERMINAL_VT` env-var dispatch, the `ext_grid` SGR rewriting,
+  backend in portty. libvterm, `term_vt.c`, the
+  `PORTTY_VT` env-var dispatch, the `ext_grid` SGR rewriting,
   and the libvterm cross-compile blocks are gone.
 - Step 16 (7225bd7): VS16 shift hack removal — `TerminalRowIter` is a
   plain `vt_col += cell.width` walk.
@@ -98,7 +98,7 @@ bloom-vt was extracted from bloom-terminal across steps 15–18:
   standalone autotools project with `bloom-vt.pc` for pkg-config
   consumers.
 
-Original detail lives in `git log` of bloom-terminal.
+Original detail lives in `git log` of portty.
 
 ## Planned
 
@@ -123,7 +123,7 @@ boundary into a scrollback page. Public accessor:
 `tests/test_bvt_parser.c::test_osc8_*` (9 tests).
 
 Rendering — clickable link styling, hover state, click dispatch — is
-**[bloom-terminal]**'s next slice.
+**[portty]**'s next slice.
 
 ## Investigate
 
@@ -141,13 +141,13 @@ Rendering — clickable link styling, hover state, click dispatch — is
 
 - **Kitty graphics protocol.**
 - **Synchronized output** (mode 2026) — easy to add once parser is solid.
-- **Image-cell background protocol** — sixel scrolling is **[bloom-terminal]**'s
+- **Image-cell background protocol** — sixel scrolling is **[portty]**'s
   domain (handled by its sixel layer).
-- **Right-to-left text shaping** — handled at HarfBuzz in **[bloom-terminal]**,
+- **Right-to-left text shaping** — handled at HarfBuzz in **[portty]**,
   not at the VT layer.
 - **OSC 8 link rendering / click dispatch / hover styling** —
-  **[bloom-terminal]**. bloom-vt parses and stores OSC 8 (see "Planned"
-  above); rendering it as clickable underlined text is bloom-terminal's
+  **[portty]**. bloom-vt parses and stores OSC 8 (see "Planned"
+  above); rendering it as clickable underlined text is portty's
   job.
 - **OSC 8 `id=` continuity parameter** — parsed-and-discarded for v1.
   Adjacent same-URI runs already share an interned id by construction
@@ -229,7 +229,7 @@ until a concrete consumer asks for them.
   instead of `-1/0`~~ — fixed in `src/term_bvt.c`; renderer was treating
   every cell as missing and PNGs came out 1 cell wide.
 - ~~PNG mode hardcoded the libvterm backend~~ — `src/png_mode.c` now
-  honors `BLOOM_TERMINAL_VT` so A/B comparison works.
+  honors `PORTTY_VT` so A/B comparison works.
 - ~~Reverse video (`\033[7m … \033[27m`) PNG diverged from libvterm~~ —
   `term_bvt.c::convert_cell` now pre-swaps fg/bg and clears
   `bg.is_default`, matching the libvterm backend. Byte-identical PNG.
@@ -251,7 +251,7 @@ until a concrete consumer asks for them.
   produces `#FFD700`, matching xterm / iTerm / foot / Alacritty. Document
   in CLAUDE.md when default flips.
 - ~~Plain `\033[4m` underline diverged from libvterm~~ — _accepted
-  divergence_. bloom-terminal's libvterm wrapper at `src/term_vt.c:307`
+  divergence_. portty's libvterm wrapper at `src/term_vt.c:307`
   deliberately rewrites plain SGR 4 to dotted (`ext_ul_style = 4`).
   Standard ECMA-48 SGR 4 = single underline. bvt follows the standard
   and renders `\033[4m` as single underline, matching vim, less, man,

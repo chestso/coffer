@@ -3,7 +3,7 @@
 A standalone virtual terminal engine in C — parser, grid, scrollback, reflow,
 charsets, kitty keyboard protocol, sixel and Lottie graphics — with no
 external dependencies. Extracted
-from [bloom-terminal](https://github.com/thomas-christensen/bloom-terminal),
+from [portty](https://github.com/thomas-christensen/portty),
 where it replaces libvterm.
 
 ## What it does
@@ -38,7 +38,7 @@ where it replaces libvterm.
   with `bvt_lottie_tick()`. Rasterization is handled by ThorVG (optional
   dependency, auto-detected at configure time); when ThorVG is absent the APC
   sequences are still accepted but RGBA buffers are zeroed. A Python TUI
-  player ([plotty](https://codeberg.org/thomasc/bloom-terminal/src/branch/master/bloom-terminal/contrib/plotty))
+  player ([plotty](https://codeberg.org/thomasc/portty/src/branch/master/portty/contrib/plotty))
   provides interactive playback with keyboard controls for pause, seek,
   speed, opacity, and layer toggling.
 - **Windows ConPTY note:** Windows ConPTY intercepts and re-serialises VT output
