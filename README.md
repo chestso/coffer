@@ -274,7 +274,7 @@ The full API is in [`include/coffer/coffer.h`](include/coffer/coffer.h).
 
 ## Acknowledgments
 
-The default 16-color ANSI palette is [CharmTone](https://github.com/charmbracelet/x/tree/main/exp/charmtone), the palette behind [charm.land](https://charm.land) — with thanks to the folks at [Charmbracelet](https://charm.sh) for making the terminal a more colorful place. 🌸
+The default 16-color ANSI palette is [CharmTone](https://github.com/charmbracelet/x/tree/main/exp/charmtone) from [Charmbracelet](https://charm.land) — thanks for making the terminal a more colorful place. 🌸
 
 ## License
 
