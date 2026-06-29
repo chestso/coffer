@@ -276,6 +276,10 @@ struct BvtTerm
      * relative to the active scroll region instead of the full screen,
      * and the cursor is confined to the scroll region. */
     bool decom;
+    /* Insert/Replace Mode (IRM, CSI 4h/4l). When on, printing a character
+     * inserts it at the cursor position, shifting existing cells right;
+     * cells shifted past the right margin are lost. Default off. */
+    bool insert_mode;
 
     /* Kitty keyboard protocol flag stack. Index 0 is always the active
      * baseline (zero = protocol off, identical to legacy behaviour);

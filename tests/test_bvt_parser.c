@@ -1454,6 +1454,76 @@ static void test_decawm_off_wide_at_margin(void)
     bvt_free(vt);
 }
 
+static void test_irm_insert_char(void)
+{
+    /* IRM on: printing a character inserts it, shifting existing cells
+     * right — equivalent to ICH 1 before each print. */
+    BvtTerm *vt = make_term(2, 6);
+    feed(vt, "ABCDEF\r"); /* row 0 = ABCDEF */
+    feed(vt, "\x1b[3C");  /* CUF 3 → col 3 */
+    feed(vt, "\x1b[4h");  /* IRM on */
+    feed(vt, "X");        /* insert X at col 3, shift DEF right */
+    /* A B C X D E (F shifted off) */
+    ASSERT_EQ(bvt_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 2)->cp, (uint32_t)'C');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 3)->cp, (uint32_t)'X');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 4)->cp, (uint32_t)'D');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 5)->cp, (uint32_t)'E');
+    bvt_free(vt);
+}
+
+static void test_irm_off_restores_replace(void)
+{
+    /* IRM on then off: printing returns to replace mode. */
+    BvtTerm *vt = make_term(2, 6);
+    feed(vt, "ABCDEF\r"); /* row 0 = ABCDEF */
+    feed(vt, "\x1b[3C");  /* CUF 3 → col 3 */
+    feed(vt, "\x1b[4h");  /* IRM on */
+    feed(vt, "X");        /* insert X at col 3 */
+    feed(vt, "\x1b[4l");  /* IRM off */
+    feed(vt, "Y");        /* replace mode: overwrite col 4 */
+    /* A B C X Y E (D was overwritten) */
+    ASSERT_EQ(bvt_get_cell(vt, 0, 3)->cp, (uint32_t)'X');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 4)->cp, (uint32_t)'Y');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 5)->cp, (uint32_t)'E');
+    bvt_free(vt);
+}
+
+static void test_irm_crush_pattern(void)
+{
+    /* Crush uses IRM to insert a character into existing text.
+     * Write "command", move cursor back to col 4, IRM on, insert 's'
+     * at col 4 → existing text shifts right. */
+    BvtTerm *vt = make_term(2, 20);
+    feed(vt, "command"); /* cursor at col 7 */
+    feed(vt, "\x1b[4G"); /* CUP col 4 (0-based col 3) */
+    feed(vt, "\x1b[4h"); /* IRM on */
+    feed(vt, "s");       /* insert 's' at col 3, shift 'mand' right */
+    feed(vt, "\x1b[4l"); /* IRM off */
+    /* c o m s m a n d ... */
+    ASSERT_EQ(bvt_get_cell(vt, 0, 0)->cp, (uint32_t)'c');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 2)->cp, (uint32_t)'m');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 3)->cp, (uint32_t)'s');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 4)->cp, (uint32_t)'m');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 7)->cp, (uint32_t)'d');
+    bvt_free(vt);
+}
+
+static void test_irm_at_right_margin(void)
+{
+    /* IRM insert at right margin: rightmost cell is shifted off. */
+    BvtTerm *vt = make_term(2, 4);
+    feed(vt, "ABCD\r");  /* row 0 = ABCD */
+    feed(vt, "\x1b[2C"); /* CUF 2 → col 2 */
+    feed(vt, "\x1b[4h"); /* IRM on */
+    feed(vt, "X");       /* insert X at col 2, D shifted off */
+    /* A B X C (D lost) */
+    ASSERT_EQ(bvt_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 2)->cp, (uint32_t)'X');
+    ASSERT_EQ(bvt_get_cell(vt, 0, 3)->cp, (uint32_t)'C');
+    bvt_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -1530,5 +1600,9 @@ int main(int argc, char *argv[])
     RUN_TEST(test_decawm_bottom_right_no_scroll);
     RUN_TEST(test_erase_in_line_clears_pending_wrap);
     RUN_TEST(test_decawm_off_wide_at_margin);
+    RUN_TEST(test_irm_insert_char);
+    RUN_TEST(test_irm_off_restores_replace);
+    RUN_TEST(test_irm_crush_pattern);
+    RUN_TEST(test_irm_at_right_margin);
     TEST_SUMMARY();
 }

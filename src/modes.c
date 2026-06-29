@@ -152,6 +152,7 @@ void bvt_full_reset(BvtTerm *vt)
     vt->decckm = false;
     vt->deckpam = false;
     vt->decom = false;
+    vt->insert_mode = false;
 
     /* The bug this exists to fix: pop every kitty keyboard flag.
      * Without this, a TUI that pushed `CSI > 1 u` and crashed leaves

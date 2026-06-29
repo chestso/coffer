@@ -272,6 +272,10 @@ static void commit_cluster(BvtTerm *vt, const uint32_t *cps, uint32_t len)
             vt->cursor.row++;
     }
 
+    /* IRM: shift existing cells right before writing. */
+    if (vt->insert_mode)
+        bvt_insert_chars(vt, width);
+
     BvtCell *cell = &vt->grid->cells[(size_t)vt->cursor.row * vt->cols + vt->cursor.col];
     cell->cp = cps[0];
     cell->grapheme_id = (len > 1) ? bvt_grapheme_intern(vt, vt->grid, cps, len) : 0;

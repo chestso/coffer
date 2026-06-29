@@ -305,7 +305,14 @@ static void mode_set(BvtTerm *vt, bool on)
     for (int i = 0; i < p->param_count; ++i) {
         uint32_t m = p->params[i];
         if (!dec) {
-            /* ANSI modes — minimal handling. */
+            /* ANSI modes. */
+            switch (m) {
+            case 4: /* IRM — Insert/Replace Mode */
+                vt->insert_mode = on;
+                break;
+            default:
+                break;
+            }
             continue;
         }
         switch (m) {
