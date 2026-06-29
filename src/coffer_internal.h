@@ -1,22 +1,22 @@
 /*
- * bloom-vt internal types — not part of the public API.
+ * coffer internal types — not part of the public API.
  *
- * Defines the BvtTerm struct, the page layout, the style intern table,
+ * Defines the CfrTerm struct, the page layout, the style intern table,
  * and the grapheme arena. These exist in this header (rather than each
  * .c file) so that all internal translation units share the layout
- * without exposing it through bloom_vt.h.
+ * without exposing it through coffer.h.
  */
 
-#ifndef BLOOM_VT_INTERNAL_H
-#define BLOOM_VT_INTERNAL_H
+#ifndef COFFER_INTERNAL_H
+#define COFFER_INTERNAL_H
 
-#include <bloom-vt/bloom_vt.h>
+#include <coffer/coffer.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 
 /*
- * BVT_BUG_CHECK — invariant assertion that aborts on violation.
+ * CFR_BUG_CHECK — invariant assertion that aborts on violation.
  *
  * These guard documented invariants at three audit-identified fragile
  * sites in the engine (style intern after realloc, scrollback push
@@ -29,10 +29,10 @@
  * branch in non-hot paths and the benefit is fail-fast on bugs that
  * would otherwise scribble heap minutes later.
  */
-#define BVT_BUG_CHECK(cond, ...)                                     \
+#define CFR_BUG_CHECK(cond, ...)                                     \
     do {                                                             \
         if (__builtin_expect(!(cond), 0)) {                          \
-            fprintf(stderr, "BLOOM-VT BUG: " __VA_ARGS__);           \
+            fprintf(stderr, "COFFER BUG: " __VA_ARGS__);             \
             fprintf(stderr, " at %s:%d (!%s)\n", __FILE__, __LINE__, \
                     #cond);                                          \
             fflush(stderr);                                          \
@@ -44,17 +44,17 @@
 /* Tunables                                                            */
 /* ------------------------------------------------------------------ */
 
-#define BVT_PAGE_BYTES         (64u * 1024u)
-#define BVT_OSC_BUF_BYTES      65536u
-#define BVT_CSI_PARAM_MAX      32u
-#define BVT_INTERMEDIATE_MAX   4u
-#define BVT_DEFAULT_SCROLLBACK 1000
-#define BVT_SB_PAGE_ROWS       64u /* rows per scrollback page */
+#define CFR_PAGE_BYTES         (64u * 1024u)
+#define CFR_OSC_BUF_BYTES      65536u
+#define CFR_CSI_PARAM_MAX      32u
+#define CFR_INTERMEDIATE_MAX   4u
+#define CFR_DEFAULT_SCROLLBACK 1000
+#define CFR_SB_PAGE_ROWS       64u /* rows per scrollback page */
 
 /* Grapheme arena: codepoints / dedup table initial sizes (bytes). */
-#define BVT_ARENA_CP_INIT    1024u
-#define BVT_ARENA_DEDUP_INIT 64u
-#define BVT_STYLES_INIT      16u
+#define CFR_ARENA_CP_INIT    1024u
+#define CFR_ARENA_DEDUP_INIT 64u
+#define CFR_STYLES_INIT      16u
 
 /* ------------------------------------------------------------------ */
 /* Style intern table                                                  */
@@ -62,12 +62,12 @@
 
 typedef struct
 {
-    BvtStyle *entries; /* index 0 reserved for the default style */
+    CfrStyle *entries; /* index 0 reserved for the default style */
     uint32_t count;
     uint32_t capacity; /* power of two */
     uint32_t *index;   /* open-addressed: hash slot -> entries[] index */
     uint32_t index_capacity;
-} BvtStyleTable;
+} CfrStyleTable;
 
 /* ------------------------------------------------------------------ */
 /* Grapheme arena                                                      */
@@ -86,7 +86,7 @@ typedef struct
     uint32_t *dedup_index;   /* open-addressed: hash slot -> arena offset */
     uint32_t dedup_capacity; /* power of two */
     uint32_t dedup_count;    /* live entries in dedup_index */
-} BvtGraphemeArena;
+} CfrGraphemeArena;
 
 /* ------------------------------------------------------------------ */
 /* Hyperlink intern table (OSC 8)                                       */
@@ -111,31 +111,31 @@ typedef struct
     uint16_t capacity_ids; /* offsets/lengths capacity */
     uint16_t *dedup_index; /* open-addressed hash slot -> id, 0 = empty */
     uint32_t dedup_capacity;
-} BvtHyperlinkTable;
+} CfrHyperlinkTable;
 
 /* ------------------------------------------------------------------ */
 /* Page                                                                */
 /* ------------------------------------------------------------------ */
 
-typedef struct BvtPage
+typedef struct CfrPage
 {
-    struct BvtPage *prev, *next;
+    struct CfrPage *prev, *next;
     uint16_t cols;
     uint16_t row_count;
     uint16_t row_capacity;
     uint16_t _pad;
 
-    BvtCell *cells;     /* row_capacity * cols */
+    CfrCell *cells;     /* row_capacity * cols */
     uint8_t *row_flags; /* per-row flags (currently: WRAPLINE on last cell of row) */
 
-    BvtStyleTable styles;
-    BvtGraphemeArena graphemes;
-    BvtHyperlinkTable hyperlinks;
+    CfrStyleTable styles;
+    CfrGraphemeArena graphemes;
+    CfrHyperlinkTable hyperlinks;
 
     /* No flexible array yet — initial scaffold uses sub-allocations.
      * The plan calls for a single backing buffer; we'll consolidate
      * once the grid is implemented. */
-} BvtPage;
+} CfrPage;
 
 /* ------------------------------------------------------------------ */
 /* Parser state                                                        */
@@ -143,27 +143,27 @@ typedef struct BvtPage
 
 typedef enum
 {
-    BVT_STATE_GROUND = 0,
-    BVT_STATE_ESCAPE,
-    BVT_STATE_ESCAPE_INTERMEDIATE,
-    BVT_STATE_CSI_ENTRY,
-    BVT_STATE_CSI_PARAM,
-    BVT_STATE_CSI_INTERMEDIATE,
-    BVT_STATE_CSI_IGNORE,
-    BVT_STATE_DCS_ENTRY,
-    BVT_STATE_DCS_PARAM,
-    BVT_STATE_DCS_INTERMEDIATE,
-    BVT_STATE_DCS_PASSTHROUGH,
-    BVT_STATE_DCS_IGNORE,
-    BVT_STATE_OSC_STRING,
-    BVT_STATE_SOS_PM_STRING,
-    BVT_STATE_APC_STRING,
-} BvtParserState;
+    CFR_STATE_GROUND = 0,
+    CFR_STATE_ESCAPE,
+    CFR_STATE_ESCAPE_INTERMEDIATE,
+    CFR_STATE_CSI_ENTRY,
+    CFR_STATE_CSI_PARAM,
+    CFR_STATE_CSI_INTERMEDIATE,
+    CFR_STATE_CSI_IGNORE,
+    CFR_STATE_DCS_ENTRY,
+    CFR_STATE_DCS_PARAM,
+    CFR_STATE_DCS_INTERMEDIATE,
+    CFR_STATE_DCS_PASSTHROUGH,
+    CFR_STATE_DCS_IGNORE,
+    CFR_STATE_OSC_STRING,
+    CFR_STATE_SOS_PM_STRING,
+    CFR_STATE_APC_STRING,
+} CfrParserState;
 
 typedef struct
 {
-    BvtParserState state;
-    uint32_t params[BVT_CSI_PARAM_MAX];
+    CfrParserState state;
+    uint32_t params[CFR_CSI_PARAM_MAX];
     /* Bit i set ⇒ params[i] was introduced by ':' (a subparam of the
      * preceding param), not by ';'. Used to distinguish e.g. SGR 4:3
      * (curly underline) from 4;3 (underline + italic), and to detect the
@@ -171,31 +171,31 @@ typedef struct
     uint32_t param_is_subparam;
     uint8_t param_count;
     bool param_present; /* whether the current slot has a digit */
-    uint8_t intermediates[BVT_INTERMEDIATE_MAX];
+    uint8_t intermediates[CFR_INTERMEDIATE_MAX];
     uint8_t intermediate_count;
     /* UTF-8 decoder state (Bjoern Hoehrmann) */
     uint32_t utf8_state;
     uint32_t utf8_codepoint;
     /* OSC accumulator */
-    uint8_t osc_buf[BVT_OSC_BUF_BYTES];
+    uint8_t osc_buf[CFR_OSC_BUF_BYTES];
     uint16_t osc_len;
     bool osc_truncated;
     /* APC accumulator */
-    uint8_t apc_buf[BVT_OSC_BUF_BYTES];
+    uint8_t apc_buf[CFR_OSC_BUF_BYTES];
     uint16_t apc_len;
     bool apc_truncated;
     /* DCS streaming state — passthrough emits chunks via callback */
     bool dcs_initial_sent;
     bool dcs_is_sixel;                           /* current DCS is a sixel (final byte 'q') — handled internally */
-    uint8_t dcs_intro[BVT_INTERMEDIATE_MAX + 4]; /* params + final */
+    uint8_t dcs_intro[CFR_INTERMEDIATE_MAX + 4]; /* params + final */
     uint8_t dcs_intro_len;
-} BvtParser;
+} CfrParser;
 
 /* ------------------------------------------------------------------ */
 /* Cursor / pen state                                                  */
 /* ------------------------------------------------------------------ */
 
-#define BVT_CLUSTER_MAX 16 /* max codepoints in a single grapheme cluster */
+#define CFR_CLUSTER_MAX 16 /* max codepoints in a single grapheme cluster */
 
 typedef struct
 {
@@ -203,43 +203,43 @@ typedef struct
     bool visible;
     bool blink;
     bool pending_wrap;     /* "deferred wrap" — DEC behavior at right margin */
-    BvtStyle pen;          /* current SGR pen */
+    CfrStyle pen;          /* current SGR pen */
     uint16_t hyperlink_id; /* OSC 8 active link, 0 = none */
     /* Pending grapheme cluster — codepoints accumulated since the last
      * boundary. Committed as a single cell on the next break or on any
      * forced flush (CSI dispatch, C0 control, etc.). */
-    uint32_t cluster_buf[BVT_CLUSTER_MAX];
+    uint32_t cluster_buf[CFR_CLUSTER_MAX];
     uint8_t cluster_len;
-} BvtCursorState;
+} CfrCursorState;
 
 /* ------------------------------------------------------------------ */
 /* The terminal                                                        */
 /* ------------------------------------------------------------------ */
 
-struct BvtTerm
+struct CfrTerm
 {
     int rows;
     int cols;
 
     /* Active grid (visible). For now, exactly one page; later may chain. */
-    BvtPage *grid;
+    CfrPage *grid;
 
     /* Alternate screen — saved when in altscreen. */
-    BvtPage *altgrid;
+    CfrPage *altgrid;
     bool in_altscreen;
 
     /* Scrollback page ring (head = most recent). */
-    BvtPage *sb_head;
-    BvtPage *sb_tail;
+    CfrPage *sb_head;
+    CfrPage *sb_tail;
     int sb_lines;
     int sb_capacity;
 
-    BvtCursorState cursor;
+    CfrCursorState cursor;
     /* One saved-cursor register per screen: [0]=normal, [1]=alt. DECSC/DECRC
      * and the ANSI.SYS CSI s/u forms save/restore the *active* screen's
      * register, matching xterm — so a TUI's DECSC inside the alt screen can't
      * clobber the cursor that altscreen 1049 stashed for the normal screen. */
-    BvtCursorState saved_cursor[2];
+    CfrCursorState saved_cursor[2];
 
     /* Scroll region (DECSTBM). Inclusive. */
     int scroll_top;
@@ -248,12 +248,12 @@ struct BvtTerm
     /* Tab stops. Bit per column. */
     uint8_t *tabstops;
 
-    BvtParser parser;
-    BvtCallbacks callbacks;
+    CfrParser parser;
+    CfrCallbacks callbacks;
     void *callback_user;
-    BvtAllocator alloc;
+    CfrAllocator alloc;
 
-    /* Modes. Indexed by BvtMode enum value. */
+    /* Modes. Indexed by CfrMode enum value. */
     bool modes[32];
 
     /* Character set designations. ESC ( c | ) c | * c | + c stores the
@@ -298,10 +298,10 @@ struct BvtTerm
     char *title;
 
     /* Damage accumulator (rectangular union since last clear). */
-    BvtRect damage;
+    CfrRect damage;
     bool damage_dirty;
 
-    /* Cursor position/visibility at the last bvt_damage_flush. A cursor-only
+    /* Cursor position/visibility at the last cfr_damage_flush. A cursor-only
      * move (CUP, arrows) changes no grid cell and so emits no damage; flush
      * folds it in by dirtying the old and new cursor cells. */
     int dmg_cursor_row;
@@ -313,19 +313,19 @@ struct BvtTerm
      * row 0 — it advances by one each time a line scrolls off the top
      * into history, so an image stored with an absolute anchor line
      * tracks the text it sits on with no per-image bookkeeping. */
-    struct BvtSixelState *sixel;
+    struct CfrSixelState *sixel;
     int cell_w_px; /* px per cell, set at creation */
     int cell_h_px;
     long sixel_abs_top;
 
     /* Lottie animations (lottie.c). Lazily allocated on first APC.
      * Shares sixel_abs_top for absolute-line anchoring. */
-    struct BvtLottieState *lottie;
+    struct CfrLottieState *lottie;
 };
 
 /* The saved-cursor register for the currently active screen. DECSC/DECRC and
  * CSI s/u operate on this; altscreen 1049 always uses saved_cursor[0]. */
-static inline BvtCursorState *bvt_active_saved_cursor(BvtTerm *vt)
+static inline CfrCursorState *cfr_active_saved_cursor(CfrTerm *vt)
 {
     return &vt->saved_cursor[vt->in_altscreen ? 1 : 0];
 }
@@ -335,7 +335,7 @@ static inline BvtCursorState *bvt_active_saved_cursor(BvtTerm *vt)
  * modes, not part of the DECSC/DECRC save register — so they survive the
  * restore. Otherwise a TUI's final `?25h` would be clobbered by the cursor
  * register saved while the cursor was hidden, leaving it stuck invisible. */
-static inline void bvt_cursor_restore(BvtTerm *vt, const BvtCursorState *src)
+static inline void cfr_cursor_restore(CfrTerm *vt, const CfrCursorState *src)
 {
     bool visible = vt->cursor.visible;
     bool blink = vt->cursor.blink;
@@ -349,61 +349,61 @@ static inline void bvt_cursor_restore(BvtTerm *vt, const BvtCursorState *src)
 /* ------------------------------------------------------------------ */
 
 /* Allocator helpers — route through vt->alloc. */
-void *bvt_alloc(BvtTerm *vt, size_t size);
-void *bvt_realloc(BvtTerm *vt, void *ptr, size_t size);
-void bvt_dealloc(BvtTerm *vt, void *ptr);
+void *cfr_alloc(CfrTerm *vt, size_t size);
+void *cfr_realloc(CfrTerm *vt, void *ptr, size_t size);
+void cfr_dealloc(CfrTerm *vt, void *ptr);
 
 /* Page lifecycle. */
-BvtPage *bvt_page_new(BvtTerm *vt, int rows, int cols);
-void bvt_page_free(BvtTerm *vt, BvtPage *page);
+CfrPage *cfr_page_new(CfrTerm *vt, int rows, int cols);
+void cfr_page_free(CfrTerm *vt, CfrPage *page);
 
 /* Style intern. Returns 0 for the default style. */
-uint32_t bvt_style_intern(BvtTerm *vt, BvtPage *page, const BvtStyle *style);
-const BvtStyle *bvt_style_lookup(const BvtPage *page, uint32_t id);
+uint32_t cfr_style_intern(CfrTerm *vt, CfrPage *page, const CfrStyle *style);
+const CfrStyle *cfr_style_lookup(const CfrPage *page, uint32_t id);
 
 /* Grapheme arena. */
-uint32_t bvt_grapheme_intern(BvtTerm *vt, BvtPage *page,
+uint32_t cfr_grapheme_intern(CfrTerm *vt, CfrPage *page,
                              const uint32_t *cps, uint32_t len);
-size_t bvt_grapheme_read(const BvtPage *page, uint32_t id,
+size_t cfr_grapheme_read(const CfrPage *page, uint32_t id,
                          uint32_t *out, size_t out_cap);
 
 /* Hyperlink intern (OSC 8). Returns id (1..UINT16_MAX), or 0 on
  * allocation failure / overflow / empty URI. */
-uint16_t bvt_hyperlink_intern(BvtTerm *vt, BvtPage *page,
+uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
                               const uint8_t *uri, uint32_t uri_len);
-size_t bvt_hyperlink_read(const BvtPage *page, uint16_t id,
+size_t cfr_hyperlink_read(const CfrPage *page, uint16_t id,
                           uint8_t *out, size_t out_cap);
-void bvt_hyperlink_free(BvtTerm *vt, BvtHyperlinkTable *t);
+void cfr_hyperlink_free(CfrTerm *vt, CfrHyperlinkTable *t);
 
 /* Parser entry. */
-void bvt_parser_init(BvtParser *p);
-void bvt_parser_feed(BvtTerm *vt, const uint8_t *bytes, size_t len);
+void cfr_parser_init(CfrParser *p);
+void cfr_parser_feed(CfrTerm *vt, const uint8_t *bytes, size_t len);
 
 /* Width helpers (width.c). */
-int bvt_codepoint_width(BvtTerm *vt, uint32_t cp);
-int bvt_cluster_width(BvtTerm *vt, const uint32_t *cps, uint32_t len);
+int cfr_codepoint_width(CfrTerm *vt, uint32_t cp);
+int cfr_cluster_width(CfrTerm *vt, const uint32_t *cps, uint32_t len);
 
 /* Grid mutators (print.c). */
-void bvt_grid_ensure(BvtTerm *vt);
-void bvt_print_codepoint(BvtTerm *vt, uint32_t cp);
-void bvt_flush_cluster(BvtTerm *vt);
-void bvt_execute_c0(BvtTerm *vt, uint8_t b);
-void bvt_scroll_up(BvtTerm *vt, int lines);
-void bvt_scroll_down(BvtTerm *vt, int lines);
-void bvt_erase_in_line(BvtTerm *vt, int mode);
-void bvt_erase_in_display(BvtTerm *vt, int mode);
+void cfr_grid_ensure(CfrTerm *vt);
+void cfr_print_codepoint(CfrTerm *vt, uint32_t cp);
+void cfr_flush_cluster(CfrTerm *vt);
+void cfr_execute_c0(CfrTerm *vt, uint8_t b);
+void cfr_scroll_up(CfrTerm *vt, int lines);
+void cfr_scroll_down(CfrTerm *vt, int lines);
+void cfr_erase_in_line(CfrTerm *vt, int mode);
+void cfr_erase_in_display(CfrTerm *vt, int mode);
 
 /* Width / grapheme break (width.c). */
-bool bvt_grapheme_break_before(uint32_t prev, uint32_t cur, void *state);
+bool cfr_grapheme_break_before(uint32_t prev, uint32_t cur, void *state);
 
 /* Palette (palette.c) — resolves 0..255 indexed colors to 0x00RRGGBB. */
-uint32_t bvt_palette_lookup(BvtTerm *vt, uint8_t idx);
+uint32_t cfr_palette_lookup(CfrTerm *vt, uint8_t idx);
 
 /* Output emit (keys.c). */
-void bvt_emit_bytes(BvtTerm *vt, const uint8_t *bytes, size_t len);
+void cfr_emit_bytes(CfrTerm *vt, const uint8_t *bytes, size_t len);
 
 /* Altscreen (modes.c). */
-void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor);
+void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor);
 
 /* RIS — full reset (modes.c). Restores the terminal to its initial
  * state: clears the kitty keyboard stack, every DEC private mode,
@@ -411,64 +411,64 @@ void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor);
  * region, tab stops, and the grid. Notifies the host via set_mode for
  * any mode that turned off, so mouse/paste/etc. observers stay in
  * sync. */
-void bvt_full_reset(BvtTerm *vt);
+void cfr_full_reset(CfrTerm *vt);
 
-/* Reflow (reflow.c). When reflow_enabled is true bvt_reflow walks the
+/* Reflow (reflow.c). When reflow_enabled is true cfr_reflow walks the
  * grid's logical lines (rows linked by WRAPLINE) and re-wraps them at
  * the new geometry, pushing overflow into scrollback. When disabled
  * (or in altscreen) it falls through to a clamp-only resize. */
-void bvt_reflow(BvtTerm *vt, int new_rows, int new_cols);
-void bvt_resize_clamp(BvtTerm *vt, int new_rows, int new_cols);
+void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols);
+void cfr_resize_clamp(CfrTerm *vt, int new_rows, int new_cols);
 
 /* Grid edits (print.c). */
-void bvt_insert_chars(BvtTerm *vt, int count);
-void bvt_delete_chars(BvtTerm *vt, int count);
-void bvt_insert_lines(BvtTerm *vt, int count);
-void bvt_delete_lines(BvtTerm *vt, int count);
-void bvt_erase_chars(BvtTerm *vt, int count);
+void cfr_insert_chars(CfrTerm *vt, int count);
+void cfr_delete_chars(CfrTerm *vt, int count);
+void cfr_insert_lines(CfrTerm *vt, int count);
+void cfr_delete_lines(CfrTerm *vt, int count);
+void cfr_erase_chars(CfrTerm *vt, int count);
 
 /* Dispatchers. */
-void bvt_csi_dispatch(BvtTerm *vt, uint8_t final);
-void bvt_esc_dispatch(BvtTerm *vt, uint8_t final);
-void bvt_osc_dispatch(BvtTerm *vt, const uint8_t *data, size_t len);
-void bvt_dcs_hook(BvtTerm *vt, uint8_t final);
-void bvt_dcs_put(BvtTerm *vt, uint8_t b);
-void bvt_dcs_unhook(BvtTerm *vt);
+void cfr_csi_dispatch(CfrTerm *vt, uint8_t final);
+void cfr_esc_dispatch(CfrTerm *vt, uint8_t final);
+void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len);
+void cfr_dcs_hook(CfrTerm *vt, uint8_t final);
+void cfr_dcs_put(CfrTerm *vt, uint8_t b);
+void cfr_dcs_unhook(CfrTerm *vt);
 
-/* Damage helper. bvt_damage_flush() is public (declared in bloom_vt.h). */
-void bvt_damage_cell(BvtTerm *vt, int row, int col);
-void bvt_damage_row(BvtTerm *vt, int row);
-void bvt_damage_all(BvtTerm *vt);
+/* Damage helper. cfr_damage_flush() is public (declared in coffer.h). */
+void cfr_damage_cell(CfrTerm *vt, int row, int col);
+void cfr_damage_row(CfrTerm *vt, int row);
+void cfr_damage_all(CfrTerm *vt);
 
 /* Scrollback (scrollback.c). */
-void bvt_scrollback_push(BvtTerm *vt, const BvtCell *src_cells, int cols, bool wrapline);
-void bvt_scrollback_clear(BvtTerm *vt);
+void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols, bool wrapline);
+void cfr_scrollback_clear(CfrTerm *vt);
 
 /* Sixel graphics (sixel.c). The state hangs off vt->sixel, allocated
  * lazily. All entry points are no-ops when no sixel has been seen. */
-void bvt_sixel_state_free(BvtTerm *vt);
+void cfr_sixel_state_free(CfrTerm *vt);
 /* DCS lifecycle, driven from dcs.c when the final byte is 'q'. */
-void bvt_sixel_begin(BvtTerm *vt, const uint32_t *params, int nparams);
-void bvt_sixel_put(BvtTerm *vt, const uint8_t *data, size_t len);
-void bvt_sixel_finish(BvtTerm *vt);
+void cfr_sixel_begin(CfrTerm *vt, const uint32_t *params, int nparams);
+void cfr_sixel_put(CfrTerm *vt, const uint8_t *data, size_t len);
+void cfr_sixel_finish(CfrTerm *vt);
 /* Grid maintenance. note_scroll is called after sixel_abs_top advances by
  * `lines`; it culls images that have scrolled out of retained scrollback.
  * clear_display_rows removes foreground images overlapping the inclusive
  * display-row range [top,bot]; clear_all removes everything. */
-void bvt_sixel_note_scroll(BvtTerm *vt, int lines);
-void bvt_sixel_clear_display_rows(BvtTerm *vt, int top, int bot);
-void bvt_sixel_clear_all(BvtTerm *vt);
+void cfr_sixel_note_scroll(CfrTerm *vt, int lines);
+void cfr_sixel_clear_display_rows(CfrTerm *vt, int top, int bot);
+void cfr_sixel_clear_all(CfrTerm *vt);
 
 /* Lottie animations (lottie.c). Lazily allocated, same pattern as sixel.
  * All entry points are no-ops when no animation has been loaded. */
-void bvt_lottie_state_free(BvtTerm *vt);
-void bvt_lottie_apc_dispatch(BvtTerm *vt, const uint8_t *body, size_t body_len);
-void bvt_lottie_note_scroll(BvtTerm *vt, int lines);
-void bvt_lottie_clear_display_rows(BvtTerm *vt, int top, int bot);
-void bvt_lottie_clear_all(BvtTerm *vt);
+void cfr_lottie_state_free(CfrTerm *vt);
+void cfr_lottie_apc_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len);
+void cfr_lottie_note_scroll(CfrTerm *vt, int lines);
+void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot);
+void cfr_lottie_clear_all(CfrTerm *vt);
 
 /* Page ownership lookup — used by cell accessors that must resolve
  * a cell's grapheme/style entry against the page that owns it. */
-const BvtPage *bvt_find_owner_page(const BvtTerm *vt, const BvtCell *cell);
+const CfrPage *cfr_find_owner_page(const CfrTerm *vt, const CfrCell *cell);
 
-#endif /* BLOOM_VT_INTERNAL_H */
+#endif /* COFFER_INTERNAL_H */

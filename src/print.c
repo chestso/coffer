@@ -1,24 +1,24 @@
 /*
- * bloom-vt — grid mutation: cell write, cursor advance, scroll, erase.
+ * coffer — grid mutation: cell write, cursor advance, scroll, erase.
  *
  * Plain ASCII printing works end-to-end here; full grapheme cluster
  * accumulation arrives once UAX #29 tables are generated. For now,
  * each codepoint becomes its own cell with width derived from
- * bvt_codepoint_width().
+ * cfr_codepoint_width().
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <string.h>
 
-void bvt_grid_ensure(BvtTerm *vt)
+void cfr_grid_ensure(CfrTerm *vt)
 {
     if (vt->grid)
         return;
-    vt->grid = bvt_page_new(vt, vt->rows, vt->cols);
+    vt->grid = cfr_page_new(vt, vt->rows, vt->cols);
     /* If allocation fails we leave grid == NULL and subsequent writes
      * become no-ops; a caller that wants strict failure can detect via
-     * bvt_get_dimensions returning rows but bvt_get_cell returning
+     * cfr_get_dimensions returning rows but cfr_get_cell returning
      * NULL. */
 }
 
@@ -26,10 +26,10 @@ void bvt_grid_ensure(BvtTerm *vt)
  * pen's style_id (BCE — Back Color Erase).  Erased cells must inherit
  * the active background colour so that \e[K and \e[J extend the
  * background to the end of line/display, matching xterm/VTE/foot. */
-static void erase_cells(BvtTerm *vt, BvtCell *dst, int count)
+static void erase_cells(CfrTerm *vt, CfrCell *dst, int count)
 {
-    uint32_t style_id = bvt_style_intern(vt, vt->grid, &vt->cursor.pen);
-    BvtCell blank = { 0 };
+    uint32_t style_id = cfr_style_intern(vt, vt->grid, &vt->cursor.pen);
+    CfrCell blank = { 0 };
     blank.cp = 0x20; /* space */
     blank.style_id = style_id;
     blank.width = 1;
@@ -37,7 +37,7 @@ static void erase_cells(BvtTerm *vt, BvtCell *dst, int count)
         dst[i] = blank;
 }
 
-static void cursor_clamp(BvtTerm *vt)
+static void cursor_clamp(CfrTerm *vt)
 {
     if (vt->cursor.row < 0)
         vt->cursor.row = 0;
@@ -49,9 +49,9 @@ static void cursor_clamp(BvtTerm *vt)
         vt->cursor.col = vt->cols - 1;
 }
 
-void bvt_scroll_up(BvtTerm *vt, int lines)
+void cfr_scroll_up(CfrTerm *vt, int lines)
 {
-    bvt_grid_ensure(vt);
+    cfr_grid_ensure(vt);
     if (!vt->grid || lines <= 0)
         return;
     int top = vt->scroll_top;
@@ -68,15 +68,15 @@ void bvt_scroll_up(BvtTerm *vt, int lines)
 
     /* Push lines off the top of the scroll region into scrollback iff
      * the region covers the full screen (no DECSTBM region active,
-     * not on altscreen). bvt owns the scrollback storage; the
+     * not on altscreen). cfr owns the scrollback storage; the
      * sb_pushline callback fires as a notification only. */
     bool push_to_sb = (top == 0 && bot == vt->rows - 1 && !vt->in_altscreen);
     if (push_to_sb) {
         for (int i = 0; i < lines; ++i) {
-            const BvtCell *row = &vt->grid->cells[(size_t)(top + i) * vt->cols];
+            const CfrCell *row = &vt->grid->cells[(size_t)(top + i) * vt->cols];
             bool wrapline =
-                (vt->grid->row_flags[top + i] & BVT_CELL_WRAPLINE) != 0u;
-            bvt_scrollback_push(vt, row, vt->cols, wrapline);
+                (vt->grid->row_flags[top + i] & CFR_CELL_WRAPLINE) != 0u;
+            cfr_scrollback_push(vt, row, vt->cols, wrapline);
             if (vt->callbacks.sb_pushline)
                 vt->callbacks.sb_pushline(row, vt->cols, wrapline,
                                           vt->callback_user);
@@ -86,9 +86,9 @@ void bvt_scroll_up(BvtTerm *vt, int lines)
          * they sit on, then cull any that scrolled out of scrollback. */
         vt->sixel_abs_top += lines;
         if (vt->sixel)
-            bvt_sixel_note_scroll(vt, lines);
+            cfr_sixel_note_scroll(vt, lines);
         if (vt->lottie)
-            bvt_lottie_note_scroll(vt, lines);
+            cfr_lottie_note_scroll(vt, lines);
     }
 
     /* Move rows up. */
@@ -96,7 +96,7 @@ void bvt_scroll_up(BvtTerm *vt, int lines)
     if (move_count > 0) {
         memmove(&vt->grid->cells[(size_t)top * vt->cols],
                 &vt->grid->cells[(size_t)(top + lines) * vt->cols],
-                (size_t)move_count * vt->cols * sizeof(BvtCell));
+                (size_t)move_count * vt->cols * sizeof(CfrCell));
         memmove(&vt->grid->row_flags[top],
                 &vt->grid->row_flags[top + lines],
                 (size_t)move_count);
@@ -109,10 +109,10 @@ void bvt_scroll_up(BvtTerm *vt, int lines)
                     vt->cols);
     memset(&vt->grid->row_flags[clear_start], 0, (size_t)lines);
 
-    bvt_damage_all(vt);
+    cfr_damage_all(vt);
 }
 
-void bvt_scroll_down(BvtTerm *vt, int lines)
+void cfr_scroll_down(CfrTerm *vt, int lines)
 {
     if (!vt->grid || lines <= 0)
         return;
@@ -131,7 +131,7 @@ void bvt_scroll_down(BvtTerm *vt, int lines)
     if (move_count > 0) {
         memmove(&vt->grid->cells[(size_t)(top + lines) * vt->cols],
                 &vt->grid->cells[(size_t)top * vt->cols],
-                (size_t)move_count * vt->cols * sizeof(BvtCell));
+                (size_t)move_count * vt->cols * sizeof(CfrCell));
         memmove(&vt->grid->row_flags[top + lines],
                 &vt->grid->row_flags[top],
                 (size_t)move_count);
@@ -142,25 +142,25 @@ void bvt_scroll_down(BvtTerm *vt, int lines)
                     vt->cols);
     memset(&vt->grid->row_flags[top], 0, (size_t)lines);
 
-    bvt_damage_all(vt);
+    cfr_damage_all(vt);
 }
 
-static void linefeed(BvtTerm *vt)
+static void linefeed(CfrTerm *vt)
 {
     if (vt->cursor.row == vt->scroll_bottom) {
-        bvt_scroll_up(vt, 1);
+        cfr_scroll_up(vt, 1);
     } else if (vt->cursor.row < vt->rows - 1) {
         vt->cursor.row++;
     }
 }
 
-static void carriage_return(BvtTerm *vt)
+static void carriage_return(CfrTerm *vt)
 {
     vt->cursor.col = 0;
     vt->cursor.pending_wrap = false;
 }
 
-static void backspace(BvtTerm *vt)
+static void backspace(CfrTerm *vt)
 {
     if (vt->cursor.col > 0) {
         vt->cursor.col--;
@@ -168,7 +168,7 @@ static void backspace(BvtTerm *vt)
     vt->cursor.pending_wrap = false;
 }
 
-static void horizontal_tab(BvtTerm *vt)
+static void horizontal_tab(CfrTerm *vt)
 {
     if (vt->cursor.col >= vt->cols - 1)
         return;
@@ -181,10 +181,10 @@ static void horizontal_tab(BvtTerm *vt)
     vt->cursor.pending_wrap = false;
 }
 
-void bvt_execute_c0(BvtTerm *vt, uint8_t b)
+void cfr_execute_c0(CfrTerm *vt, uint8_t b)
 {
     /* Any non-printable control terminates the current cluster. */
-    bvt_flush_cluster(vt);
+    cfr_flush_cluster(vt);
     switch (b) {
     case 0x07: /* BEL */
         if (vt->callbacks.bell)
@@ -225,7 +225,7 @@ void bvt_execute_c0(BvtTerm *vt, uint8_t b)
         return;
     case 0x8d: /* RI — reverse index */
         if (vt->cursor.row == vt->scroll_top)
-            bvt_scroll_down(vt, 1);
+            cfr_scroll_down(vt, 1);
         else if (vt->cursor.row > 0)
             vt->cursor.row--;
         return;
@@ -235,13 +235,13 @@ void bvt_execute_c0(BvtTerm *vt, uint8_t b)
 }
 
 /* Commit one cell from the codepoint sequence `cps[len]`. */
-static void commit_cluster(BvtTerm *vt, const uint32_t *cps, uint32_t len)
+static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
 {
-    bvt_grid_ensure(vt);
+    cfr_grid_ensure(vt);
     if (!vt->grid || len == 0)
         return;
 
-    int width = bvt_cluster_width(vt, cps, len);
+    int width = cfr_cluster_width(vt, cps, len);
     if (width <= 0) {
         /* Stray combining mark with no preceding base. Discard rather
          * than write a width-0 cell that would confuse the renderer. */
@@ -251,10 +251,10 @@ static void commit_cluster(BvtTerm *vt, const uint32_t *cps, uint32_t len)
     /* Deferred wrap — only when DECAWM is on. */
     if (vt->cursor.pending_wrap) {
         if (vt->cursor.row >= 0 && vt->cursor.row < vt->rows)
-            vt->grid->row_flags[vt->cursor.row] |= BVT_CELL_WRAPLINE;
+            vt->grid->row_flags[vt->cursor.row] |= CFR_CELL_WRAPLINE;
         vt->cursor.col = 0;
         if (vt->cursor.row == vt->scroll_bottom)
-            bvt_scroll_up(vt, 1);
+            cfr_scroll_up(vt, 1);
         else if (vt->cursor.row < vt->rows - 1)
             vt->cursor.row++;
         vt->cursor.pending_wrap = false;
@@ -262,30 +262,30 @@ static void commit_cluster(BvtTerm *vt, const uint32_t *cps, uint32_t len)
     cursor_clamp(vt);
 
     /* Wide cluster at right margin → wrap first (DECAWM only). */
-    if (width == 2 && vt->cursor.col == vt->cols - 1 && vt->modes[BVT_MODE_DECAWM]) {
+    if (width == 2 && vt->cursor.col == vt->cols - 1 && vt->modes[CFR_MODE_DECAWM]) {
         if (vt->cursor.row >= 0 && vt->cursor.row < vt->rows)
-            vt->grid->row_flags[vt->cursor.row] |= BVT_CELL_WRAPLINE;
+            vt->grid->row_flags[vt->cursor.row] |= CFR_CELL_WRAPLINE;
         vt->cursor.col = 0;
         if (vt->cursor.row == vt->scroll_bottom)
-            bvt_scroll_up(vt, 1);
+            cfr_scroll_up(vt, 1);
         else if (vt->cursor.row < vt->rows - 1)
             vt->cursor.row++;
     }
 
     /* IRM: shift existing cells right before writing. */
     if (vt->insert_mode)
-        bvt_insert_chars(vt, width);
+        cfr_insert_chars(vt, width);
 
-    BvtCell *cell = &vt->grid->cells[(size_t)vt->cursor.row * vt->cols + vt->cursor.col];
+    CfrCell *cell = &vt->grid->cells[(size_t)vt->cursor.row * vt->cols + vt->cursor.col];
     cell->cp = cps[0];
-    cell->grapheme_id = (len > 1) ? bvt_grapheme_intern(vt, vt->grid, cps, len) : 0;
-    cell->style_id = bvt_style_intern(vt, vt->grid, &vt->cursor.pen);
+    cell->grapheme_id = (len > 1) ? cfr_grapheme_intern(vt, vt->grid, cps, len) : 0;
+    cell->style_id = cfr_style_intern(vt, vt->grid, &vt->cursor.pen);
     cell->width = (uint8_t)width;
     cell->flags = 0;
     cell->hyperlink_id = vt->cursor.hyperlink_id;
 
     if (width == 2 && vt->cursor.col + 1 < vt->cols) {
-        BvtCell *cont = &vt->grid->cells[(size_t)vt->cursor.row * vt->cols + vt->cursor.col + 1];
+        CfrCell *cont = &vt->grid->cells[(size_t)vt->cursor.row * vt->cols + vt->cursor.col + 1];
         cont->cp = 0;
         cont->grapheme_id = 0;
         cont->style_id = cell->style_id;
@@ -294,10 +294,10 @@ static void commit_cluster(BvtTerm *vt, const uint32_t *cps, uint32_t len)
         cont->hyperlink_id = cell->hyperlink_id;
     }
 
-    bvt_damage_cell(vt, vt->cursor.row, vt->cursor.col);
+    cfr_damage_cell(vt, vt->cursor.row, vt->cursor.col);
 
     if (vt->cursor.col + width >= vt->cols) {
-        if (vt->modes[BVT_MODE_DECAWM]) {
+        if (vt->modes[CFR_MODE_DECAWM]) {
             vt->cursor.col = vt->cols - 1;
             vt->cursor.pending_wrap = true;
         } else {
@@ -310,7 +310,7 @@ static void commit_cluster(BvtTerm *vt, const uint32_t *cps, uint32_t len)
     }
 }
 
-void bvt_flush_cluster(BvtTerm *vt)
+void cfr_flush_cluster(CfrTerm *vt)
 {
     if (vt->cursor.cluster_len == 0)
         return;
@@ -358,7 +358,7 @@ static const uint16_t dec_graphics_table[32] = {
     /* 0x7E */ 0x00B7, /* · */
 };
 
-static uint32_t apply_charset(BvtTerm *vt, uint32_t cp)
+static uint32_t apply_charset(CfrTerm *vt, uint32_t cp)
 {
     uint8_t designation = vt->charset[vt->charset_active];
     if (designation == '0' && cp >= 0x5F && cp <= 0x7E)
@@ -366,7 +366,7 @@ static uint32_t apply_charset(BvtTerm *vt, uint32_t cp)
     return cp;
 }
 
-void bvt_print_codepoint(BvtTerm *vt, uint32_t cp)
+void cfr_print_codepoint(CfrTerm *vt, uint32_t cp)
 {
     cp = apply_charset(vt, cp);
     /* Empty cluster — start one with this codepoint. */
@@ -376,21 +376,21 @@ void bvt_print_codepoint(BvtTerm *vt, uint32_t cp)
         return;
     }
     uint32_t prev = vt->cursor.cluster_buf[vt->cursor.cluster_len - 1];
-    if (bvt_grapheme_break_before(prev, cp, NULL)) {
+    if (cfr_grapheme_break_before(prev, cp, NULL)) {
         /* Boundary: commit the pending cluster, then start a new one. */
         commit_cluster(vt, vt->cursor.cluster_buf, vt->cursor.cluster_len);
         vt->cursor.cluster_buf[0] = cp;
         vt->cursor.cluster_len = 1;
         return;
     }
-    /* No break: extend the current cluster (cap at BVT_CLUSTER_MAX). */
-    if (vt->cursor.cluster_len < BVT_CLUSTER_MAX) {
+    /* No break: extend the current cluster (cap at CFR_CLUSTER_MAX). */
+    if (vt->cursor.cluster_len < CFR_CLUSTER_MAX) {
         vt->cursor.cluster_buf[vt->cursor.cluster_len++] = cp;
     }
     /* If full, silently drop additional extends — extremely rare. */
 }
 
-void bvt_erase_in_line(BvtTerm *vt, int mode)
+void cfr_erase_in_line(CfrTerm *vt, int mode)
 {
     if (!vt->grid)
         return;
@@ -398,7 +398,7 @@ void bvt_erase_in_line(BvtTerm *vt, int mode)
     if (row < 0 || row >= vt->rows)
         return;
     vt->cursor.pending_wrap = false;
-    BvtCell *line = &vt->grid->cells[(size_t)row * vt->cols];
+    CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
     int from = 0, to = vt->cols;
     switch (mode) {
     case 0:
@@ -423,10 +423,10 @@ void bvt_erase_in_line(BvtTerm *vt, int mode)
     if (from >= to)
         return;
     erase_cells(vt, &line[from], to - from);
-    bvt_damage_row(vt, row);
+    cfr_damage_row(vt, row);
 }
 
-void bvt_insert_chars(BvtTerm *vt, int count)
+void cfr_insert_chars(CfrTerm *vt, int count)
 {
     if (!vt->grid || count <= 0)
         return;
@@ -437,17 +437,17 @@ void bvt_insert_chars(BvtTerm *vt, int count)
     if (count > vt->cols - col)
         count = vt->cols - col;
 
-    BvtCell *line = &vt->grid->cells[(size_t)row * vt->cols];
+    CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
     int move = vt->cols - col - count;
     if (move > 0) {
         memmove(&line[col + count], &line[col],
-                (size_t)move * sizeof(BvtCell));
+                (size_t)move * sizeof(CfrCell));
     }
     erase_cells(vt, &line[col], count);
-    bvt_damage_row(vt, row);
+    cfr_damage_row(vt, row);
 }
 
-void bvt_delete_chars(BvtTerm *vt, int count)
+void cfr_delete_chars(CfrTerm *vt, int count)
 {
     if (!vt->grid || count <= 0)
         return;
@@ -458,17 +458,17 @@ void bvt_delete_chars(BvtTerm *vt, int count)
     if (count > vt->cols - col)
         count = vt->cols - col;
 
-    BvtCell *line = &vt->grid->cells[(size_t)row * vt->cols];
+    CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
     int move = vt->cols - col - count;
     if (move > 0) {
         memmove(&line[col], &line[col + count],
-                (size_t)move * sizeof(BvtCell));
+                (size_t)move * sizeof(CfrCell));
     }
     erase_cells(vt, &line[vt->cols - count], count);
-    bvt_damage_row(vt, row);
+    cfr_damage_row(vt, row);
 }
 
-void bvt_erase_chars(BvtTerm *vt, int count)
+void cfr_erase_chars(CfrTerm *vt, int count)
 {
     if (!vt->grid || count <= 0)
         return;
@@ -479,12 +479,12 @@ void bvt_erase_chars(BvtTerm *vt, int count)
         return;
     if (count > vt->cols - col)
         count = vt->cols - col;
-    BvtCell *line = &vt->grid->cells[(size_t)row * vt->cols];
+    CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
     erase_cells(vt, &line[col], count);
-    bvt_damage_row(vt, row);
+    cfr_damage_row(vt, row);
 }
 
-void bvt_insert_lines(BvtTerm *vt, int count)
+void cfr_insert_lines(CfrTerm *vt, int count)
 {
     if (!vt->grid || count <= 0)
         return;
@@ -498,7 +498,7 @@ void bvt_insert_lines(BvtTerm *vt, int count)
     if (move > 0) {
         memmove(&vt->grid->cells[(size_t)(row + count) * vt->cols],
                 &vt->grid->cells[(size_t)row * vt->cols],
-                (size_t)move * vt->cols * sizeof(BvtCell));
+                (size_t)move * vt->cols * sizeof(CfrCell));
         memmove(&vt->grid->row_flags[row + count],
                 &vt->grid->row_flags[row],
                 (size_t)move);
@@ -508,12 +508,12 @@ void bvt_insert_lines(BvtTerm *vt, int count)
                     &vt->grid->cells[(size_t)(row + i) * vt->cols],
                     vt->cols);
     memset(&vt->grid->row_flags[row], 0, (size_t)count);
-    bvt_damage_all(vt);
+    cfr_damage_all(vt);
     vt->cursor.col = 0;
     vt->cursor.pending_wrap = false;
 }
 
-void bvt_delete_lines(BvtTerm *vt, int count)
+void cfr_delete_lines(CfrTerm *vt, int count)
 {
     if (!vt->grid || count <= 0)
         return;
@@ -527,7 +527,7 @@ void bvt_delete_lines(BvtTerm *vt, int count)
     if (move > 0) {
         memmove(&vt->grid->cells[(size_t)row * vt->cols],
                 &vt->grid->cells[(size_t)(row + count) * vt->cols],
-                (size_t)move * vt->cols * sizeof(BvtCell));
+                (size_t)move * vt->cols * sizeof(CfrCell));
         memmove(&vt->grid->row_flags[row],
                 &vt->grid->row_flags[row + count],
                 (size_t)move);
@@ -538,41 +538,41 @@ void bvt_delete_lines(BvtTerm *vt, int count)
                     &vt->grid->cells[(size_t)(clear_start + i) * vt->cols],
                     vt->cols);
     memset(&vt->grid->row_flags[clear_start], 0, (size_t)count);
-    bvt_damage_all(vt);
+    cfr_damage_all(vt);
     vt->cursor.col = 0;
     vt->cursor.pending_wrap = false;
 }
 
-void bvt_erase_in_display(BvtTerm *vt, int mode)
+void cfr_erase_in_display(CfrTerm *vt, int mode)
 {
-    bvt_grid_ensure(vt);
+    cfr_grid_ensure(vt);
     if (!vt->grid)
         return;
     int row = vt->cursor.row;
     switch (mode) {
     case 0:
-        bvt_erase_in_line(vt, 0);
+        cfr_erase_in_line(vt, 0);
         for (int r = row + 1; r < vt->rows; ++r) {
             erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
                         vt->cols);
             vt->grid->row_flags[r] = 0;
         }
         if (vt->sixel)
-            bvt_sixel_clear_display_rows(vt, row, vt->rows - 1);
+            cfr_sixel_clear_display_rows(vt, row, vt->rows - 1);
         if (vt->lottie)
-            bvt_lottie_clear_display_rows(vt, row, vt->rows - 1);
+            cfr_lottie_clear_display_rows(vt, row, vt->rows - 1);
         break;
     case 1:
-        bvt_erase_in_line(vt, 1);
+        cfr_erase_in_line(vt, 1);
         for (int r = 0; r < row; ++r) {
             erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
                         vt->cols);
             vt->grid->row_flags[r] = 0;
         }
         if (vt->sixel)
-            bvt_sixel_clear_display_rows(vt, 0, row);
+            cfr_sixel_clear_display_rows(vt, 0, row);
         if (vt->lottie)
-            bvt_lottie_clear_display_rows(vt, 0, row);
+            cfr_lottie_clear_display_rows(vt, 0, row);
         break;
     case 2:
     case 3:
@@ -581,12 +581,12 @@ void bvt_erase_in_display(BvtTerm *vt, int mode)
                         vt->cols);
         memset(vt->grid->row_flags, 0, (size_t)vt->rows);
         if (vt->sixel)
-            bvt_sixel_clear_display_rows(vt, 0, vt->rows - 1);
+            cfr_sixel_clear_display_rows(vt, 0, vt->rows - 1);
         if (vt->lottie)
-            bvt_lottie_clear_display_rows(vt, 0, vt->rows - 1);
+            cfr_lottie_clear_display_rows(vt, 0, vt->rows - 1);
         break;
     default:
         return;
     }
-    bvt_damage_all(vt);
+    cfr_damage_all(vt);
 }

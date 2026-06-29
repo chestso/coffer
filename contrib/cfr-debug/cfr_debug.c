@@ -1,13 +1,13 @@
 /*
- * bvt-debug — headless bloom-vt PTY inspector.
+ * cfr-debug — headless coffer PTY inspector.
  *
- * Spawns a child process on a PTY, pipes its output through bloom-vt,
+ * Spawns a child process on a PTY, pipes its output through coffer,
  * and renders the resulting grid as plain text. Optional features:
  *   - Send scripted input (with timing)
  *   - Save raw PTY output for offline replay
  *   - Dump individual rows or raw cell data
  *
- * The bloom-vt output callback is wired back to the PTY so that
+ * The coffer output callback is wired back to the PTY so that
  * terminal queries (DA, DSR, kitty keyboard) receive proper replies.
  * This allows interactive TUI applications (crush, helix, etc.) to
  * render correctly without a real terminal emulator.
@@ -16,7 +16,7 @@
  */
 
 #define _GNU_SOURCE
-#include <bloom-vt/bloom_vt.h>
+#include <coffer/coffer.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -113,9 +113,9 @@ static long long now_ms(void)
     return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
 }
 
-/* ---- Drain PTY into bloom-vt ---- */
+/* ---- Drain PTY into coffer ---- */
 
-static void drain(BvtTerm *vt, Pty *pty, int timeout_ms)
+static void drain(CfrTerm *vt, Pty *pty, int timeout_ms)
 {
     char buf[65536];
     int fd = pty->master_fd;
@@ -136,7 +136,7 @@ static void drain(BvtTerm *vt, Pty *pty, int timeout_ms)
                 fwrite(buf, 1, (size_t)n, g_raw_out);
                 fflush(g_raw_out);
             }
-            bvt_input_write(vt, (const uint8_t *)buf, (size_t)n);
+            cfr_input_write(vt, (const uint8_t *)buf, (size_t)n);
         }
         if (pfd.revents & (POLLHUP | POLLERR))
             break;
@@ -164,10 +164,10 @@ static void utf8_put(uint32_t cp)
     }
 }
 
-static void render_row_text(BvtTerm *vt, int row, int cols)
+static void render_row_text(CfrTerm *vt, int row, int cols)
 {
     for (int c = 0; c < cols; c++) {
-        const BvtCell *cell = bvt_get_cell(vt, row, c);
+        const CfrCell *cell = cfr_get_cell(vt, row, c);
         if (!cell || cell->cp == 0 || cell->cp == 0x20) {
             putchar(' ');
             continue;
@@ -179,11 +179,11 @@ static void render_row_text(BvtTerm *vt, int row, int cols)
     putchar('\n');
 }
 
-static void render_row_cells(BvtTerm *vt, int row, int cols)
+static void render_row_cells(CfrTerm *vt, int row, int cols)
 {
     printf("Row %2d cells:", row);
     for (int c = 0; c < cols; c++) {
-        const BvtCell *cell = bvt_get_cell(vt, row, c);
+        const CfrCell *cell = cfr_get_cell(vt, row, c);
         if (!cell) {
             printf(" [?]");
             continue;
@@ -229,9 +229,9 @@ static void expand_input(char *s)
 static void usage(void)
 {
     printf(
-        "bvt-debug -- spawn a child on a PTY and render through bloom-vt\n"
+        "cfr-debug -- spawn a child on a PTY and render through coffer\n"
         "\n"
-        "Usage: bvt-debug [options] [-- command args...]\n"
+        "Usage: cfr-debug [options] [-- command args...]\n"
         "\n"
         "  -r ROWS   terminal rows (default 24)\n"
         "  -c COLS   terminal cols (default 80)\n"
@@ -247,10 +247,10 @@ static void usage(void)
         "  -h        this help\n"
         "\n"
         "Examples:\n"
-        "  bvt-debug -- bash -l\n"
-        "  bvt-debug -c 68 -r 20 -- crush\n"
-        "  bvt-debug -c 68 -r 20 -i \"hello world\\n\" -W 20 -o /tmp/out.raw -- crush\n"
-        "  bvt-debug -s 18 -d -q -c 68 -r 20 -- crush\n");
+        "  cfr-debug -- bash -l\n"
+        "  cfr-debug -c 68 -r 20 -- crush\n"
+        "  cfr-debug -c 68 -r 20 -i \"hello world\\n\" -W 20 -o /tmp/out.raw -- crush\n"
+        "  cfr-debug -s 18 -d -q -c 68 -r 20 -- crush\n");
 }
 
 int main(int argc, char *argv[])
@@ -309,26 +309,26 @@ int main(int argc, char *argv[])
             perror("fopen");
     }
 
-    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
     cfg.rows = rows;
     cfg.cols = cols;
     cfg.cell_w_px = 10;
     cfg.cell_h_px = 6;
-    BvtTerm *vt = bvt_new(&cfg);
+    CfrTerm *vt = cfr_new(&cfg);
     if (!vt) {
-        fprintf(stderr, "bvt_new failed\n");
+        fprintf(stderr, "cfr_new failed\n");
         return 1;
     }
 
     Pty *pty = pty_spawn(rows, cols, cmd_argv);
     if (!pty) {
-        bvt_free(vt);
+        cfr_free(vt);
         return 1;
     }
     g_pty = pty;
 
-    BvtCallbacks cb = { .output = cb_output };
-    bvt_set_callbacks(vt, &cb, NULL);
+    CfrCallbacks cb = { .output = cb_output };
+    cfr_set_callbacks(vt, &cb, NULL);
 
     fprintf(stderr, "Waiting %ds for startup...\n", wait1);
     drain(vt, pty, wait1 * 1000);
@@ -375,6 +375,6 @@ int main(int argc, char *argv[])
 
     g_pty = NULL;
     pty_kill(pty);
-    bvt_free(vt);
+    cfr_free(vt);
     return 0;
 }

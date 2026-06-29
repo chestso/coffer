@@ -1,7 +1,7 @@
-# Lottie Animation Protocol — bloom-vt Engine Specification
+# Lottie Animation Protocol — coffer Engine Specification
 
 This document specifies the Lottie animation protocol as implemented in
-bloom-vt. It covers the terminal escape sequence wire format, the command
+coffer. It covers the terminal escape sequence wire format, the command
 vocabulary, the engine-side state machine, the public C API, rasterization,
 memory management, and interaction with VT subsystems (scroll, clear, resize).
 
@@ -34,7 +34,7 @@ ESC ] 5 5 5 5 ; <base64-json> BEL
 
 Bytes: `\x1b]5555;` `<base64-string>` `\x07`
 
-bloom-vt routes both APC and OSC 5555 to `bvt_lottie_apc_dispatch()`, so the
+coffer routes both APC and OSC 5555 to `cfr_lottie_apc_dispatch()`, so the
 payload semantics are identical.
 
 ### 1.2 Rationale
@@ -65,7 +65,7 @@ payload semantics are identical.
 The APC accumulator shares the same buffer as OSC:
 
 ```c
-#define BVT_OSC_BUF_BYTES  65536u   /* parser internal limit */
+#define CFR_OSC_BUF_BYTES  65536u   /* parser internal limit */
 ```
 
 Payloads exceeding 65536 bytes of base64 are truncated and discarded. For large
@@ -168,7 +168,7 @@ with the same position as an existing placement **updates** that placement's
 enables efficient toggling (e.g. foreground ↔ background) at the same position.
 
 Each placement is auto-assigned a stable `id` by the engine (incrementing
-counter in `BvtLottieState.next_placement_id`).
+counter in `CfrLottieState.next_placement_id`).
 
 ### 2.4 `play` / `pause` / `stop` — Control playback
 
@@ -242,7 +242,7 @@ chunk the upload:
 
 ```
                          ┌──────────────────────┐
-  APC ──────────────────►│ bvt_lottie_apc_      │
+  APC ──────────────────►│ cfr_lottie_apc_      │
                          │ dispatch()           │
                          └──────────┬───────────┘
                                     │
@@ -271,15 +271,15 @@ chunk the upload:
 
 ### 3.2 Parser Integration
 
-The parser has a dedicated `BVT_STATE_APC_STRING` state. On `ESC _`, the parser
+The parser has a dedicated `CFR_STATE_APC_STRING` state. On `ESC _`, the parser
 enters this state and accumulates bytes into `apc_buf[]`. On ST (`ESC \`) or
 BEL, it dispatches:
 
 ```c
 /* parser.c — ESC _ transitions to APC_STRING state */
-case BVT_STATE_APC_STRING:
+case CFR_STATE_APC_STRING:
     /* ST/BEL received → dispatch the accumulated APC payload */
-    bvt_lottie_apc_dispatch(vt, p->apc_buf, p->apc_len);
+    cfr_lottie_apc_dispatch(vt, p->apc_buf, p->apc_len);
     break;
 ```
 
@@ -288,7 +288,7 @@ OSC 5555 routes to the same dispatch function:
 ```c
 /* osc.c — OSC code 5555 → lottie dispatch */
 case 5555:
-    bvt_lottie_apc_dispatch(vt, body, body_len);
+    cfr_lottie_apc_dispatch(vt, body, body_len);
     break;
 ```
 
@@ -324,7 +324,7 @@ typedef struct
 
     uint64_t  last_tick_us;  /* last frame advance timestamp */
 
-    BvtLottiePlacement *placements;
+    CfrLottiePlacement *placements;
     int         placement_count;
     int         placement_cap;
 
@@ -359,10 +359,10 @@ typedef struct
 One per in-progress chunked upload. Discarded when a new `seq == 0` chunk
 arrives for the same `id`.
 
-#### BvtLottieState — Global lottie subsystem
+#### CfrLottieState — Global lottie subsystem
 
 ```c
-struct BvtLottieState
+struct CfrLottieState
 {
     LtRec         *recs;
     int            rec_count;
@@ -378,25 +378,25 @@ struct BvtLottieState
     int            spare_count;
     size_t         retain_bytes;
 
-    uint8_t       *scratch;       /* snapshot buffer for bvt_get_lotties() */
+    uint8_t       *scratch;       /* snapshot buffer for cfr_get_lotties() */
     size_t         scratch_cap;
-    BvtLottiePlacement *pl_scratch;
+    CfrLottiePlacement *pl_scratch;
     int            pl_scratch_cap;
 };
 ```
 
 Lazily allocated: `vt->lottie` is `NULL` until the first lottie APC arrives.
-`bvt_have_lottie()` returns whether ThorVG is available at runtime.
+`cfr_have_lottie()` returns whether ThorVG is available at runtime.
 
 ---
 
 ## 4. Public API
 
-All public types and functions are declared in `<bloom-vt/bloom_vt.h>`.
+All public types and functions are declared in `<coffer/coffer.h>`.
 
 ### 4.1 Types
 
-#### BvtLottiePlacement
+#### CfrLottiePlacement
 
 ```c
 typedef struct
@@ -409,10 +409,10 @@ typedef struct
     int      cols;         /* cell width                         */
     uint8_t  layer;        /* 0 = foreground, 1 = background    */
     uint8_t  opacity_x256; /* 0–255                              */
-} BvtLottiePlacement;
+} CfrLottiePlacement;
 ```
 
-#### BvtLottie
+#### CfrLottie
 
 ```c
 typedef struct
@@ -428,22 +428,22 @@ typedef struct
     double        speed;
     bool          loop;
     int           placement_count;
-} BvtLottie;
+} CfrLottie;
 ```
 
-`rgba` is valid until the next `bvt_input_write()` or `bvt_get_lotties()`
+`rgba` is valid until the next `cfr_input_write()` or `cfr_get_lotties()`
 call. The host must copy or upload pixels before the next engine mutation.
 
 ### 4.2 Query Functions
 
 ```c
 /* Snapshot of all active animations. Returned pointer valid until next
- * bvt_input_write / bvt_get_lotties. */
-const BvtLottie *bvt_get_lotties(BvtTerm *vt, int *out_count);
+ * cfr_input_write / cfr_get_lotties. */
+const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count);
 
 /* Placements for a specific animation. .row is pre-computed for the
  * renderer (abs_line - sixel_abs_top). Valid until next call. */
-const BvtLottiePlacement *bvt_get_lottie_placements(BvtTerm *vt, uint64_t id,
+const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
                                                     int *out_count);
 ```
 
@@ -452,13 +452,13 @@ const BvtLottiePlacement *bvt_get_lottie_placements(BvtTerm *vt, uint64_t id,
 ```c
 /* Advance all playing animations to the frame appropriate for now_us.
  * Re-rasterize any whose frame changed. Call once per frame before
- * bvt_get_lotties(). Returns true if any animation advanced. */
-bool bvt_lottie_tick(BvtTerm *vt, uint64_t now_us);
+ * cfr_get_lotties(). Returns true if any animation advanced. */
+bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us);
 ```
 
-The first call to `bvt_lottie_tick()` for a given animation establishes the
+The first call to `cfr_lottie_tick()` for a given animation establishes the
 baseline timestamp (`last_tick_us`). The second call actually advances frames
-based on elapsed time. This means the host must call `bvt_lottie_tick()` on
+based on elapsed time. This means the host must call `cfr_lottie_tick()` on
 every frame, even if no animations have been loaded yet (the function is a
 no-op when `vt->lottie == NULL`).
 
@@ -466,12 +466,12 @@ no-op when `vt->lottie == NULL`).
 
 ```c
 /* Cull placements that scrolled past scrollback. */
-void bvt_lottie_note_scroll(BvtTerm *vt, int lines);
+void cfr_lottie_note_scroll(CfrTerm *vt, int lines);
 
 /* Remove foreground placements in the given row range.
  * Background placements survive (text erase should not remove
  * background decorations). */
-void bvt_lottie_clear_display_rows(BvtTerm *vt, int top, int bot);
+void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot);
 ```
 
 ### 4.5 Configuration
@@ -479,26 +479,26 @@ void bvt_lottie_clear_display_rows(BvtTerm *vt, int top, int bot);
 ```c
 /* Update cell pixel dimensions (called on resize). Existing placements
  * are NOT re-rasterized; only new placements use updated dimensions. */
-void bvt_set_cell_pixels(BvtTerm *vt, int cell_w_px, int cell_h_px);
+void cfr_set_cell_pixels(CfrTerm *vt, int cell_w_px, int cell_h_px);
 
 /* Returns true if ThorVG was found at build time and lottie rendering
  * is available. When false, APC sequences are still accepted but the
  * RGBA buffer is zeroed. */
-bool bvt_have_lottie(void);
+bool cfr_have_lottie(void);
 ```
 
 ### 4.6 API Comparison with Sixel
 
 | Sixel                            | Lottie                                      | Notes                                   |
 | -------------------------------- | ------------------------------------------- | --------------------------------------- |
-| `bvt_get_sixels(vt, &count)`     | `bvt_get_lotties(vt, &count)`               | Same pull model, contiguous arrays      |
-| `BvtSixel.id` / `.version`       | `BvtLottie.id` / `.version`                 | Same cache-key pattern                  |
-| `BvtSixel.rgba`                  | `BvtLottie.rgba`                            | Engine-owned, valid until next mutation |
-| `BvtSixel.row/col/layer`         | `BvtLottiePlacement.row/col/layer`          | Separate placement query API            |
-| N/A                              | `bvt_lottie_tick(vt, now_us)`               | Frame advancement                       |
-| N/A                              | `bvt_get_lottie_placements(vt, id, &count)` | Separate placement query with `.row`    |
-| `bvt_sixel_note_scroll()`        | `bvt_lottie_note_scroll()`                  | Same cull logic                         |
-| `bvt_sixel_clear_display_rows()` | `bvt_lottie_clear_display_rows()`           | Same clear logic                        |
+| `cfr_get_sixels(vt, &count)`     | `cfr_get_lotties(vt, &count)`               | Same pull model, contiguous arrays      |
+| `CfrSixel.id` / `.version`       | `CfrLottie.id` / `.version`                 | Same cache-key pattern                  |
+| `CfrSixel.rgba`                  | `CfrLottie.rgba`                            | Engine-owned, valid until next mutation |
+| `CfrSixel.row/col/layer`         | `CfrLottiePlacement.row/col/layer`          | Separate placement query API            |
+| N/A                              | `cfr_lottie_tick(vt, now_us)`               | Frame advancement                       |
+| N/A                              | `cfr_get_lottie_placements(vt, id, &count)` | Separate placement query with `.row`    |
+| `cfr_sixel_note_scroll()`        | `cfr_lottie_note_scroll()`                  | Same cull logic                         |
+| `cfr_sixel_clear_display_rows()` | `cfr_lottie_clear_display_rows()`           | Same clear logic                        |
 
 ---
 
@@ -506,7 +506,7 @@ bool bvt_have_lottie(void);
 
 ### 5.1 Tick Algorithm
 
-`bvt_lottie_tick(vt, now_us)` advances all playing animations:
+`cfr_lottie_tick(vt, now_us)` advances all playing animations:
 
 ```
 For each LtRec where playing == true:
@@ -529,7 +529,7 @@ For each LtRec where playing == true:
 
 **Important**: the first tick establishes `last_tick_us` and returns `false`
 (no frame advance). The second tick computes elapsed time and actually advances
-frames. Hosts must call `bvt_lottie_tick()` every frame.
+frames. Hosts must call `cfr_lottie_tick()` every frame.
 
 ### 5.2 Rasterization Pipeline
 
@@ -557,7 +557,7 @@ static void lt_rasterize(LtRec *r) {
 
 **Without ThorVG** (`--disable-thorvg` at build time): APC sequences are still
 accepted and animation state is tracked, but the RGBA buffer is zeroed (all
-pixels are transparent black). `bvt_have_lottie()` returns `false`.
+pixels are transparent black). `cfr_have_lottie()` returns `false`.
 
 ### 5.3 Pixel Format
 
@@ -598,7 +598,7 @@ additional conversion.
 
 ### 6.3 RGBA Buffer Pool
 
-Following the same pattern as bloom-vt's `SxSpare` free-list pool:
+Following the same pattern as coffer's `SxSpare` free-list pool:
 
 ```c
 typedef struct {
@@ -648,21 +648,21 @@ supplemental visual layer composited by the host renderer.
 
 Lottie placements scroll identically to sixel images:
 
-- Anchored by `abs_line` in bloom-vt's absolute coordinate space.
-- `bvt_lottie_note_scroll()` culls placements that scrolled past scrollback.
+- Anchored by `abs_line` in coffer's absolute coordinate space.
+- `cfr_lottie_note_scroll()` culls placements that scrolled past scrollback.
 - The host renderer maps `abs_line` → display row:
   `screen_row = abs_line - abs_top + scroll_offset`.
 
 ### 7.3 Clear Behavior
 
-- **ED** (erase display): `bvt_lottie_clear_display_rows()` removes foreground
+- **ED** (erase display): `cfr_lottie_clear_display_rows()` removes foreground
   placements in the cleared row range. Background placements survive — text
   erase should not remove background decorations.
-- **Terminal reset**: all animations are freed during `bvt_free()`.
+- **Terminal reset**: all animations are freed during `cfr_free()`.
 
 ### 7.4 Resize
 
-On terminal resize, `bvt_set_cell_pixels()` updates the engine's cell pixel
+On terminal resize, `cfr_set_cell_pixels()` updates the engine's cell pixel
 dimensions. **Existing placements are not re-rasterized.** The pixel dimensions
 (`px_w`/`px_h`) of existing animations remain based on the cell size at the
 time of placement. Only new placements use the updated cell pixel dimensions.
@@ -784,7 +784,7 @@ ThorVG dependency is required in the host.
 2. terminal_get_lotties(term, &lottie_count) // pull RGBA snapshots
 3. For each animation:
      a. Lookup/create GPU texture (keyed by id, version-gated)
-     b. If version changed: SDL_UpdateTexture from BvtLottie.rgba
+     b. If version changed: SDL_UpdateTexture from CfrLottie.rgba
      c. terminal_get_lottie_placements(term, id, &pl_count)
      d. For each placement:
           - Skip if wrong layer
@@ -830,7 +830,7 @@ Rasterization in the host with ThorVG linked only there. **Rejected** because:
 - Inconsistent with sixel: host must manage ThorVG state coupled to the engine's
   animation lifecycle.
 - A Lottie-capable host requires ThorVG as a dependency. With engine-side
-  rasterization, any host consuming `BvtLottie.rgba` works with zero
+  rasterization, any host consuming `CfrLottie.rgba` works with zero
   Lottie-specific code.
 - The engine can correctly manage canvas resize, frame timing, and pixel buffer
   reuse without cross-process coordination.

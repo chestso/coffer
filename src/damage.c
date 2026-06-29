@@ -1,14 +1,14 @@
 /*
- * bloom-vt — damage rectangle accumulator.
+ * coffer — damage rectangle accumulator.
  *
  * The VT layer tracks a single rectangular union since the last flush.
- * Backends call bvt_damage_flush() (typically just before rendering)
+ * Backends call cfr_damage_flush() (typically just before rendering)
  * to drain it via the callback.
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
-static void union_rect(BvtRect *acc, BvtRect r)
+static void union_rect(CfrRect *acc, CfrRect r)
 {
     if (r.start_row < acc->start_row)
         acc->start_row = r.start_row;
@@ -20,9 +20,9 @@ static void union_rect(BvtRect *acc, BvtRect r)
         acc->end_col = r.end_col;
 }
 
-void bvt_damage_cell(BvtTerm *vt, int row, int col)
+void cfr_damage_cell(CfrTerm *vt, int row, int col)
 {
-    BvtRect r = { row, col, row, col };
+    CfrRect r = { row, col, row, col };
     if (!vt->damage_dirty) {
         vt->damage = r;
         vt->damage_dirty = true;
@@ -31,9 +31,9 @@ void bvt_damage_cell(BvtTerm *vt, int row, int col)
     }
 }
 
-void bvt_damage_row(BvtTerm *vt, int row)
+void cfr_damage_row(CfrTerm *vt, int row)
 {
-    BvtRect r = { row, 0, row, vt->cols - 1 };
+    CfrRect r = { row, 0, row, vt->cols - 1 };
     if (!vt->damage_dirty) {
         vt->damage = r;
         vt->damage_dirty = true;
@@ -42,14 +42,14 @@ void bvt_damage_row(BvtTerm *vt, int row)
     }
 }
 
-void bvt_damage_all(BvtTerm *vt)
+void cfr_damage_all(CfrTerm *vt)
 {
-    BvtRect r = { 0, 0, vt->rows - 1, vt->cols - 1 };
+    CfrRect r = { 0, 0, vt->rows - 1, vt->cols - 1 };
     vt->damage = r;
     vt->damage_dirty = true;
 }
 
-void bvt_damage_flush(BvtTerm *vt)
+void cfr_damage_flush(CfrTerm *vt)
 {
     /* A cursor-only move (CUP, arrows) changes no grid cell and emits no
      * damage. Fold it in by dirtying the old and new cursor cells so the
@@ -58,8 +58,8 @@ void bvt_damage_flush(BvtTerm *vt)
     if (vt->cursor.row != vt->dmg_cursor_row ||
         vt->cursor.col != vt->dmg_cursor_col ||
         vt->cursor.visible != vt->dmg_cursor_visible) {
-        bvt_damage_cell(vt, vt->dmg_cursor_row, vt->dmg_cursor_col);
-        bvt_damage_cell(vt, vt->cursor.row, vt->cursor.col);
+        cfr_damage_cell(vt, vt->dmg_cursor_row, vt->dmg_cursor_col);
+        cfr_damage_cell(vt, vt->cursor.row, vt->cursor.col);
         vt->dmg_cursor_row = vt->cursor.row;
         vt->dmg_cursor_col = vt->cursor.col;
         vt->dmg_cursor_visible = vt->cursor.visible;

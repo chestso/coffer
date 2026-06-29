@@ -1,4 +1,4 @@
-# bloom-vt
+# coffer
 
 A standalone virtual terminal engine in C — parser, grid, scrollback, reflow,
 charsets, kitty keyboard protocol, sixel and Lottie graphics — with no
@@ -26,16 +26,16 @@ where it replaces libvterm.
   RLE, RGB and DEC HLS color, P2 transparency, and raster attributes;
   capability is advertised via DA1 (`4`), DECSET 80/1070/8452, and
   XTSMGRAPHICS. The host declares cell pixel size with
-  `bvt_set_cell_pixels()` and fetches images to draw with
-  `bvt_get_sixels()`.
+  `cfr_set_cell_pixels()` and fetches images to draw with
+  `cfr_get_sixels()`.
 - **Lottie graphics** — APC sequences (`ESC _ … ST`) with base64-encoded JSON
   payloads load, place, and control Lottie animations on the grid. Eight
   commands (load, load-chunk, place, play, pause, stop, seek, delete) manage
   animation state, per-frame RGBA buffers, and placement tracking. Animations
   scroll with the text, enter scrollback, and are culled on clear — the same
   ownership model as sixel. The host fetches animations via
-  `bvt_get_lotties()` / `bvt_get_lottie_placements()` and advances frames
-  with `bvt_lottie_tick()`. Rasterization is handled by ThorVG (optional
+  `cfr_get_lotties()` / `cfr_get_lottie_placements()` and advances frames
+  with `cfr_lottie_tick()`. Rasterization is handled by ThorVG (optional
   dependency, auto-detected at configure time); when ThorVG is absent the APC
   sequences are still accepted but RGBA buffers are zeroed. A Python TUI
   player ([plotty](https://codeberg.org/thomasc/portty/src/branch/master/portty/contrib/plotty))
@@ -50,12 +50,12 @@ where it replaces libvterm.
   some builds the flag is accepted by `CreatePseudoConsole` yet unknown
   sequences are still stripped. As a workaround, the Lottie client on Windows
   carries the same base64-encoded JSON payload inside **OSC 5555** (`ESC ] 5555 ; \<base64\> BEL`), which ConPTY does pass through because OSC is a recognised VT
-  family. bloom-vt routes OSC code 5555 to `bvt_lottie_apc_dispatch()`, so the
+  family. coffer routes OSC code 5555 to `cfr_lottie_apc_dispatch()`, so the
   payload is processed identically regardless of carrier. This mirrors how
   iTerm2's image protocol works on Windows (OSC 1337) — encode image data in
   OSC instead of APC.
 - **Damage tracking** — the changed region is accumulated as input is
-  parsed; the consumer calls `bvt_damage_flush()` at a controlled time
+  parsed; the consumer calls `cfr_damage_flush()` at a controlled time
   (typically once per frame, before rendering) to receive it via the
   `damage` callback and repaint only what changed. A cursor-only move
   (which dirties no grid cell) is folded in — flush damages the old and
@@ -65,7 +65,7 @@ where it replaces libvterm.
   of the flag stack works. Flags 0x2/0x4/0x10 are accepted on the stack
   but currently no-ops (waiting on a concrete consumer).
 - **Hyperlinks (OSC 8)** — cells carry a hyperlink id; the host retrieves
-  the URI via `bvt_cell_get_hyperlink()`.
+  the URI via `cfr_cell_get_hyperlink()`.
 - **Zero external dependencies** — libc only (ThorVG is optional and
   auto-detected).
 
@@ -77,15 +77,15 @@ divergences, and the deferred items — see [`FOLLOWUPS.md`](FOLLOWUPS.md).
 Bounded allocation and a zero-allocation steady-state hot path are explicit
 design goals. Concretely:
 
-- **Pluggable allocator.** All heap traffic goes through a `BvtAllocator`
-  (malloc/realloc/free function pointers) supplied at `bvt_new()` time.
+- **Pluggable allocator.** All heap traffic goes through a `CfrAllocator`
+  (malloc/realloc/free function pointers) supplied at `cfr_new()` time.
   Callers can route everything to an arena, a pool, or a tracked allocator
   without patching the library. Pass `NULL` to use libc.
-- **Paged grids.** Each `BvtPage` owns a contiguous cell buffer plus a
+- **Paged grids.** Each `CfrPage` owns a contiguous cell buffer plus a
   per-row flag byte. A terminal has at most two pages live at once (the
   primary grid and, while in altscreen, the alternate). Page allocation
-  happens on `bvt_new`, on resize, and on altscreen entry — never from
-  `bvt_input_write`.
+  happens on `cfr_new`, on resize, and on altscreen entry — never from
+  `cfr_input_write`.
 - **Paged scrollback.** A doubly linked ring of pages, 64 rows per page,
   default 1000 lines total. Allocations happen only when a page fills; the
   ring evicts the oldest page when capacity is reached, so scrollback
@@ -97,9 +97,9 @@ design goals. Concretely:
   Single-codepoint clusters use `cp` directly with `grapheme_id == 0` and
   hit the arena zero times. Unlike libvterm's hard-coded 6-codepoint cell
   cap, clusters here are arbitrary length.
-- **Hot path.** `bvt_input_write` does no allocation in steady state —
+- **Hot path.** `cfr_input_write` does no allocation in steady state —
   all hot-path structures (parser scratch, OSC accumulator up to 4 KiB,
-  cursor cluster buffer up to 16 codepoints) are inline in `BvtTerm`.
+  cursor cluster buffer up to 16 codepoints) are inline in `CfrTerm`.
   The intern tables grow geometrically and amortize to zero; the grapheme
   arena reuses existing entries on hash hit.
 - **Sixel store.** Decoded images live in a dense record array
@@ -109,20 +109,20 @@ design goals. Concretely:
   global live-byte budget evicts the oldest image first (the same order
   they scroll off), and a per-dimension clamp bounds any single image.
   The store is allocated lazily on the first sixel and freed by
-  `bvt_free`.
+  `cfr_free`.
 - **Lottie store.** Mirrors the sixel architecture: dense record array with
   swap-remove deletion, a spare buffer pool that recycles same-size RGBA
   frames, and a global live-byte budget (128 MiB live, 64 MiB retained) that
   evicts the oldest animation first. ThorVG rasterizes each frame to
   ARGB8888, which is then un-premultiplied and converted to linear-light
   RGBA32 for the host compositor. The store is allocated lazily on the first
-  Lottie APC and freed by `bvt_free`.
-- **Lifecycle.** `bvt_new` / `bvt_free` is the only ownership pair the
-  consumer manages. `bvt_free` releases every page, intern table, arena,
+  Lottie APC and freed by `cfr_free`.
+- **Lifecycle.** `cfr_new` / `cfr_free` is the only ownership pair the
+  consumer manages. `cfr_free` releases every page, intern table, arena,
   tab-stop bitmap, sixel store, and lottie store through the same allocator
   that produced them.
 
-`BvtTerm` itself is not internally synchronized; callers own all locking.
+`CfrTerm` itself is not internally synchronized; callers own all locking.
 
 ## Build and install
 
@@ -207,7 +207,7 @@ can stat them. Both fixes happen before `autogen.sh` runs.
 To do the `sh` workaround manually before running `autogen.sh`:
 
 ```sh
-FIXSH=$(mktemp -d /tmp/bloom-fixsh.XXXXXX)
+FIXSH=$(mktemp -d /tmp/coffer-fixsh.XXXXXX)
 cp /usr/bin/bash "$FIXSH/sh"
 export PATH="$FIXSH:$PATH"
 ./autogen.sh          # now succeeds
@@ -233,44 +233,44 @@ make distcheck    # build, test, and verify the dist tarball is self-contained
 ## Linking
 
 ```sh
-cc app.c $(pkg-config --cflags --libs bloom-vt)
+cc app.c $(pkg-config --cflags --libs coffer)
 ```
 
-`bloom-vt.pc` installs to `${libdir}/pkgconfig/`.
+`coffer.pc` installs to `${libdir}/pkgconfig/`.
 
 ## Minimal usage
 
 ```c
-#include <bloom-vt/bloom_vt.h>
+#include <coffer/coffer.h>
 #include <stdio.h>
 
 int main(void)
 {
-    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
     cfg.rows = 24;
     cfg.cols = 80;
     cfg.cell_w_px = 8;
     cfg.cell_h_px = 16;
-    BvtTerm *vt = bvt_new(&cfg);
+    CfrTerm *vt = cfr_new(&cfg);
 
     const char *bytes = "hello\033[31m world\033[0m\n";
-    bvt_input_write(vt, (const uint8_t *)bytes, strlen(bytes));
+    cfr_input_write(vt, (const uint8_t *)bytes, strlen(bytes));
 
     int rows, cols;
-    bvt_get_dimensions(vt, &rows, &cols);
+    cfr_get_dimensions(vt, &rows, &cols);
     for (int c = 0; c < cols; c++) {
-        const BvtCell *cell = bvt_get_cell(vt, 0, c);
+        const CfrCell *cell = cfr_get_cell(vt, 0, c);
         if (!cell || cell->width == 0) continue;
         putchar(cell->cp ? (int)cell->cp : ' ');
     }
     putchar('\n');
 
-    bvt_free(vt);
+    cfr_free(vt);
     return 0;
 }
 ```
 
-The full API is in [`include/bloom-vt/bloom_vt.h`](include/bloom-vt/bloom_vt.h).
+The full API is in [`include/coffer/coffer.h`](include/coffer/coffer.h).
 
 ## Acknowledgments
 

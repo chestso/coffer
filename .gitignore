@@ -24,13 +24,13 @@ Makefile.in
 
 # --- Project-generated ---
 /version
-/bloom-vt.pc
-/tests/test_bvt_parser
-/tests/test_bvt_keys
-/tests/test_bvt_pty
-/tests/test_bvt_sixel
-/tests/test_bvt_lottie
-/tests/test_bvt_altscreen
+/coffer.pc
+/tests/test_cfr_parser
+/tests/test_cfr_keys
+/tests/test_cfr_pty
+/tests/test_cfr_sixel
+/tests/test_cfr_lottie
+/tests/test_cfr_altscreen
 
 # --- Build artifacts ---
 *.o

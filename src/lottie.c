@@ -1,12 +1,12 @@
-/* lottie.c — Lottie animation subsystem for bloom-vt.
+/* lottie.c — Lottie animation subsystem for coffer.
  *
  * Parses APC sequences (ESC _ ... ST), manages animation state, rasterizes
- * frames via ThorVG, and exposes RGBA pixel data through bvt_get_lotties().
+ * frames via ThorVG, and exposes RGBA pixel data through cfr_get_lotties().
  *
  * Architecture mirrors sixel.c: engine owns all pixel data, host does
  * texture cache + compositing only. */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -74,7 +74,7 @@ typedef struct
     uint64_t last_tick_us;
 
     /* Placements */
-    BvtLottiePlacement *placements;
+    CfrLottiePlacement *placements;
     int placement_count;
     int placement_cap;
 
@@ -101,8 +101,8 @@ typedef struct
     int chunks_total;
 } LtChunkAccum;
 
-/* Global Lottie state (analogous to BvtSixelState) */
-struct BvtLottieState
+/* Global Lottie state (analogous to CfrSixelState) */
+struct CfrLottieState
 {
     LtRec *recs;
     int rec_count;
@@ -119,12 +119,12 @@ struct BvtLottieState
     int spare_count;
     size_t retain_bytes;
 
-    /* Scratch buffer for bvt_get_lotties() snapshots */
+    /* Scratch buffer for cfr_get_lotties() snapshots */
     uint8_t *scratch;
     size_t scratch_cap;
 
-    /* Scratch buffer for bvt_get_lottie_placements() snapshots */
-    BvtLottiePlacement *pl_scratch;
+    /* Scratch buffer for cfr_get_lottie_placements() snapshots */
+    CfrLottiePlacement *pl_scratch;
     int pl_scratch_cap;
 };
 
@@ -132,34 +132,34 @@ struct BvtLottieState
 /* Forward declarations for command handlers                          */
 /* ------------------------------------------------------------------ */
 
-static void lt_cmd_load(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
                         const char *json, size_t json_len);
-static void lt_cmd_load_chunk(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_load_chunk(struct CfrLottieState *st, CfrTerm *vt,
                               const char *json, size_t json_len);
-static void lt_cmd_place(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
                          const char *json, size_t json_len);
-static void lt_cmd_play(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_play(struct CfrLottieState *st, CfrTerm *vt,
                         const char *json, size_t json_len);
-static void lt_cmd_pause(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_pause(struct CfrLottieState *st, CfrTerm *vt,
                          const char *json, size_t json_len);
-static void lt_cmd_stop(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_stop(struct CfrLottieState *st, CfrTerm *vt,
                         const char *json, size_t json_len);
-static void lt_cmd_seek(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_seek(struct CfrLottieState *st, CfrTerm *vt,
                         const char *json, size_t json_len);
-static void lt_cmd_delete(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_delete(struct CfrLottieState *st, CfrTerm *vt,
                           const char *json, size_t json_len);
 
 /* ------------------------------------------------------------------ */
 /* Lazy allocation                                                    */
 /* ------------------------------------------------------------------ */
 
-static struct BvtLottieState *lt_state(BvtTerm *vt)
+static struct CfrLottieState *lt_state(CfrTerm *vt)
 {
     if (!vt->lottie) {
 #ifdef HAVE_THORVG
         tvg_engine_init(0);
 #endif
-        vt->lottie = bvt_alloc(vt, sizeof(*vt->lottie));
+        vt->lottie = cfr_alloc(vt, sizeof(*vt->lottie));
         if (!vt->lottie)
             return NULL;
         memset(vt->lottie, 0, sizeof(*vt->lottie));
@@ -171,7 +171,7 @@ static struct BvtLottieState *lt_state(BvtTerm *vt)
 /* Buffer pool (mirrors SxSpare)                                      */
 /* ------------------------------------------------------------------ */
 
-static uint8_t *lt_buf_alloc(BvtTerm *vt, struct BvtLottieState *st,
+static uint8_t *lt_buf_alloc(CfrTerm *vt, struct CfrLottieState *st,
                              size_t need)
 {
     int best = -1;
@@ -188,10 +188,10 @@ static uint8_t *lt_buf_alloc(BvtTerm *vt, struct BvtLottieState *st,
         st->retain_bytes -= cap;
         return buf;
     }
-    return bvt_alloc(vt, need);
+    return cfr_alloc(vt, need);
 }
 
-static void lt_buf_release(BvtTerm *vt, struct BvtLottieState *st,
+static void lt_buf_release(CfrTerm *vt, struct CfrLottieState *st,
                            uint8_t *buf, size_t cap)
 {
     if (st->spare_count < LT_SPARE_MAX &&
@@ -201,7 +201,7 @@ static void lt_buf_release(BvtTerm *vt, struct BvtLottieState *st,
         st->spare_count++;
         st->retain_bytes += cap;
     } else {
-        bvt_dealloc(vt, buf);
+        cfr_dealloc(vt, buf);
     }
 }
 
@@ -209,7 +209,7 @@ static void lt_buf_release(BvtTerm *vt, struct BvtLottieState *st,
 /* Record management                                                  */
 /* ------------------------------------------------------------------ */
 
-static LtRec *lt_find_by_id(struct BvtLottieState *st, uint64_t id)
+static LtRec *lt_find_by_id(struct CfrLottieState *st, uint64_t id)
 {
     for (int i = 0; i < st->rec_count; i++) {
         if (st->recs[i].id == id)
@@ -218,7 +218,7 @@ static LtRec *lt_find_by_id(struct BvtLottieState *st, uint64_t id)
     return NULL;
 }
 
-static void lt_rec_release(BvtTerm *vt, struct BvtLottieState *st, int idx)
+static void lt_rec_release(CfrTerm *vt, struct CfrLottieState *st, int idx)
 {
     LtRec *r = &st->recs[idx];
     if (r->rgba) {
@@ -226,9 +226,9 @@ static void lt_rec_release(BvtTerm *vt, struct BvtLottieState *st, int idx)
         lt_buf_release(vt, st, r->rgba, r->rgba_cap);
     }
     if (r->arena_base)
-        bvt_dealloc(vt, r->arena_base);
+        cfr_dealloc(vt, r->arena_base);
     if (r->placements)
-        bvt_dealloc(vt, r->placements);
+        cfr_dealloc(vt, r->placements);
 #ifdef HAVE_THORVG
     if (r->tvg_canvas && r->tvg_anim) {
         Tvg_Paint pic = tvg_animation_get_picture(r->tvg_anim);
@@ -247,7 +247,7 @@ static void lt_rec_release(BvtTerm *vt, struct BvtLottieState *st, int idx)
 /* Evict animations until the budget can accommodate `incoming` bytes.
  * Evicts the animation whose first placement has the smallest abs_line
  * (oldest on screen), mirroring sixel's eviction policy. */
-static void lt_evict_to_budget(BvtTerm *vt, struct BvtLottieState *st,
+static void lt_evict_to_budget(CfrTerm *vt, struct CfrLottieState *st,
                                size_t incoming)
 {
     while (st->rec_count > 0 && st->live_bytes + incoming > LT_LIVE_MAX) {
@@ -630,8 +630,8 @@ static size_t lt_base64_decode(const uint8_t *in, size_t in_len,
 /* Placement helpers                                                  */
 /* ------------------------------------------------------------------ */
 
-static BvtLottiePlacement *lt_add_placement(
-    BvtTerm *vt, struct BvtLottieState *st, LtRec *rec,
+static CfrLottiePlacement *lt_add_placement(
+    CfrTerm *vt, struct CfrLottieState *st, LtRec *rec,
     long abs_line, int col, int rows, int cols,
     uint8_t layer, uint8_t opacity)
 {
@@ -652,18 +652,18 @@ static BvtLottiePlacement *lt_add_placement(
         int new_cap = rec->placement_cap ? rec->placement_cap * 2 : 4;
         if (new_cap > LT_MAX_PLACEMENTS)
             new_cap = LT_MAX_PLACEMENTS;
-        BvtLottiePlacement *p = bvt_alloc(vt, (size_t)new_cap * sizeof(*p));
+        CfrLottiePlacement *p = cfr_alloc(vt, (size_t)new_cap * sizeof(*p));
         if (!p)
             return NULL;
         if (rec->placements) {
             memcpy(p, rec->placements,
                    (size_t)rec->placement_count * sizeof(*p));
-            bvt_dealloc(vt, rec->placements);
+            cfr_dealloc(vt, rec->placements);
         }
         rec->placements = p;
         rec->placement_cap = new_cap;
     }
-    BvtLottiePlacement *pl = &rec->placements[rec->placement_count++];
+    CfrLottiePlacement *pl = &rec->placements[rec->placement_count++];
     pl->id = ++st->next_placement_id;
     pl->abs_line = abs_line;
     pl->col = col;
@@ -678,7 +678,7 @@ static BvtLottiePlacement *lt_add_placement(
 /* Damage helpers                                                     */
 /* ------------------------------------------------------------------ */
 
-static void lt_damage_placement(BvtTerm *vt, const BvtLottiePlacement *pl)
+static void lt_damage_placement(CfrTerm *vt, const CfrLottiePlacement *pl)
 {
     int top = (int)(pl->abs_line - vt->sixel_abs_top);
     int bot = top + pl->rows - 1;
@@ -687,10 +687,10 @@ static void lt_damage_placement(BvtTerm *vt, const BvtLottiePlacement *pl)
     if (bot >= vt->rows)
         bot = vt->rows - 1;
     for (int r = top; r <= bot; r++)
-        bvt_damage_row(vt, r);
+        cfr_damage_row(vt, r);
 }
 
-static void lt_damage_all_placements(BvtTerm *vt, LtRec *rec)
+static void lt_damage_all_placements(CfrTerm *vt, LtRec *rec)
 {
     for (int i = 0; i < rec->placement_count; i++)
         lt_damage_placement(vt, &rec->placements[i]);
@@ -700,7 +700,7 @@ static void lt_damage_all_placements(BvtTerm *vt, LtRec *rec)
 /* Command handlers                                                   */
 /* ------------------------------------------------------------------ */
 
-static void lt_cmd_load(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
                         const char *json, size_t json_len)
 {
     size_t vlen;
@@ -816,7 +816,7 @@ static void lt_cmd_load(struct BvtLottieState *st, BvtTerm *vt,
 
     if (rec) {
         if (rec->arena_base)
-            bvt_dealloc(vt, rec->arena_base);
+            cfr_dealloc(vt, rec->arena_base);
         rec->arena_base = NULL;
         rec->arena_offset = 0;
         rec->arena_cap = 0;
@@ -841,13 +841,13 @@ static void lt_cmd_load(struct BvtLottieState *st, BvtTerm *vt,
             int new_cap = st->rec_cap ? st->rec_cap * 2 : 8;
             if (new_cap > LT_MAX_ANIMS)
                 new_cap = LT_MAX_ANIMS;
-            LtRec *new_recs = bvt_alloc(vt, (size_t)new_cap * sizeof(LtRec));
+            LtRec *new_recs = cfr_alloc(vt, (size_t)new_cap * sizeof(LtRec));
             if (!new_recs)
                 return;
             if (st->recs) {
                 memcpy(new_recs, st->recs,
                        (size_t)st->rec_count * sizeof(LtRec));
-                bvt_dealloc(vt, st->recs);
+                cfr_dealloc(vt, st->recs);
             }
             st->recs = new_recs;
             st->rec_cap = new_cap;
@@ -868,7 +868,7 @@ static void lt_cmd_load(struct BvtLottieState *st, BvtTerm *vt,
 
     if (lottie_obj) {
         size_t arena_need = lottie_obj_len + 1;
-        rec->arena_base = bvt_alloc(vt, arena_need);
+        rec->arena_base = cfr_alloc(vt, arena_need);
         if (rec->arena_base) {
             rec->arena_cap = arena_need;
             rec->arena_offset = lottie_obj_len;
@@ -912,7 +912,7 @@ static void lt_cmd_load(struct BvtLottieState *st, BvtTerm *vt,
 #endif
 
     long abs_line = vt->sixel_abs_top + prow;
-    BvtLottiePlacement *pl = lt_add_placement(vt, st, rec, abs_line, pcol,
+    CfrLottiePlacement *pl = lt_add_placement(vt, st, rec, abs_line, pcol,
                                               prows, pcols, layer, opacity);
     if (pl)
         lt_damage_placement(vt, pl);
@@ -920,7 +920,7 @@ static void lt_cmd_load(struct BvtLottieState *st, BvtTerm *vt,
     rec->version++;
 }
 
-static void lt_cmd_place(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
                          const char *json, size_t json_len)
 {
     size_t vlen;
@@ -966,14 +966,14 @@ static void lt_cmd_place(struct BvtLottieState *st, BvtTerm *vt,
     }
 
     long abs_line = vt->sixel_abs_top + prow;
-    BvtLottiePlacement *pl = lt_add_placement(vt, st, rec, abs_line, pcol,
+    CfrLottiePlacement *pl = lt_add_placement(vt, st, rec, abs_line, pcol,
                                               prows, pcols, layer, opacity);
     if (pl)
         lt_damage_placement(vt, pl);
     rec->version++;
 }
 
-static void lt_cmd_play(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_play(struct CfrLottieState *st, CfrTerm *vt,
                         const char *json, size_t json_len)
 {
     size_t vlen;
@@ -1003,7 +1003,7 @@ static void lt_cmd_play(struct BvtLottieState *st, BvtTerm *vt,
     lt_damage_all_placements(vt, rec);
 }
 
-static void lt_cmd_pause(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_pause(struct CfrLottieState *st, CfrTerm *vt,
                          const char *json, size_t json_len)
 {
     size_t vlen;
@@ -1023,7 +1023,7 @@ static void lt_cmd_pause(struct BvtLottieState *st, BvtTerm *vt,
     lt_damage_all_placements(vt, rec);
 }
 
-static void lt_cmd_stop(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_stop(struct CfrLottieState *st, CfrTerm *vt,
                         const char *json, size_t json_len)
 {
     size_t vlen;
@@ -1046,7 +1046,7 @@ static void lt_cmd_stop(struct BvtLottieState *st, BvtTerm *vt,
     lt_damage_all_placements(vt, rec);
 }
 
-static void lt_cmd_seek(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_seek(struct CfrLottieState *st, CfrTerm *vt,
                         const char *json, size_t json_len)
 {
     size_t vlen;
@@ -1079,7 +1079,7 @@ static void lt_cmd_seek(struct BvtLottieState *st, BvtTerm *vt,
     lt_damage_all_placements(vt, rec);
 }
 
-static void lt_cmd_delete(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_delete(struct CfrLottieState *st, CfrTerm *vt,
                           const char *json, size_t json_len)
 {
     size_t vlen;
@@ -1102,7 +1102,7 @@ static void lt_cmd_delete(struct BvtLottieState *st, BvtTerm *vt,
 /* Chunked upload                                                     */
 /* ------------------------------------------------------------------ */
 
-static LtChunkAccum *lt_find_chunk(struct BvtLottieState *st, uint64_t id)
+static LtChunkAccum *lt_find_chunk(struct CfrLottieState *st, uint64_t id)
 {
     for (int i = 0; i < st->chunk_count; i++) {
         if (st->chunks[i].id == id)
@@ -1111,18 +1111,18 @@ static LtChunkAccum *lt_find_chunk(struct BvtLottieState *st, uint64_t id)
     return NULL;
 }
 
-static LtChunkAccum *lt_chunk_alloc(struct BvtLottieState *st, BvtTerm *vt,
+static LtChunkAccum *lt_chunk_alloc(struct CfrLottieState *st, CfrTerm *vt,
                                     uint64_t id)
 {
     if (st->chunk_count >= st->chunk_cap) {
         int new_cap = st->chunk_cap ? st->chunk_cap * 2 : 4;
-        LtChunkAccum *new_chunks = bvt_alloc(vt, (size_t)new_cap * sizeof(LtChunkAccum));
+        LtChunkAccum *new_chunks = cfr_alloc(vt, (size_t)new_cap * sizeof(LtChunkAccum));
         if (!new_chunks)
             return NULL;
         if (st->chunks) {
             memcpy(new_chunks, st->chunks,
                    (size_t)st->chunk_count * sizeof(LtChunkAccum));
-            bvt_dealloc(vt, st->chunks);
+            cfr_dealloc(vt, st->chunks);
         }
         st->chunks = new_chunks;
         st->chunk_cap = new_cap;
@@ -1133,15 +1133,15 @@ static LtChunkAccum *lt_chunk_alloc(struct BvtLottieState *st, BvtTerm *vt,
     return c;
 }
 
-static void lt_chunk_discard(BvtTerm *vt, struct BvtLottieState *st,
+static void lt_chunk_discard(CfrTerm *vt, struct CfrLottieState *st,
                              LtChunkAccum *c)
 {
     if (c->buf)
-        bvt_dealloc(vt, c->buf);
+        cfr_dealloc(vt, c->buf);
     *c = st->chunks[--st->chunk_count];
 }
 
-static void lt_cmd_load_chunk(struct BvtLottieState *st, BvtTerm *vt,
+static void lt_cmd_load_chunk(struct CfrLottieState *st, CfrTerm *vt,
                               const char *json, size_t json_len)
 {
     size_t vlen;
@@ -1191,7 +1191,7 @@ static void lt_cmd_load_chunk(struct BvtLottieState *st, BvtTerm *vt,
 
     /* Decode the base64 data field */
     size_t dec_cap = b64_len;
-    uint8_t *decoded = bvt_alloc(vt, dec_cap + 1);
+    uint8_t *decoded = cfr_alloc(vt, dec_cap + 1);
     if (!decoded) {
         lt_chunk_discard(vt, st, c);
         return;
@@ -1200,23 +1200,23 @@ static void lt_cmd_load_chunk(struct BvtLottieState *st, BvtTerm *vt,
 
     if (c->buf_len + dec_len > c->buf_cap) {
         size_t new_cap = (c->buf_len + dec_len) * 2;
-        uint8_t *new_buf = bvt_alloc(vt, new_cap);
+        uint8_t *new_buf = cfr_alloc(vt, new_cap);
         if (!new_buf) {
-            bvt_dealloc(vt, decoded);
+            cfr_dealloc(vt, decoded);
             lt_chunk_discard(vt, st, c);
             return;
         }
         if (c->buf_len > 0)
             memcpy(new_buf, c->buf, c->buf_len);
         if (c->buf)
-            bvt_dealloc(vt, c->buf);
+            cfr_dealloc(vt, c->buf);
         c->buf = new_buf;
         c->buf_cap = new_cap;
     }
     memcpy(c->buf + c->buf_len, decoded, dec_len);
     c->buf_len += dec_len;
     c->chunks_received++;
-    bvt_dealloc(vt, decoded);
+    cfr_dealloc(vt, decoded);
 
     if (c->chunks_received == c->chunks_total) {
         char *full_json = (char *)c->buf;
@@ -1225,7 +1225,7 @@ static void lt_cmd_load_chunk(struct BvtLottieState *st, BvtTerm *vt,
 
         /* Build a synthetic load command wrapping the concatenated Lottie JSON */
         size_t synth_cap = full_len + 64;
-        char *synth = bvt_alloc(vt, synth_cap);
+        char *synth = cfr_alloc(vt, synth_cap);
         if (synth) {
             int n = snprintf(synth, synth_cap,
                              "{\"cmd\":\"load\",\"id\":%llu,\"lottie\":",
@@ -1240,7 +1240,7 @@ static void lt_cmd_load_chunk(struct BvtLottieState *st, BvtTerm *vt,
                     lt_cmd_load(st, vt, synth, synth_len);
                 }
             }
-            bvt_dealloc(vt, synth);
+            cfr_dealloc(vt, synth);
         }
 
         lt_chunk_discard(vt, st, c);
@@ -1251,14 +1251,14 @@ static void lt_cmd_load_chunk(struct BvtLottieState *st, BvtTerm *vt,
 /* APC dispatch                                                       */
 /* ------------------------------------------------------------------ */
 
-void bvt_lottie_apc_dispatch(BvtTerm *vt, const uint8_t *body, size_t body_len)
+void cfr_lottie_apc_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
 {
-    struct BvtLottieState *st = lt_state(vt);
+    struct CfrLottieState *st = lt_state(vt);
     if (!st)
         return;
 
     size_t dec_cap = body_len;
-    uint8_t *decoded = bvt_alloc(vt, dec_cap + 1);
+    uint8_t *decoded = cfr_alloc(vt, dec_cap + 1);
     if (!decoded)
         return;
     size_t dec_len = lt_base64_decode(body, body_len, decoded, dec_cap);
@@ -1268,7 +1268,7 @@ void bvt_lottie_apc_dispatch(BvtTerm *vt, const uint8_t *body, size_t body_len)
     const char *cmd = lt_json_find_key((const char *)decoded, dec_len,
                                        "cmd", &cmd_len);
     if (!cmd) {
-        bvt_dealloc(vt, decoded);
+        cfr_dealloc(vt, decoded);
         return;
     }
 
@@ -1289,16 +1289,16 @@ void bvt_lottie_apc_dispatch(BvtTerm *vt, const uint8_t *body, size_t body_len)
     else if (cmd_len == 12 && memcmp(cmd, "\"load-chunk\"", 12) == 0)
         lt_cmd_load_chunk(st, vt, (const char *)decoded, dec_len);
 
-    bvt_dealloc(vt, decoded);
+    cfr_dealloc(vt, decoded);
 }
 
 /* ------------------------------------------------------------------ */
 /* Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-bool bvt_lottie_tick(BvtTerm *vt, uint64_t now_us)
+bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us)
 {
-    struct BvtLottieState *st = vt->lottie;
+    struct CfrLottieState *st = vt->lottie;
     if (!st || st->rec_count == 0)
         return false;
 
@@ -1348,31 +1348,31 @@ bool bvt_lottie_tick(BvtTerm *vt, uint64_t now_us)
     return any_advanced;
 }
 
-const BvtLottie *bvt_get_lotties(BvtTerm *vt, int *out_count)
+const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count)
 {
-    struct BvtLottieState *st = vt->lottie;
+    struct CfrLottieState *st = vt->lottie;
     if (!st || st->rec_count == 0) {
         *out_count = 0;
         return NULL;
     }
 
-    size_t total = (size_t)st->rec_count * sizeof(BvtLottie);
+    size_t total = (size_t)st->rec_count * sizeof(CfrLottie);
     if (total > st->scratch_cap) {
         size_t new_cap = total * 2;
-        uint8_t *new_scratch = bvt_alloc(vt, new_cap);
+        uint8_t *new_scratch = cfr_alloc(vt, new_cap);
         if (!new_scratch) {
             *out_count = 0;
             return NULL;
         }
         if (st->scratch)
-            bvt_dealloc(vt, st->scratch);
+            cfr_dealloc(vt, st->scratch);
         st->scratch = new_scratch;
         st->scratch_cap = new_cap;
     }
 
     for (int i = 0; i < st->rec_count; i++) {
         LtRec *r = &st->recs[i];
-        BvtLottie *l = &((BvtLottie *)st->scratch)[i];
+        CfrLottie *l = &((CfrLottie *)st->scratch)[i];
         l->id = r->id;
         l->version = r->version;
         l->canvas_w = r->px_w;
@@ -1388,13 +1388,13 @@ const BvtLottie *bvt_get_lotties(BvtTerm *vt, int *out_count)
     }
 
     *out_count = st->rec_count;
-    return (BvtLottie *)st->scratch;
+    return (CfrLottie *)st->scratch;
 }
 
-const BvtLottiePlacement *bvt_get_lottie_placements(BvtTerm *vt, uint64_t id,
+const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
                                                     int *out_count)
 {
-    struct BvtLottieState *st = vt->lottie;
+    struct CfrLottieState *st = vt->lottie;
     if (!st) {
         *out_count = 0;
         return NULL;
@@ -1411,13 +1411,13 @@ const BvtLottiePlacement *bvt_get_lottie_placements(BvtTerm *vt, uint64_t id,
         int ncap = st->pl_scratch_cap ? st->pl_scratch_cap * 2 : 8;
         while (ncap < need)
             ncap *= 2;
-        BvtLottiePlacement *ns = bvt_alloc(vt, (size_t)ncap * sizeof(*ns));
+        CfrLottiePlacement *ns = cfr_alloc(vt, (size_t)ncap * sizeof(*ns));
         if (!ns) {
             *out_count = 0;
             return NULL;
         }
         if (st->pl_scratch)
-            bvt_dealloc(vt, st->pl_scratch);
+            cfr_dealloc(vt, st->pl_scratch);
         st->pl_scratch = ns;
         st->pl_scratch_cap = ncap;
     }
@@ -1436,9 +1436,9 @@ const BvtLottiePlacement *bvt_get_lottie_placements(BvtTerm *vt, uint64_t id,
 /* Grid maintenance                                                   */
 /* ------------------------------------------------------------------ */
 
-void bvt_lottie_note_scroll(BvtTerm *vt, int lines)
+void cfr_lottie_note_scroll(CfrTerm *vt, int lines)
 {
-    struct BvtLottieState *st = vt->lottie;
+    struct CfrLottieState *st = vt->lottie;
     if (!st || st->rec_count == 0)
         return;
     (void)lines;
@@ -1462,9 +1462,9 @@ void bvt_lottie_note_scroll(BvtTerm *vt, int lines)
     }
 }
 
-void bvt_lottie_clear_display_rows(BvtTerm *vt, int top, int bot)
+void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot)
 {
-    struct BvtLottieState *st = vt->lottie;
+    struct CfrLottieState *st = vt->lottie;
     if (!st)
         return;
     if (st->rec_count == 0)
@@ -1473,7 +1473,7 @@ void bvt_lottie_clear_display_rows(BvtTerm *vt, int top, int bot)
     for (int i = 0; i < st->rec_count;) {
         bool removed_any = false;
         for (int j = 0; j < st->recs[i].placement_count;) {
-            BvtLottiePlacement *pl = &st->recs[i].placements[j];
+            CfrLottiePlacement *pl = &st->recs[i].placements[j];
             if (pl->layer != 0) {
                 ++j;
                 continue;
@@ -1498,9 +1498,9 @@ void bvt_lottie_clear_display_rows(BvtTerm *vt, int top, int bot)
     }
 }
 
-void bvt_lottie_clear_all(BvtTerm *vt)
+void cfr_lottie_clear_all(CfrTerm *vt)
 {
-    struct BvtLottieState *st = vt->lottie;
+    struct CfrLottieState *st = vt->lottie;
     if (!st)
         return;
 
@@ -1512,34 +1512,34 @@ void bvt_lottie_clear_all(BvtTerm *vt)
 /* Lifecycle                                                          */
 /* ------------------------------------------------------------------ */
 
-void bvt_lottie_state_free(BvtTerm *vt)
+void cfr_lottie_state_free(CfrTerm *vt)
 {
-    struct BvtLottieState *st = vt->lottie;
+    struct CfrLottieState *st = vt->lottie;
     if (!st)
         return;
 
-    bvt_lottie_clear_all(vt);
+    cfr_lottie_clear_all(vt);
 
     if (st->recs)
-        bvt_dealloc(vt, st->recs);
+        cfr_dealloc(vt, st->recs);
 
     for (int i = 0; i < st->chunk_count; i++) {
         if (st->chunks[i].buf)
-            bvt_dealloc(vt, st->chunks[i].buf);
+            cfr_dealloc(vt, st->chunks[i].buf);
     }
     if (st->chunks)
-        bvt_dealloc(vt, st->chunks);
+        cfr_dealloc(vt, st->chunks);
 
     for (int i = 0; i < st->spare_count; i++)
-        bvt_dealloc(vt, st->spares[i].buf);
+        cfr_dealloc(vt, st->spares[i].buf);
 
     if (st->scratch)
-        bvt_dealloc(vt, st->scratch);
+        cfr_dealloc(vt, st->scratch);
 
     if (st->pl_scratch)
-        bvt_dealloc(vt, st->pl_scratch);
+        cfr_dealloc(vt, st->pl_scratch);
 
-    bvt_dealloc(vt, st);
+    cfr_dealloc(vt, st);
     vt->lottie = NULL;
 
 #ifdef HAVE_THORVG
@@ -1547,7 +1547,7 @@ void bvt_lottie_state_free(BvtTerm *vt)
 #endif
 }
 
-bool bvt_have_lottie(void)
+bool cfr_have_lottie(void)
 {
 #ifdef HAVE_THORVG
     return true;

@@ -3,9 +3,9 @@ exec_prefix=@exec_prefix@
 libdir=@libdir@
 includedir=@includedir@
 
-Name: bloom-vt
+Name: coffer
 Description: Standalone virtual terminal engine (UAX-aware grapheme clustering, scrollback, reflow)
-URL: https://github.com/thomas-christensen/bloom-vt
-Version: @BLOOM_VT_VERSION@
+URL: https://github.com/thomas-christensen/coffer
+Version: @COFFER_VERSION@
 Cflags: -I${includedir}
-Libs: -L${libdir} -lbloom-vt @THORVG_LIBS@ -lm
+Libs: -L${libdir} -lcoffer @THORVG_LIBS@ -lm

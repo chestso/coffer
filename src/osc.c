@@ -1,5 +1,5 @@
 /*
- * bloom-vt — OSC dispatcher.
+ * coffer — OSC dispatcher.
  *
  * Parses the leading numeric code and routes title-setting (0/1/2) to
  * the set_title callback, hands OSC 8 to the hyperlink dispatcher, and
@@ -13,7 +13,7 @@
  * use the URI alone — same-URI dedup gives renderers free run-continuity.
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -36,12 +36,12 @@ static int parse_code(const uint8_t *data, size_t len, size_t *out_offset)
 
 /* OSC 8 dispatcher. Body shape: `params;URI`. The URI runs from the
  * first ';' to the end. An empty URI ('') closes the active hyperlink. */
-static void osc8_dispatch(BvtTerm *vt, const uint8_t *body, size_t body_len)
+static void osc8_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
 {
     /* Commit any pending cluster before mutating the pen — same pattern
      * as csi.c / esc.c / modes.c. Without this the previous link's text
      * (still in cluster_buf) would be stamped with the new id. */
-    bvt_flush_cluster(vt);
+    cfr_flush_cluster(vt);
 
     /* Find the first ';' separating params from URI. Per spec the
      * params field cannot contain ';', so a literal scan is correct. */
@@ -61,15 +61,15 @@ static void osc8_dispatch(BvtTerm *vt, const uint8_t *body, size_t body_len)
         return;
     }
     /* Lazy grid alloc — interning lives on the active grid page. */
-    bvt_grid_ensure(vt);
+    cfr_grid_ensure(vt);
     vt->cursor.hyperlink_id =
-        bvt_hyperlink_intern(vt, vt->grid, uri, (uint32_t)uri_len);
+        cfr_hyperlink_intern(vt, vt->grid, uri, (uint32_t)uri_len);
 }
 
-static void set_title(BvtTerm *vt, const uint8_t *data, size_t len)
+static void set_title(CfrTerm *vt, const uint8_t *data, size_t len)
 {
-    bvt_dealloc(vt, vt->title);
-    vt->title = bvt_alloc(vt, len + 1);
+    cfr_dealloc(vt, vt->title);
+    vt->title = cfr_alloc(vt, len + 1);
     if (!vt->title)
         return;
     memcpy(vt->title, data, len);
@@ -78,7 +78,7 @@ static void set_title(BvtTerm *vt, const uint8_t *data, size_t len)
         vt->callbacks.set_title(vt->title, vt->callback_user);
 }
 
-void bvt_osc_dispatch(BvtTerm *vt, const uint8_t *data, size_t len)
+void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
 {
     size_t off = 0;
     int code = parse_code(data, len, &off);
@@ -105,7 +105,7 @@ void bvt_osc_dispatch(BvtTerm *vt, const uint8_t *data, size_t len)
          * which ConPTY does pass through.  The body after the
          * semicolon is identical to what would have been the APC
          * string body. */
-        bvt_lottie_apc_dispatch(vt, body, body_len);
+        cfr_lottie_apc_dispatch(vt, body, body_len);
         break;
     default:
         if (vt->callbacks.osc) {

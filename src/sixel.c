@@ -1,9 +1,9 @@
 /*
- * bloom-vt — sixel graphics: DCS decoder + grid-anchored image store.
+ * coffer — sixel graphics: DCS decoder + grid-anchored image store.
  *
  * The engine owns sixel end-to-end. A `DCS <P1;P2;P3> q <data> ST`
  * sequence is intercepted in dcs.c (final byte 'q') and streamed here:
- * bvt_sixel_begin / bvt_sixel_put / bvt_sixel_finish. The decoder turns
+ * cfr_sixel_begin / cfr_sixel_put / cfr_sixel_finish. The decoder turns
  * the payload into an RGBA bitmap; on finish the image is anchored to an
  * absolute grid line (so it scrolls and enters scrollback with the text
  * it sits on) and the cursor advances below it.
@@ -24,16 +24,16 @@
  * budget that evicts the oldest image first (which is also scroll-off
  * order), and a retained-pool ceiling.
  *
- * Single-threaded: all mutation happens under bvt_input_write and reads
- * under bvt_get_sixels, on the caller's one thread. No locking.
+ * Single-threaded: all mutation happens under cfr_input_write and reads
+ * under cfr_get_sixels, on the caller's one thread. No locking.
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <stdio.h>
 #include <string.h>
 
-typedef struct BvtSixelState BvtSixelState;
+typedef struct CfrSixelState CfrSixelState;
 
 /* ------------------------------------------------------------------ */
 /* Tunables                                                            */
@@ -87,7 +87,7 @@ typedef struct
     size_t cap;
 } SxSpare;
 
-struct BvtSixelState
+struct CfrSixelState
 {
     /* Decode canvas (reused across images; grows, never handed out). */
     uint8_t *canvas;
@@ -124,7 +124,7 @@ struct BvtSixelState
     size_t live_bytes;
 
     /* Query scratch — reused, grown, never freed between calls. */
-    BvtSixel *scratch;
+    CfrSixel *scratch;
     int scratch_cap;
 
     /* Pixel-buffer pool (tier 2). */
@@ -150,7 +150,7 @@ static const SxColor sx_default_palette[16] = {
 /* ------------------------------------------------------------------ */
 
 /* Best-fit pop a retained buffer with cap >= need, else malloc exactly. */
-static uint8_t *sx_buf_alloc(BvtTerm *vt, BvtSixelState *st, size_t need,
+static uint8_t *sx_buf_alloc(CfrTerm *vt, CfrSixelState *st, size_t need,
                              size_t *out_cap)
 {
     int best = -1;
@@ -167,13 +167,13 @@ static uint8_t *sx_buf_alloc(BvtTerm *vt, BvtSixelState *st, size_t need,
         *out_cap = cap;
         return p;
     }
-    uint8_t *p = bvt_alloc(vt, need);
+    uint8_t *p = cfr_alloc(vt, need);
     *out_cap = p ? need : 0;
     return p;
 }
 
 /* Retain a freed buffer for reuse, or free it if the pool is full. */
-static void sx_buf_release(BvtTerm *vt, BvtSixelState *st, uint8_t *ptr,
+static void sx_buf_release(CfrTerm *vt, CfrSixelState *st, uint8_t *ptr,
                            size_t cap)
 {
     if (!ptr)
@@ -186,14 +186,14 @@ static void sx_buf_release(BvtTerm *vt, BvtSixelState *st, uint8_t *ptr,
         st->retain_bytes += cap;
         return;
     }
-    bvt_dealloc(vt, ptr);
+    cfr_dealloc(vt, ptr);
 }
 
 /* ------------------------------------------------------------------ */
 /* Store (tier 1)                                                      */
 /* ------------------------------------------------------------------ */
 
-static void sx_rec_release(BvtTerm *vt, BvtSixelState *st, int idx)
+static void sx_rec_release(CfrTerm *vt, CfrSixelState *st, int idx)
 {
     SxRec *r = &st->recs[idx];
     st->live_bytes -= r->cap;
@@ -202,7 +202,7 @@ static void sx_rec_release(BvtTerm *vt, BvtSixelState *st, int idx)
 }
 
 /* Evict oldest (lowest abs_line) images until `incoming` more bytes fit. */
-static void sx_evict_to_budget(BvtTerm *vt, BvtSixelState *st, size_t incoming)
+static void sx_evict_to_budget(CfrTerm *vt, CfrSixelState *st, size_t incoming)
 {
     while (st->rec_count > 0 && st->live_bytes + incoming > SX_LIVE_MAX) {
         int m = 0;
@@ -215,7 +215,7 @@ static void sx_evict_to_budget(BvtTerm *vt, BvtSixelState *st, size_t incoming)
 
 /* Find an existing record at the same anchor + layer (for animation /
  * in-place frame replacement). Returns index or -1. */
-static int sx_find_at(BvtSixelState *st, long abs_line, int col, uint8_t layer)
+static int sx_find_at(CfrSixelState *st, long abs_line, int col, uint8_t layer)
 {
     for (int i = 0; i < st->rec_count; ++i)
         if (st->recs[i].abs_line == abs_line && st->recs[i].col == col &&
@@ -228,7 +228,7 @@ static int sx_find_at(BvtSixelState *st, long abs_line, int col, uint8_t layer)
 /* Decode canvas                                                       */
 /* ------------------------------------------------------------------ */
 
-static bool sx_canvas_ensure(BvtTerm *vt, BvtSixelState *st, int need_x,
+static bool sx_canvas_ensure(CfrTerm *vt, CfrSixelState *st, int need_x,
                              int need_y)
 {
     int nw = st->canvas_w;
@@ -246,7 +246,7 @@ static bool sx_canvas_ensure(BvtTerm *vt, BvtSixelState *st, int need_x,
 
     size_t need_bytes = (size_t)nw * (size_t)nh * 4u;
     if (need_bytes > st->canvas_cap) {
-        uint8_t *nb = bvt_alloc(vt, need_bytes);
+        uint8_t *nb = cfr_alloc(vt, need_bytes);
         if (!nb)
             return false;
         memset(nb, 0, need_bytes);
@@ -255,7 +255,7 @@ static bool sx_canvas_ensure(BvtTerm *vt, BvtSixelState *st, int need_x,
             memcpy(nb + (size_t)row * nw * 4,
                    st->canvas + (size_t)row * st->canvas_w * 4,
                    (size_t)st->canvas_w * 4);
-        bvt_dealloc(vt, st->canvas);
+        cfr_dealloc(vt, st->canvas);
         st->canvas = nb;
         st->canvas_cap = need_bytes;
     } else {
@@ -306,7 +306,7 @@ static SxColor sx_hls_to_rgb(int h, int l, int s)
     return out;
 }
 
-static void sx_draw(BvtTerm *vt, BvtSixelState *st, uint8_t bits)
+static void sx_draw(CfrTerm *vt, CfrSixelState *st, uint8_t bits)
 {
     if (!sx_canvas_ensure(vt, st, st->x, st->y + SX_BAND - 1)) {
         /* Canvas hit the clamp; advance position but drop the pixels so a
@@ -335,7 +335,7 @@ static void sx_draw(BvtTerm *vt, BvtSixelState *st, uint8_t bits)
     st->x++;
 }
 
-static void sx_finish_color(BvtSixelState *st)
+static void sx_finish_color(CfrSixelState *st)
 {
     if (st->param_count == 0)
         return;
@@ -364,7 +364,7 @@ static void sx_finish_color(BvtSixelState *st)
     st->cur_color = idx;
 }
 
-static void sx_finish_raster(BvtTerm *vt, BvtSixelState *st)
+static void sx_finish_raster(CfrTerm *vt, CfrSixelState *st)
 {
     /* "Pan;Pad;Ph;Pv — aspect num/den + width/height. We render 1:1 like
      * xterm/foot/wezterm (aspect parsed but not applied) and use Ph/Pv as
@@ -380,11 +380,11 @@ static void sx_finish_raster(BvtTerm *vt, BvtSixelState *st)
 /* DCS lifecycle                                                       */
 /* ------------------------------------------------------------------ */
 
-static BvtSixelState *sx_state(BvtTerm *vt)
+static CfrSixelState *sx_state(CfrTerm *vt)
 {
     if (vt->sixel)
         return vt->sixel;
-    BvtSixelState *st = bvt_alloc(vt, sizeof(*st));
+    CfrSixelState *st = cfr_alloc(vt, sizeof(*st));
     if (!st)
         return NULL;
     memset(st, 0, sizeof(*st));
@@ -393,16 +393,16 @@ static BvtSixelState *sx_state(BvtTerm *vt)
     return st;
 }
 
-void bvt_sixel_begin(BvtTerm *vt, const uint32_t *params, int nparams)
+void cfr_sixel_begin(CfrTerm *vt, const uint32_t *params, int nparams)
 {
-    BvtSixelState *st = sx_state(vt);
+    CfrSixelState *st = sx_state(vt);
     if (!st)
         return;
 
     /* Settle the cursor and make sure the grid exists — placement,
      * scroll, and clearing all operate on it. */
-    bvt_flush_cluster(vt);
-    bvt_grid_ensure(vt);
+    cfr_flush_cluster(vt);
+    cfr_grid_ensure(vt);
 
     /* Fresh decode canvas (transparent). Private color registers (mode
      * 1070) are the default; we reset the palette per image. Shared
@@ -410,7 +410,7 @@ void bvt_sixel_begin(BvtTerm *vt, const uint32_t *params, int nparams)
      * real encoders define their colors each image. */
     if (!st->canvas) {
         size_t bytes = (size_t)SX_INIT_W * SX_INIT_H * 4u;
-        st->canvas = bvt_alloc(vt, bytes);
+        st->canvas = cfr_alloc(vt, bytes);
         st->canvas_cap = st->canvas ? bytes : 0;
         st->canvas_w = SX_INIT_W;
         st->canvas_h = SX_INIT_H;
@@ -448,9 +448,9 @@ void bvt_sixel_begin(BvtTerm *vt, const uint32_t *params, int nparams)
     st->anchor_col = vt->cursor.col;
 }
 
-void bvt_sixel_put(BvtTerm *vt, const uint8_t *data, size_t len)
+void cfr_sixel_put(CfrTerm *vt, const uint8_t *data, size_t len)
 {
-    BvtSixelState *st = vt->sixel;
+    CfrSixelState *st = vt->sixel;
     if (!st || !st->active || st->dropped || !data)
         return;
 
@@ -547,25 +547,25 @@ void bvt_sixel_put(BvtTerm *vt, const uint8_t *data, size_t len)
 
 /* Damage the visible rows an image at display row `top` spanning
  * `rows_tall` rows occupies, so the host redraws and re-queries. */
-static void sx_damage_image(BvtTerm *vt, int top, int rows_tall)
+static void sx_damage_image(CfrTerm *vt, int top, int rows_tall)
 {
     int a = top < 0 ? 0 : top;
     int b = top + rows_tall - 1;
     if (b >= vt->rows)
         b = vt->rows - 1;
     for (int r = a; r <= b; ++r)
-        bvt_damage_row(vt, r);
+        cfr_damage_row(vt, r);
 }
 
 /* Move the cursor below a placed image and scroll the grid as needed,
  * mirroring linefeed semantics so abs_top + scrollback stay consistent. */
-static void sx_advance_cursor(BvtTerm *vt, int rows_tall, int cols_wide)
+static void sx_advance_cursor(CfrTerm *vt, int rows_tall, int cols_wide)
 {
-    if (vt->modes[BVT_MODE_SIXEL_SCROLLING]) {
+    if (vt->modes[CFR_MODE_SIXEL_SCROLLING]) {
         /* DECSDM on: draw in place, leave the cursor put (animation). */
         return;
     }
-    if (vt->modes[BVT_MODE_SIXEL_CURSOR_RIGHT]) {
+    if (vt->modes[CFR_MODE_SIXEL_CURSOR_RIGHT]) {
         /* Mode 8452: cursor to the upper-right of the graphic. */
         int c = vt->cursor.col + cols_wide;
         if (c > vt->cols - 1)
@@ -578,7 +578,7 @@ static void sx_advance_cursor(BvtTerm *vt, int rows_tall, int cols_wide)
     int col = vt->cursor.col;
     for (int i = 0; i < rows_tall; ++i) {
         if (vt->cursor.row == vt->scroll_bottom)
-            bvt_scroll_up(vt, 1);
+            cfr_scroll_up(vt, 1);
         else if (vt->cursor.row < vt->rows - 1)
             vt->cursor.row++;
     }
@@ -586,9 +586,9 @@ static void sx_advance_cursor(BvtTerm *vt, int rows_tall, int cols_wide)
     vt->cursor.pending_wrap = false;
 }
 
-void bvt_sixel_finish(BvtTerm *vt)
+void cfr_sixel_finish(CfrTerm *vt)
 {
-    BvtSixelState *st = vt->sixel;
+    CfrSixelState *st = vt->sixel;
     if (!st || !st->active)
         return;
     st->active = false;
@@ -650,7 +650,7 @@ void bvt_sixel_finish(BvtTerm *vt)
             int ncap = st->rec_cap ? st->rec_cap * 2 : 8;
             if (ncap > SX_MAX_IMAGES)
                 ncap = SX_MAX_IMAGES;
-            SxRec *nr = bvt_realloc(vt, st->recs, (size_t)ncap * sizeof(SxRec));
+            SxRec *nr = cfr_realloc(vt, st->recs, (size_t)ncap * sizeof(SxRec));
             if (!nr)
                 return;
             st->recs = nr;
@@ -689,9 +689,9 @@ void bvt_sixel_finish(BvtTerm *vt)
 /* Grid maintenance                                                    */
 /* ------------------------------------------------------------------ */
 
-void bvt_sixel_note_scroll(BvtTerm *vt, int lines)
+void cfr_sixel_note_scroll(CfrTerm *vt, int lines)
 {
-    BvtSixelState *st = vt->sixel;
+    CfrSixelState *st = vt->sixel;
     if (!st || st->rec_count == 0)
         return;
     (void)lines;
@@ -708,9 +708,9 @@ void bvt_sixel_note_scroll(BvtTerm *vt, int lines)
     }
 }
 
-void bvt_sixel_clear_display_rows(BvtTerm *vt, int top, int bot)
+void cfr_sixel_clear_display_rows(CfrTerm *vt, int top, int bot)
 {
-    BvtSixelState *st = vt->sixel;
+    CfrSixelState *st = vt->sixel;
     if (!st || st->rec_count == 0)
         return;
     for (int i = 0; i < st->rec_count;) {
@@ -727,28 +727,28 @@ void bvt_sixel_clear_display_rows(BvtTerm *vt, int top, int bot)
     }
 }
 
-void bvt_sixel_clear_all(BvtTerm *vt)
+void cfr_sixel_clear_all(CfrTerm *vt)
 {
-    BvtSixelState *st = vt->sixel;
+    CfrSixelState *st = vt->sixel;
     if (!st)
         return;
     while (st->rec_count > 0)
         sx_rec_release(vt, st, st->rec_count - 1);
 }
 
-void bvt_sixel_state_free(BvtTerm *vt)
+void cfr_sixel_state_free(CfrTerm *vt)
 {
-    BvtSixelState *st = vt->sixel;
+    CfrSixelState *st = vt->sixel;
     if (!st)
         return;
     for (int i = 0; i < st->rec_count; ++i)
-        bvt_dealloc(vt, st->recs[i].rgba);
+        cfr_dealloc(vt, st->recs[i].rgba);
     for (int i = 0; i < st->spare_count; ++i)
-        bvt_dealloc(vt, st->spares[i].ptr);
-    bvt_dealloc(vt, st->recs);
-    bvt_dealloc(vt, st->scratch);
-    bvt_dealloc(vt, st->canvas);
-    bvt_dealloc(vt, st);
+        cfr_dealloc(vt, st->spares[i].ptr);
+    cfr_dealloc(vt, st->recs);
+    cfr_dealloc(vt, st->scratch);
+    cfr_dealloc(vt, st->canvas);
+    cfr_dealloc(vt, st);
     vt->sixel = NULL;
 }
 
@@ -756,7 +756,7 @@ void bvt_sixel_state_free(BvtTerm *vt)
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
 
-void bvt_set_cell_pixels(BvtTerm *vt, int cell_w_px, int cell_h_px)
+void cfr_set_cell_pixels(CfrTerm *vt, int cell_w_px, int cell_h_px)
 {
     if (!vt || cell_w_px <= 0 || cell_h_px <= 0)
         return;
@@ -764,19 +764,19 @@ void bvt_set_cell_pixels(BvtTerm *vt, int cell_w_px, int cell_h_px)
     vt->cell_h_px = cell_h_px;
 }
 
-const BvtSixel *bvt_get_sixels(BvtTerm *vt, int *out_count)
+const CfrSixel *cfr_get_sixels(CfrTerm *vt, int *out_count)
 {
     if (out_count)
         *out_count = 0;
     if (!vt || !vt->sixel || vt->sixel->rec_count == 0)
         return NULL;
-    BvtSixelState *st = vt->sixel;
+    CfrSixelState *st = vt->sixel;
 
     if (st->scratch_cap < st->rec_count) {
         int ncap = st->scratch_cap ? st->scratch_cap * 2 : 8;
         while (ncap < st->rec_count)
             ncap *= 2;
-        BvtSixel *ns = bvt_realloc(vt, st->scratch, (size_t)ncap * sizeof(BvtSixel));
+        CfrSixel *ns = cfr_realloc(vt, st->scratch, (size_t)ncap * sizeof(CfrSixel));
         if (!ns)
             return NULL;
         st->scratch = ns;
@@ -785,7 +785,7 @@ const BvtSixel *bvt_get_sixels(BvtTerm *vt, int *out_count)
 
     for (int i = 0; i < st->rec_count; ++i) {
         SxRec *r = &st->recs[i];
-        BvtSixel *v = &st->scratch[i];
+        CfrSixel *v = &st->scratch[i];
         v->id = r->id;
         v->version = r->version;
         v->layer = r->layer;

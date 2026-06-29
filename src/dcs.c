@@ -1,5 +1,5 @@
 /*
- * bloom-vt — DCS dispatcher.
+ * coffer — DCS dispatcher.
  *
  * Streams DCS payload to the dcs callback chunk-by-chunk. The intro
  * (parameters + intermediates + final byte) is captured at hook time
@@ -11,14 +11,14 @@
  * the VT layer.
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <stdio.h>
 #include <string.h>
 
-static void format_intro(BvtTerm *vt, uint8_t final)
+static void format_intro(CfrTerm *vt, uint8_t final)
 {
-    BvtParser *p = &vt->parser;
+    CfrParser *p = &vt->parser;
     /* "<params>;<intermediates><final>" — params separated by ';',
      * intermediates concatenated. Truncated to fit dcs_intro buffer. */
     size_t pos = 0;
@@ -49,9 +49,9 @@ static void format_intro(BvtTerm *vt, uint8_t final)
     p->dcs_intro_len = (uint8_t)to_copy;
 }
 
-void bvt_dcs_hook(BvtTerm *vt, uint8_t final)
+void cfr_dcs_hook(CfrTerm *vt, uint8_t final)
 {
-    BvtParser *p = &vt->parser;
+    CfrParser *p = &vt->parser;
     format_intro(vt, final);
     p->dcs_initial_sent = true;
 
@@ -60,7 +60,7 @@ void bvt_dcs_hook(BvtTerm *vt, uint8_t final)
      * collected into p->params before the final byte arrived. */
     p->dcs_is_sixel = (final == 'q');
     if (p->dcs_is_sixel) {
-        bvt_sixel_begin(vt, p->params, p->param_count);
+        cfr_sixel_begin(vt, p->params, p->param_count);
         return;
     }
 
@@ -69,13 +69,13 @@ void bvt_dcs_hook(BvtTerm *vt, uint8_t final)
         vt->callbacks.dcs((const char *)p->dcs_intro, NULL, 0, false, vt->callback_user);
 }
 
-void bvt_dcs_put(BvtTerm *vt, uint8_t b)
+void cfr_dcs_put(CfrTerm *vt, uint8_t b)
 {
-    BvtParser *p = &vt->parser;
+    CfrParser *p = &vt->parser;
     if (!p->dcs_initial_sent)
         return;
     if (p->dcs_is_sixel) {
-        bvt_sixel_put(vt, &b, 1);
+        cfr_sixel_put(vt, &b, 1);
         return;
     }
     if (vt->callbacks.dcs)
@@ -83,13 +83,13 @@ void bvt_dcs_put(BvtTerm *vt, uint8_t b)
                           (const char *)&b, 1, false, vt->callback_user);
 }
 
-void bvt_dcs_unhook(BvtTerm *vt)
+void cfr_dcs_unhook(CfrTerm *vt)
 {
-    BvtParser *p = &vt->parser;
+    CfrParser *p = &vt->parser;
     if (!p->dcs_initial_sent)
         return;
     if (p->dcs_is_sixel) {
-        bvt_sixel_finish(vt);
+        cfr_sixel_finish(vt);
         p->dcs_is_sixel = false;
         p->dcs_initial_sent = false;
         return;

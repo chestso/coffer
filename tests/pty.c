@@ -1,5 +1,5 @@
 #define _GNU_SOURCE
-#include "bloom_pty.h"
+#include "coffer_pty.h"
 #include "common.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -169,18 +169,18 @@ PtyContext *pty_create(int rows, int cols, char *const argv[])
         setenv("TERM", "portty-vty-256color", 1);
 
         // Point to our installed terminfo database
-#ifdef BLOOM_DATADIR
+#ifdef COFFER_DATADIR
         {
             char buf[4096];
             const char *home = getenv("HOME");
             const char *existing = getenv("TERMINFO_DIRS");
             if (existing) {
                 snprintf(buf, sizeof(buf),
-                         BLOOM_DATADIR "/terminfo:%s/.terminfo:%s",
+                         COFFER_DATADIR "/terminfo:%s/.terminfo:%s",
                          home ? home : "", existing);
             } else {
                 snprintf(buf, sizeof(buf),
-                         BLOOM_DATADIR "/terminfo:%s/.terminfo:",
+                         COFFER_DATADIR "/terminfo:%s/.terminfo:",
                          home ? home : "");
             }
             setenv("TERMINFO_DIRS", buf, 1);
@@ -188,16 +188,16 @@ PtyContext *pty_create(int rows, int cols, char *const argv[])
 #endif
 
         // Help emacs find our term/*.el file
-#ifdef BLOOM_DATADIR
+#ifdef COFFER_DATADIR
         {
             char buf[4096];
             const char *existing = getenv("EMACSLOADPATH");
             if (existing) {
                 snprintf(buf, sizeof(buf),
-                         BLOOM_DATADIR "/emacs/site-lisp:%s", existing);
+                         COFFER_DATADIR "/emacs/site-lisp:%s", existing);
             } else {
                 snprintf(buf, sizeof(buf),
-                         BLOOM_DATADIR "/emacs/site-lisp:");
+                         COFFER_DATADIR "/emacs/site-lisp:");
             }
             setenv("EMACSLOADPATH", buf, 1);
         }

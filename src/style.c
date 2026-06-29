@@ -1,8 +1,8 @@
 /*
- * bloom-vt — per-page style intern table.
+ * coffer — per-page style intern table.
  *
  * Layout:
- *   page->styles.entries[]: dense array of BvtStyle, indexed by style id.
+ *   page->styles.entries[]: dense array of CfrStyle, indexed by style id.
  *   page->styles.index[]:   open-addressed hash table mapping
  *                           (slot = hash & (index_capacity-1)) -> entry id.
  *
@@ -16,20 +16,20 @@
  * a typical session.
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <string.h>
 
 #define STYLE_INDEX_EMPTY UINT32_MAX
 
-static const BvtStyle DEFAULT_STYLE = {
+static const CfrStyle DEFAULT_STYLE = {
     .fg_rgb = 0,
     .bg_rgb = 0,
     .ul_rgb = 0,
     .attrs = 0,
     .underline = 0,
     .font = 0,
-    .color_flags = BVT_COLOR_DEFAULT_FG | BVT_COLOR_DEFAULT_BG | BVT_COLOR_DEFAULT_UL,
+    .color_flags = CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_BG | CFR_COLOR_DEFAULT_UL,
 };
 
 /* FNV-1a 32-bit. */
@@ -44,12 +44,12 @@ static uint32_t fnv1a(const void *data, size_t len)
     return h;
 }
 
-static bool ensure_init(BvtTerm *vt, BvtPage *page)
+static bool ensure_init(CfrTerm *vt, CfrPage *page)
 {
     if (page->styles.entries)
         return true;
-    page->styles.capacity = BVT_STYLES_INIT;
-    page->styles.entries = bvt_alloc(vt, page->styles.capacity * sizeof(BvtStyle));
+    page->styles.capacity = CFR_STYLES_INIT;
+    page->styles.entries = cfr_alloc(vt, page->styles.capacity * sizeof(CfrStyle));
     if (!page->styles.entries) {
         page->styles.capacity = 0;
         return false;
@@ -59,11 +59,11 @@ static bool ensure_init(BvtTerm *vt, BvtPage *page)
     page->styles.count = 1;
 
     /* Index sized 2x so open addressing has headroom from the start. */
-    page->styles.index_capacity = BVT_STYLES_INIT * 2;
-    page->styles.index = bvt_alloc(
+    page->styles.index_capacity = CFR_STYLES_INIT * 2;
+    page->styles.index = cfr_alloc(
         vt, page->styles.index_capacity * sizeof(uint32_t));
     if (!page->styles.index) {
-        bvt_dealloc(vt, page->styles.entries);
+        cfr_dealloc(vt, page->styles.entries);
         page->styles.entries = NULL;
         page->styles.capacity = 0;
         page->styles.count = 0;
@@ -75,10 +75,10 @@ static bool ensure_init(BvtTerm *vt, BvtPage *page)
     return true;
 }
 
-static bool grow_index(BvtTerm *vt, BvtPage *page)
+static bool grow_index(CfrTerm *vt, CfrPage *page)
 {
     uint32_t new_cap = page->styles.index_capacity * 2;
-    uint32_t *new_index = bvt_alloc(vt, new_cap * sizeof(uint32_t));
+    uint32_t *new_index = cfr_alloc(vt, new_cap * sizeof(uint32_t));
     if (!new_index)
         return false;
     for (uint32_t i = 0; i < new_cap; ++i)
@@ -86,23 +86,23 @@ static bool grow_index(BvtTerm *vt, BvtPage *page)
     /* Re-insert each non-default entry. */
     uint32_t mask = new_cap - 1;
     for (uint32_t e = 1; e < page->styles.count; ++e) {
-        uint32_t h = fnv1a(&page->styles.entries[e], sizeof(BvtStyle));
+        uint32_t h = fnv1a(&page->styles.entries[e], sizeof(CfrStyle));
         uint32_t slot = h & mask;
         while (new_index[slot] != STYLE_INDEX_EMPTY)
             slot = (slot + 1) & mask;
         new_index[slot] = e;
     }
-    bvt_dealloc(vt, page->styles.index);
+    cfr_dealloc(vt, page->styles.index);
     page->styles.index = new_index;
     page->styles.index_capacity = new_cap;
     return true;
 }
 
-static bool grow_entries(BvtTerm *vt, BvtPage *page)
+static bool grow_entries(CfrTerm *vt, CfrPage *page)
 {
     uint32_t new_cap = page->styles.capacity * 2;
-    BvtStyle *ne = bvt_realloc(
-        vt, page->styles.entries, new_cap * sizeof(BvtStyle));
+    CfrStyle *ne = cfr_realloc(
+        vt, page->styles.entries, new_cap * sizeof(CfrStyle));
     if (!ne)
         return false;
     page->styles.entries = ne;
@@ -110,7 +110,7 @@ static bool grow_entries(BvtTerm *vt, BvtPage *page)
     return true;
 }
 
-uint32_t bvt_style_intern(BvtTerm *vt, BvtPage *page, const BvtStyle *style)
+uint32_t cfr_style_intern(CfrTerm *vt, CfrPage *page, const CfrStyle *style)
 {
     if (!page)
         return 0;
@@ -142,7 +142,7 @@ uint32_t bvt_style_intern(BvtTerm *vt, BvtPage *page, const BvtStyle *style)
              * style. If grow_entries returned a stale or corrupted
              * pointer, this catches it before downstream cells reference
              * the bogus id. */
-            BVT_BUG_CHECK(
+            CFR_BUG_CHECK(
                 memcmp(&page->styles.entries[new_id], style, sizeof(*style)) == 0,
                 "style intern wrote id=%u but readback differs (count=%u cap=%u)",
                 new_id, page->styles.count, page->styles.capacity);
@@ -160,7 +160,7 @@ uint32_t bvt_style_intern(BvtTerm *vt, BvtPage *page, const BvtStyle *style)
     }
 }
 
-const BvtStyle *bvt_style_lookup(const BvtPage *page, uint32_t id)
+const CfrStyle *cfr_style_lookup(const CfrPage *page, uint32_t id)
 {
     if (id == 0) {
         /* If the page has been initialized, entries[0] holds the

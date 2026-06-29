@@ -1,11 +1,11 @@
-# Top-level Makefile.am for bloom-vt
+# Top-level Makefile.am for coffer
 
 SUBDIRS = src include tests contrib
 
 ACLOCAL_AMFLAGS = -I m4
 
 pkgconfigdir = $(libdir)/pkgconfig
-pkgconfig_DATA = bloom-vt.pc
+pkgconfig_DATA = coffer.pc
 
 EXTRA_DIST = \
     autogen.sh \

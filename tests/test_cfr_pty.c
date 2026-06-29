@@ -1,14 +1,14 @@
 /*
- * test_bvt_pty — engine-only PTY harness for bloom-vt.
+ * test_cfr_pty — engine-only PTY harness for coffer.
  *
  * Spawns real child processes on a real PTY (no SDL, no FreeType, no atlas)
- * and pipes raw output into bvt_input_write(). Assertions are made against
- * the bvt grid via the public bloom_vt.h API.
+ * and pipes raw output into cfr_input_write(). Assertions are made against
+ * the bvt grid via the public coffer.h API.
  */
 
-#include "bloom_pty.h"
+#include "coffer_pty.h"
 #include "test_helpers.h"
-#include <bloom-vt/bloom_vt.h>
+#include <coffer/coffer.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -38,7 +38,7 @@ static long long now_ms(void)
 }
 
 /* Drain PTY output until the child exits or `timeout_ms` elapses. */
-static void drain_pty(BvtTerm *vt, PtyContext *pty, int timeout_ms)
+static void drain_pty(CfrTerm *vt, PtyContext *pty, int timeout_ms)
 {
     long long deadline = now_ms() + timeout_ms;
     char buf[4096];
@@ -58,7 +58,7 @@ static void drain_pty(BvtTerm *vt, PtyContext *pty, int timeout_ms)
             if (!pty_is_running(pty)) {
                 ssize_t n = pty_read(pty, buf, sizeof(buf));
                 if (n > 0)
-                    bvt_input_write(vt, (const uint8_t *)buf, (size_t)n);
+                    cfr_input_write(vt, (const uint8_t *)buf, (size_t)n);
                 break;
             }
             continue;
@@ -68,12 +68,12 @@ static void drain_pty(BvtTerm *vt, PtyContext *pty, int timeout_ms)
             ssize_t n = pty_read(pty, buf, sizeof(buf));
             if (n <= 0)
                 break;
-            bvt_input_write(vt, (const uint8_t *)buf, (size_t)n);
+            cfr_input_write(vt, (const uint8_t *)buf, (size_t)n);
         } else {
             /* Process exited or error — drain final bytes */
             ssize_t n = pty_read(pty, buf, sizeof(buf));
             if (n > 0)
-                bvt_input_write(vt, (const uint8_t *)buf, (size_t)n);
+                cfr_input_write(vt, (const uint8_t *)buf, (size_t)n);
             break;
         }
     }
@@ -90,7 +90,7 @@ static void drain_pty(BvtTerm *vt, PtyContext *pty, int timeout_ms)
                 /* Drain any final bytes before giving up. */
                 ssize_t n = pty_read(pty, buf, sizeof(buf));
                 if (n > 0)
-                    bvt_input_write(vt, (const uint8_t *)buf, (size_t)n);
+                    cfr_input_write(vt, (const uint8_t *)buf, (size_t)n);
                 break;
             }
             continue;
@@ -99,7 +99,7 @@ static void drain_pty(BvtTerm *vt, PtyContext *pty, int timeout_ms)
             ssize_t n = pty_read(pty, buf, sizeof(buf));
             if (n <= 0)
                 break;
-            bvt_input_write(vt, (const uint8_t *)buf, (size_t)n);
+            cfr_input_write(vt, (const uint8_t *)buf, (size_t)n);
         }
         if (pfd.revents & (POLLHUP | POLLERR))
             break;
@@ -109,16 +109,16 @@ static void drain_pty(BvtTerm *vt, PtyContext *pty, int timeout_ms)
 
 /* Search the visible grid for a UTF-8 substring (ASCII-only callers).
  * Returns row index of first occurrence, or -1. */
-static int find_row_with(BvtTerm *vt, const char *needle)
+static int find_row_with(CfrTerm *vt, const char *needle)
 {
     int rows, cols;
-    bvt_get_dimensions(vt, &rows, &cols);
+    cfr_get_dimensions(vt, &rows, &cols);
     size_t nlen = strlen(needle);
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c + (int)nlen <= cols; ++c) {
             int ok = 1;
             for (size_t i = 0; i < nlen; ++i) {
-                const BvtCell *cell = bvt_get_cell(vt, r, c + (int)i);
+                const CfrCell *cell = cfr_get_cell(vt, r, c + (int)i);
                 if (!cell || cell->cp != (uint32_t)(unsigned char)needle[i]) {
                     ok = 0;
                     break;
@@ -142,9 +142,9 @@ static void cb_output_to_pty(const uint8_t *bytes, size_t len, void *user)
 }
 
 /* Spawn `sh -c cmd` (POSIX) or `cmd /c cmd` (Windows), drain up to
- * timeout_ms, return the BvtTerm grid for inspection. Caller frees
+ * timeout_ms, return the CfrTerm grid for inspection. Caller frees
  * the term and pty. */
-static BvtTerm *run_cmd(const char *cmd, int rows, int cols,
+static CfrTerm *run_cmd(const char *cmd, int rows, int cols,
                         int timeout_ms, PtyContext **out_pty)
 {
 #ifdef _WIN32
@@ -155,12 +155,12 @@ static BvtTerm *run_cmd(const char *cmd, int rows, int cols,
     PtyContext *pty = pty_create(rows, cols, argv);
     if (!pty)
         return NULL;
-    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
     cfg.rows = rows;
     cfg.cols = cols;
     cfg.cell_w_px = 10;
     cfg.cell_h_px = 6;
-    BvtTerm *vt = bvt_new(&cfg);
+    CfrTerm *vt = cfr_new(&cfg);
     if (!vt) {
         pty_destroy(pty);
         return NULL;
@@ -168,8 +168,8 @@ static BvtTerm *run_cmd(const char *cmd, int rows, int cols,
     /* Wire the output callback so apps that probe the terminal (DSR, DA,
      * mouse mode acks) get their replies. Without this, brick/curses apps
      * sit waiting for `\x1b[...R` and never start drawing. */
-    BvtCallbacks cb = { .output = cb_output_to_pty };
-    bvt_set_callbacks(vt, &cb, pty);
+    CfrCallbacks cb = { .output = cb_output_to_pty };
+    cfr_set_callbacks(vt, &cb, pty);
     drain_pty(vt, pty, timeout_ms);
     if (out_pty)
         *out_pty = pty;
@@ -185,17 +185,17 @@ static BvtTerm *run_cmd(const char *cmd, int rows, int cols,
 static void test_echo_hello(void)
 {
     PtyContext *pty = NULL;
-    BvtTerm *vt = run_cmd("echo hello", 24, 80, 1000, &pty);
+    CfrTerm *vt = run_cmd("echo hello", 24, 80, 1000, &pty);
     ASSERT_NOT_NULL(vt);
     ASSERT_TRUE(find_row_with(vt, "hello") >= 0);
-    bvt_free(vt);
+    cfr_free(vt);
     pty_destroy(pty);
 }
 
 static void test_sgr_red(void)
 {
     /* Print "red" with SGR 31, reset, then "plain". The text content should
-     * land on the grid; style attribution is checked via bvt_cell_style if
+     * land on the grid; style attribution is checked via cfr_cell_style if
      * we want — for now we just verify both segments appear. */
 #ifdef _WIN32
     /* Windows cmd.exe doesn't support printf escape sequences; skip. */
@@ -203,12 +203,12 @@ static void test_sgr_red(void)
     return;
 #else
     PtyContext *pty = NULL;
-    BvtTerm *vt = run_cmd("printf '\\033[31mred\\033[0m plain'", 24, 80, 1000, &pty);
+    CfrTerm *vt = run_cmd("printf '\\033[31mred\\033[0m plain'", 24, 80, 1000, &pty);
     ASSERT_NOT_NULL(vt);
     int row = find_row_with(vt, "red");
     ASSERT_TRUE(row >= 0);
     ASSERT_TRUE(find_row_with(vt, "plain") >= 0);
-    bvt_free(vt);
+    cfr_free(vt);
     pty_destroy(pty);
 #endif
 }
@@ -222,14 +222,14 @@ static void test_tput_cursor(void)
     return;
 #else
     PtyContext *pty = NULL;
-    BvtTerm *vt = run_cmd("tput cup 5 10; printf X", 24, 80, 2000, &pty);
+    CfrTerm *vt = run_cmd("tput cup 5 10; printf X", 24, 80, 2000, &pty);
     ASSERT_NOT_NULL(vt);
     /* Look across a small window around (5, 10); shells print a prompt
      * before the script runs which can shift the row in some setups. */
     int found = -1;
     for (int r = 0; r < 24 && found < 0; ++r) {
         for (int c = 0; c < 80; ++c) {
-            const BvtCell *cell = bvt_get_cell(vt, r, c);
+            const CfrCell *cell = cfr_get_cell(vt, r, c);
             if (cell && cell->cp == (uint32_t)'X') {
                 found = r * 100 + c;
                 break;
@@ -237,7 +237,7 @@ static void test_tput_cursor(void)
         }
     }
     ASSERT_TRUE(found >= 0);
-    bvt_free(vt);
+    cfr_free(vt);
     pty_destroy(pty);
 #endif
 }
@@ -252,7 +252,7 @@ static void test_zwj_family_full(void)
     return;
 #else
     PtyContext *pty = NULL;
-    BvtTerm *vt = run_cmd(
+    CfrTerm *vt = run_cmd(
         "printf '\\xf0\\x9f\\x91\\xa8\\xe2\\x80\\x8d\\xf0\\x9f\\x91\\xa9"
         "\\xe2\\x80\\x8d\\xf0\\x9f\\x91\\xa7\\xe2\\x80\\x8d\\xf0\\x9f\\x91\\xa6'",
         24, 80, 2000, &pty);
@@ -262,11 +262,11 @@ static void test_zwj_family_full(void)
     int found = -1;
     for (int r = 0; r < 24 && found < 0; ++r) {
         for (int c = 0; c < 80; ++c) {
-            const BvtCell *cell = bvt_get_cell(vt, r, c);
+            const CfrCell *cell = cfr_get_cell(vt, r, c);
             if (cell && cell->cp == 0x1F468u && cell->width == 2) {
                 found = r * 100 + c;
                 uint32_t cps[16] = { 0 };
-                size_t n = bvt_cell_get_grapheme(vt, cell, cps, 16);
+                size_t n = cfr_cell_get_grapheme(vt, cell, cps, 16);
                 ASSERT_EQ(n, (size_t)7);
                 ASSERT_EQ(cps[0], 0x1F468u); /* man */
                 ASSERT_EQ(cps[1], 0x200Du);  /* ZWJ */
@@ -280,7 +280,7 @@ static void test_zwj_family_full(void)
         }
     }
     ASSERT_TRUE(found >= 0);
-    bvt_free(vt);
+    cfr_free(vt);
     pty_destroy(pty);
 #endif
 }
@@ -294,21 +294,21 @@ static void test_cjk_echo(void)
     return;
 #else
     PtyContext *pty = NULL;
-    BvtTerm *vt = run_cmd("printf '\\xe4\\xbd\\xa0\\xe5\\xa5\\xbd'", /* 你好 */
+    CfrTerm *vt = run_cmd("printf '\\xe4\\xbd\\xa0\\xe5\\xa5\\xbd'", /* 你好 */
                           24, 80, 1000, &pty);
     ASSERT_NOT_NULL(vt);
     int found = -1;
     for (int r = 0; r < 24 && found < 0; ++r) {
         for (int c = 0; c < 80; ++c) {
-            const BvtCell *cell = bvt_get_cell(vt, r, c);
+            const CfrCell *cell = cfr_get_cell(vt, r, c);
             if (cell && cell->cp == 0x4F60u /* 你 */) {
                 ASSERT_EQ((int)cell->width, 2);
                 /* Continuation cell at c+1 has width 0. */
-                const BvtCell *cont = bvt_get_cell(vt, r, c + 1);
+                const CfrCell *cont = cfr_get_cell(vt, r, c + 1);
                 ASSERT_NOT_NULL(cont);
                 ASSERT_EQ((int)cont->width, 0);
                 /* Next cluster 好 follows at c+2. */
-                const BvtCell *next = bvt_get_cell(vt, r, c + 2);
+                const CfrCell *next = cfr_get_cell(vt, r, c + 2);
                 ASSERT_NOT_NULL(next);
                 ASSERT_EQ(next->cp, 0x597Du);
                 found = 1;
@@ -317,7 +317,7 @@ static void test_cjk_echo(void)
         }
     }
     ASSERT_TRUE(found >= 0);
-    bvt_free(vt);
+    cfr_free(vt);
     pty_destroy(pty);
 #endif
 }
@@ -332,13 +332,13 @@ static void test_altscreen_swap(void)
     return;
 #else
     PtyContext *pty = NULL;
-    BvtTerm *vt = run_cmd("tput smcup; printf 'FOO_ALT'; sleep 0.05; tput rmcup",
+    CfrTerm *vt = run_cmd("tput smcup; printf 'FOO_ALT'; sleep 0.05; tput rmcup",
                           24, 80, 2000, &pty);
     ASSERT_NOT_NULL(vt);
     /* On the primary screen now — FOO_ALT should NOT be visible. */
-    ASSERT_FALSE(bvt_is_altscreen(vt));
+    ASSERT_FALSE(cfr_is_altscreen(vt));
     ASSERT_TRUE(find_row_with(vt, "FOO_ALT") < 0);
-    bvt_free(vt);
+    cfr_free(vt);
     pty_destroy(pty);
 #endif
 }
@@ -386,17 +386,17 @@ static void test_cf_brick_inline_preserves_history(void)
                            NULL };
     PtyContext *pty = pty_create(rows, cols, argv);
     ASSERT_NOT_NULL(pty);
-    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
     cfg.rows = rows;
     cfg.cols = cols;
     cfg.cell_w_px = 10;
     cfg.cell_h_px = 6;
-    BvtTerm *vt = bvt_new(&cfg);
+    CfrTerm *vt = cfr_new(&cfg);
     ASSERT_NOT_NULL(vt);
 
     /* Output callback writes back to the PTY so cf's DSR query is answered. */
-    BvtCallbacks cb = { .output = cb_output_to_pty };
-    bvt_set_callbacks(vt, &cb, pty);
+    CfrCallbacks cb = { .output = cb_output_to_pty };
+    cfr_set_callbacks(vt, &cb, pty);
 
     long long deadline = now_ms() + 2500;
     int fd = pty_get_master_fd(pty);
@@ -416,7 +416,7 @@ static void test_cf_brick_inline_preserves_history(void)
             ssize_t n = pty_read(pty, rbuf, sizeof(rbuf));
             if (n <= 0)
                 break;
-            bvt_input_write(vt, (const uint8_t *)rbuf, (size_t)n);
+            cfr_input_write(vt, (const uint8_t *)rbuf, (size_t)n);
         }
         if (pfd.revents & (POLLHUP | POLLERR))
             break;
@@ -434,7 +434,7 @@ static void test_cf_brick_inline_preserves_history(void)
             char line[256];
             int n = 0;
             for (int c = 0; c < cols && n + 1 < (int)sizeof(line); ++c) {
-                const BvtCell *cell = bvt_get_cell(vt, r, c);
+                const CfrCell *cell = cfr_get_cell(vt, r, c);
                 uint32_t cp = (cell && cell->cp) ? cell->cp : 0;
                 line[n++] = (cp >= 0x20 && cp < 0x7f) ? (char)cp : (cp ? '?' : ':');
             }
@@ -451,13 +451,13 @@ static void test_cf_brick_inline_preserves_history(void)
     int found_prompt = 0;
     for (int row = 0; row < menu_row; ++row) {
         for (int c = 0; c + 6 < cols; ++c) {
-            const BvtCell *cell = bvt_get_cell(vt, row, c);
+            const CfrCell *cell = cfr_get_cell(vt, row, c);
             if (cell && cell->cp == (uint32_t)'p') {
                 /* check for "prompt" prefix */
                 const char *needle = "prompt";
                 int ok = 1;
                 for (size_t i = 0; i < strlen(needle); ++i) {
-                    const BvtCell *x = bvt_get_cell(vt, row, c + (int)i);
+                    const CfrCell *x = cfr_get_cell(vt, row, c + (int)i);
                     if (!x || x->cp != (uint32_t)needle[i]) {
                         ok = 0;
                         break;
@@ -474,7 +474,7 @@ static void test_cf_brick_inline_preserves_history(void)
     }
     ASSERT_TRUE(found_prompt);
 
-    bvt_free(vt);
+    cfr_free(vt);
     pty_destroy(pty);
 #endif
 }
@@ -492,25 +492,25 @@ static void test_dsr_after_natural_scroll(void)
                            NULL };
     PtyContext *pty = pty_create(rows, cols, argv);
     ASSERT_NOT_NULL(pty);
-    BvtConfig cfg = BVT_CONFIG_DEFAULTS;
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
     cfg.rows = rows;
     cfg.cols = cols;
     cfg.cell_w_px = 10;
     cfg.cell_h_px = 6;
-    BvtTerm *vt = bvt_new(&cfg);
+    CfrTerm *vt = cfr_new(&cfg);
     ASSERT_NOT_NULL(vt);
 
     g_dsr_len = 0;
     g_dsr_buf[0] = 0;
-    BvtCallbacks cb = { .output = cb_capture_dsr };
-    bvt_set_callbacks(vt, &cb, NULL);
+    CfrCallbacks cb = { .output = cb_capture_dsr };
+    cfr_set_callbacks(vt, &cb, NULL);
 
     drain_pty(vt, pty, 1500);
 
     /* Cursor advanced to row 16 (after 16 lines from row 0).
      * DSR should report `\x1b[17;1R`. */
     ASSERT_STR_EQ(g_dsr_buf, "\x1b[17;1R");
-    bvt_free(vt);
+    cfr_free(vt);
     pty_destroy(pty);
 #endif
 }
@@ -525,16 +525,16 @@ static void test_scrollback_push(void)
     return;
 #else
     PtyContext *pty = NULL;
-    BvtTerm *vt = run_cmd("for i in $(seq 1 50); do echo line$i; done",
+    CfrTerm *vt = run_cmd("for i in $(seq 1 50); do echo line$i; done",
                           24, 80, 3000, &pty);
     ASSERT_NOT_NULL(vt);
-    int sb = bvt_get_scrollback_lines(vt);
+    int sb = cfr_get_scrollback_lines(vt);
     ASSERT_TRUE(sb >= 25);
     /* Last printed line should be on or near the bottom of the visible
      * area. The shell prints a final prompt below it, so we look for
      * "line50" anywhere on the grid. */
     ASSERT_TRUE(find_row_with(vt, "line50") >= 0);
-    bvt_free(vt);
+    cfr_free(vt);
     pty_destroy(pty);
 #endif
 }
@@ -554,7 +554,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    printf("Running test_bvt_pty\n");
+    printf("Running test_cfr_pty\n");
     RUN_TEST(test_echo_hello);
     RUN_TEST(test_sgr_red);
     RUN_TEST(test_tput_cursor);

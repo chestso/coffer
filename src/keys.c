@@ -1,7 +1,7 @@
 /*
- * bloom-vt — keyboard, text, mouse, and paste emit.
+ * coffer — keyboard, text, mouse, and paste emit.
  *
- * All emit paths run through bvt_emit_bytes which forwards to the
+ * All emit paths run through cfr_emit_bytes which forwards to the
  * registered output callback (the embedder writes those bytes to the
  * PTY).
  *
@@ -16,12 +16,12 @@
  * per xterm.
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <stdio.h>
 #include <string.h>
 
-void bvt_emit_bytes(BvtTerm *vt, const uint8_t *bytes, size_t len)
+void cfr_emit_bytes(CfrTerm *vt, const uint8_t *bytes, size_t len)
 {
     if (!vt || !bytes || len == 0)
         return;
@@ -29,19 +29,19 @@ void bvt_emit_bytes(BvtTerm *vt, const uint8_t *bytes, size_t len)
         vt->callbacks.output(bytes, len, vt->callback_user);
 }
 
-static void emit_str(BvtTerm *vt, const char *s)
+static void emit_str(CfrTerm *vt, const char *s)
 {
-    bvt_emit_bytes(vt, (const uint8_t *)s, strlen(s));
+    cfr_emit_bytes(vt, (const uint8_t *)s, strlen(s));
 }
 
-static int mod_value(BvtMods m)
+static int mod_value(CfrMods m)
 {
     int v = 0;
-    if (m & BVT_MOD_SHIFT)
+    if (m & CFR_MOD_SHIFT)
         v |= 1;
-    if (m & BVT_MOD_ALT)
+    if (m & CFR_MOD_ALT)
         v |= 2;
-    if (m & BVT_MOD_CTRL)
+    if (m & CFR_MOD_CTRL)
         v |= 4;
     return v;
 }
@@ -50,7 +50,7 @@ static int mod_value(BvtMods m)
 #define KITTY_FLAG_DISAMBIGUATE 0x1u
 #define KITTY_FLAG_REPORT_ALL   0x8u
 
-static bool kitty_active(BvtTerm *vt, uint32_t bit)
+static bool kitty_active(CfrTerm *vt, uint32_t bit)
 {
     return (vt->kitty_kb_stack[vt->kitty_kb_depth] & bit) != 0;
 }
@@ -58,7 +58,7 @@ static bool kitty_active(BvtTerm *vt, uint32_t bit)
 /* Emit a kitty `CSI <code>;<mod>u` sequence. The mod parameter is
  * omitted when no modifier is held (`CSI <code>u`), matching the
  * kitty spec. */
-static void emit_csi_u(BvtTerm *vt, uint32_t code, BvtMods mods)
+static void emit_csi_u(CfrTerm *vt, uint32_t code, CfrMods mods)
 {
     int mv = mod_value(mods);
     char buf[32];
@@ -67,14 +67,14 @@ static void emit_csi_u(BvtTerm *vt, uint32_t code, BvtMods mods)
         n = snprintf(buf, sizeof(buf), "\x1b[%uu", code);
     else
         n = snprintf(buf, sizeof(buf), "\x1b[%u;%du", code, mv + 1);
-    bvt_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+    cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
 }
 
 /* Decide whether ENTER / TAB / BACKSPACE / ESCAPE should be emitted in
  * kitty CSI-u form. Disambiguate (0x1) only kicks in when modifiers
  * are present (its purpose is to distinguish e.g. Shift+Enter from
  * Enter); Report-all (0x8) sends CSI-u even for the bare key. */
-static bool kitty_route_special(BvtTerm *vt, BvtMods mods)
+static bool kitty_route_special(CfrTerm *vt, CfrMods mods)
 {
     if (kitty_active(vt, KITTY_FLAG_REPORT_ALL))
         return true;
@@ -84,7 +84,7 @@ static bool kitty_route_special(BvtTerm *vt, BvtMods mods)
 }
 
 /* Arrow / cursor keys. Honors DECCKM when no modifiers. */
-static void emit_cursor_key(BvtTerm *vt, char letter, BvtMods mods)
+static void emit_cursor_key(CfrTerm *vt, char letter, CfrMods mods)
 {
     int mv = mod_value(mods);
     char buf[16];
@@ -97,11 +97,11 @@ static void emit_cursor_key(BvtTerm *vt, char letter, BvtMods mods)
     } else {
         n = snprintf(buf, sizeof(buf), "\x1b[1;%d%c", mv + 1, letter);
     }
-    bvt_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+    cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
 }
 
 /* Tilde-form keys: PageUp/Down, Home/End (alternative form), F5+, etc. */
-static void emit_tilde_key(BvtTerm *vt, int code, BvtMods mods)
+static void emit_tilde_key(CfrTerm *vt, int code, CfrMods mods)
 {
     int mv = mod_value(mods);
     char buf[16];
@@ -110,11 +110,11 @@ static void emit_tilde_key(BvtTerm *vt, int code, BvtMods mods)
         n = snprintf(buf, sizeof(buf), "\x1b[%d~", code);
     else
         n = snprintf(buf, sizeof(buf), "\x1b[%d;%d~", code, mv + 1);
-    bvt_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+    cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
 }
 
 /* SS3-form function keys (F1-F4 and PF1-PF4). */
-static void emit_ss3_key(BvtTerm *vt, char letter, BvtMods mods)
+static void emit_ss3_key(CfrTerm *vt, char letter, CfrMods mods)
 {
     int mv = mod_value(mods);
     char buf[16];
@@ -124,106 +124,106 @@ static void emit_ss3_key(BvtTerm *vt, char letter, BvtMods mods)
     else
         n = snprintf(buf, sizeof(buf), "\x1b[1;%dP", mv + 1); /* xterm style */
     (void)letter;                                             /* For simplicity we route bare to SS3 P/Q/R/S directly. */
-    bvt_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+    cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
 }
 
-void bvt_send_key(BvtTerm *vt, BvtKey key, BvtMods mods)
+void cfr_send_key(CfrTerm *vt, CfrKey key, CfrMods mods)
 {
     if (!vt)
         return;
     switch (key) {
-    case BVT_KEY_NONE:
+    case CFR_KEY_NONE:
         return;
-    case BVT_KEY_ENTER:
+    case CFR_KEY_ENTER:
         if (kitty_route_special(vt, mods))
             emit_csi_u(vt, 13, mods);
         else
-            bvt_emit_bytes(vt, (const uint8_t *)"\r", 1);
+            cfr_emit_bytes(vt, (const uint8_t *)"\r", 1);
         break;
-    case BVT_KEY_TAB:
+    case CFR_KEY_TAB:
         if (kitty_route_special(vt, mods))
             emit_csi_u(vt, 9, mods);
-        else if (mods & BVT_MOD_SHIFT)
+        else if (mods & CFR_MOD_SHIFT)
             emit_str(vt, "\x1b[Z");
         else
-            bvt_emit_bytes(vt, (const uint8_t *)"\t", 1);
+            cfr_emit_bytes(vt, (const uint8_t *)"\t", 1);
         break;
-    case BVT_KEY_BACKSPACE:
+    case CFR_KEY_BACKSPACE:
         if (kitty_route_special(vt, mods))
             emit_csi_u(vt, 127, mods);
         else
-            bvt_emit_bytes(vt, (const uint8_t *)"\x7f", 1);
+            cfr_emit_bytes(vt, (const uint8_t *)"\x7f", 1);
         break;
-    case BVT_KEY_ESCAPE:
+    case CFR_KEY_ESCAPE:
         if (kitty_route_special(vt, mods))
             emit_csi_u(vt, 27, mods);
         else
-            bvt_emit_bytes(vt, (const uint8_t *)"\x1b", 1);
+            cfr_emit_bytes(vt, (const uint8_t *)"\x1b", 1);
         break;
-    case BVT_KEY_UP:
+    case CFR_KEY_UP:
         emit_cursor_key(vt, 'A', mods);
         break;
-    case BVT_KEY_DOWN:
+    case CFR_KEY_DOWN:
         emit_cursor_key(vt, 'B', mods);
         break;
-    case BVT_KEY_RIGHT:
+    case CFR_KEY_RIGHT:
         emit_cursor_key(vt, 'C', mods);
         break;
-    case BVT_KEY_LEFT:
+    case CFR_KEY_LEFT:
         emit_cursor_key(vt, 'D', mods);
         break;
-    case BVT_KEY_HOME:
+    case CFR_KEY_HOME:
         emit_cursor_key(vt, 'H', mods);
         break;
-    case BVT_KEY_END:
+    case CFR_KEY_END:
         emit_cursor_key(vt, 'F', mods);
         break;
-    case BVT_KEY_INS:
+    case CFR_KEY_INS:
         emit_tilde_key(vt, 2, mods);
         break;
-    case BVT_KEY_DEL:
+    case CFR_KEY_DEL:
         emit_tilde_key(vt, 3, mods);
         break;
-    case BVT_KEY_PAGEUP:
+    case CFR_KEY_PAGEUP:
         emit_tilde_key(vt, 5, mods);
         break;
-    case BVT_KEY_PAGEDOWN:
+    case CFR_KEY_PAGEDOWN:
         emit_tilde_key(vt, 6, mods);
         break;
-    case BVT_KEY_F1:
+    case CFR_KEY_F1:
         emit_ss3_key(vt, 'P', mods);
         break;
-    case BVT_KEY_F2:
+    case CFR_KEY_F2:
         emit_ss3_key(vt, 'Q', mods);
         break;
-    case BVT_KEY_F3:
+    case CFR_KEY_F3:
         emit_ss3_key(vt, 'R', mods);
         break;
-    case BVT_KEY_F4:
+    case CFR_KEY_F4:
         emit_ss3_key(vt, 'S', mods);
         break;
-    case BVT_KEY_F5:
+    case CFR_KEY_F5:
         emit_tilde_key(vt, 15, mods);
         break;
-    case BVT_KEY_F6:
+    case CFR_KEY_F6:
         emit_tilde_key(vt, 17, mods);
         break;
-    case BVT_KEY_F7:
+    case CFR_KEY_F7:
         emit_tilde_key(vt, 18, mods);
         break;
-    case BVT_KEY_F8:
+    case CFR_KEY_F8:
         emit_tilde_key(vt, 19, mods);
         break;
-    case BVT_KEY_F9:
+    case CFR_KEY_F9:
         emit_tilde_key(vt, 20, mods);
         break;
-    case BVT_KEY_F10:
+    case CFR_KEY_F10:
         emit_tilde_key(vt, 21, mods);
         break;
-    case BVT_KEY_F11:
+    case CFR_KEY_F11:
         emit_tilde_key(vt, 23, mods);
         break;
-    case BVT_KEY_F12:
+    case CFR_KEY_F12:
         emit_tilde_key(vt, 24, mods);
         break;
     /* Keypad: not yet differentiated from text. */
@@ -232,7 +232,7 @@ void bvt_send_key(BvtTerm *vt, BvtKey key, BvtMods mods)
     }
 }
 
-void bvt_send_text(BvtTerm *vt, const char *utf8, size_t len, BvtMods mods)
+void cfr_send_text(CfrTerm *vt, const char *utf8, size_t len, CfrMods mods)
 {
     if (!vt || !utf8 || len == 0)
         return;
@@ -244,7 +244,7 @@ void bvt_send_text(BvtTerm *vt, const char *utf8, size_t len, BvtMods mods)
      * modifier bitmask, not in the codepoint. Take this branch before
      * emitting the legacy meta-sends-esc prefix so Alt is encoded in the
      * mod parameter, not as a stray ESC. */
-    if (len == 1 && (mods & (BVT_MOD_CTRL | BVT_MOD_ALT)) &&
+    if (len == 1 && (mods & (CFR_MOD_CTRL | CFR_MOD_ALT)) &&
         (kitty_active(vt, KITTY_FLAG_DISAMBIGUATE) ||
          kitty_active(vt, KITTY_FLAG_REPORT_ALL))) {
         uint8_t b = (uint8_t)utf8[0];
@@ -255,13 +255,13 @@ void bvt_send_text(BvtTerm *vt, const char *utf8, size_t len, BvtMods mods)
     }
 
     /* Alt-prefix: emit ESC, then the bytes. Standard xterm meta-sends-esc. */
-    if (mods & BVT_MOD_ALT)
-        bvt_emit_bytes(vt, (const uint8_t *)"\x1b", 1);
+    if (mods & CFR_MOD_ALT)
+        cfr_emit_bytes(vt, (const uint8_t *)"\x1b", 1);
 
     /* Ctrl+<key>: transform single-byte ASCII to its control code so the
      * PTY's line discipline produces SIGINT for Ctrl+C, NUL for Ctrl+Space
      * etc. Multi-byte input is passed through unchanged. */
-    if ((mods & BVT_MOD_CTRL) && len == 1) {
+    if ((mods & CFR_MOD_CTRL) && len == 1) {
         uint8_t b = (uint8_t)utf8[0];
         uint8_t out = b;
         if (b == ' ' || b == '@')
@@ -274,35 +274,35 @@ void bvt_send_text(BvtTerm *vt, const char *utf8, size_t len, BvtMods mods)
             out = (uint8_t)(b - 0x60);
         else if (b >= '[' && b <= '_')
             out = (uint8_t)(b - 0x40);
-        bvt_emit_bytes(vt, &out, 1);
+        cfr_emit_bytes(vt, &out, 1);
         return;
     }
 
-    bvt_emit_bytes(vt, (const uint8_t *)utf8, len);
+    cfr_emit_bytes(vt, (const uint8_t *)utf8, len);
 }
 
 /* ------------------------------------------------------------------ */
 /* Mouse                                                               */
 /* ------------------------------------------------------------------ */
 
-static int mouse_button_code(BvtMouseButton b, bool pressed, BvtMods mods,
+static int mouse_button_code(CfrMouseButton b, bool pressed, CfrMods mods,
                              bool motion)
 {
     int code;
     switch (b) {
-    case BVT_MOUSE_LEFT:
+    case CFR_MOUSE_LEFT:
         code = 0;
         break;
-    case BVT_MOUSE_MIDDLE:
+    case CFR_MOUSE_MIDDLE:
         code = 1;
         break;
-    case BVT_MOUSE_RIGHT:
+    case CFR_MOUSE_RIGHT:
         code = 2;
         break;
-    case BVT_MOUSE_WHEEL_UP:
+    case CFR_MOUSE_WHEEL_UP:
         code = 64;
         break;
-    case BVT_MOUSE_WHEEL_DOWN:
+    case CFR_MOUSE_WHEEL_DOWN:
         code = 65;
         break;
     default:
@@ -311,11 +311,11 @@ static int mouse_button_code(BvtMouseButton b, bool pressed, BvtMods mods,
     }
     if (motion)
         code |= 32;
-    if (mods & BVT_MOD_SHIFT)
+    if (mods & CFR_MOD_SHIFT)
         code |= 4;
-    if (mods & BVT_MOD_ALT)
+    if (mods & CFR_MOD_ALT)
         code |= 8;
-    if (mods & BVT_MOD_CTRL)
+    if (mods & CFR_MOD_CTRL)
         code |= 16;
     /* In X10 mode, button release uses code 3. SGR mode keeps the
      * button code and signals release with `m` instead of `M`. */
@@ -323,22 +323,22 @@ static int mouse_button_code(BvtMouseButton b, bool pressed, BvtMods mods,
     return code;
 }
 
-void bvt_send_mouse(BvtTerm *vt, int row, int col, BvtMouseButton b,
-                    bool pressed, BvtMods mods)
+void cfr_send_mouse(CfrTerm *vt, int row, int col, CfrMouseButton b,
+                    bool pressed, CfrMods mods)
 {
     if (!vt)
         return;
 
     bool any_mode =
-        vt->modes[BVT_MODE_MOUSE_BTN_EVENT] ||
-        vt->modes[BVT_MODE_MOUSE_DRAG] ||
-        vt->modes[BVT_MODE_MOUSE_ANY_EVENT] ||
-        vt->modes[BVT_MODE_MOUSE_X10];
+        vt->modes[CFR_MODE_MOUSE_BTN_EVENT] ||
+        vt->modes[CFR_MODE_MOUSE_DRAG] ||
+        vt->modes[CFR_MODE_MOUSE_ANY_EVENT] ||
+        vt->modes[CFR_MODE_MOUSE_X10];
     if (!any_mode)
         return;
 
-    bool sgr = vt->modes[BVT_MODE_MOUSE_SGR];
-    bool motion = (b == BVT_MOUSE_NONE);
+    bool sgr = vt->modes[CFR_MODE_MOUSE_SGR];
+    bool motion = (b == CFR_MOUSE_NONE);
     int code = mouse_button_code(b, pressed, mods, motion);
 
     char buf[32];
@@ -360,26 +360,26 @@ void bvt_send_mouse(BvtTerm *vt, int row, int col, BvtMouseButton b,
         n = snprintf(buf, sizeof(buf), "\x1b[M%c%c%c",
                      (char)byte_code, (char)(cx + 32), (char)(cy + 32));
     }
-    bvt_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+    cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
 }
 
 /* ------------------------------------------------------------------ */
 /* Bracketed paste                                                     */
 /* ------------------------------------------------------------------ */
 
-void bvt_paste_begin(BvtTerm *vt)
+void cfr_paste_begin(CfrTerm *vt)
 {
     if (!vt)
         return;
-    if (!vt->modes[BVT_MODE_BRACKETED_PASTE])
+    if (!vt->modes[CFR_MODE_BRACKETED_PASTE])
         return;
     emit_str(vt, "\x1b[200~");
 }
-void bvt_paste_end(BvtTerm *vt)
+void cfr_paste_end(CfrTerm *vt)
 {
     if (!vt)
         return;
-    if (!vt->modes[BVT_MODE_BRACKETED_PASTE])
+    if (!vt->modes[CFR_MODE_BRACKETED_PASTE])
         return;
     emit_str(vt, "\x1b[201~");
 }

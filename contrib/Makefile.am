@@ -1,3 +1,3 @@
-# contrib/Makefile.am - bloom-vt contrib tools
+# contrib/Makefile.am - coffer contrib tools
 
-SUBDIRS = bvt-debug
+SUBDIRS = cfr-debug

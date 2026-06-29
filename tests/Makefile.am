@@ -1,10 +1,10 @@
-# tests/Makefile.am - bloom-vt unit and integration tests
+# tests/Makefile.am - coffer unit and integration tests
 
-check_PROGRAMS = test_bvt_parser test_bvt_keys test_bvt_pty test_bvt_sixel test_bvt_lottie test_bvt_altscreen test_bvt_sgr
+check_PROGRAMS = test_cfr_parser test_cfr_keys test_cfr_pty test_cfr_sixel test_cfr_lottie test_cfr_altscreen test_cfr_sgr
 TESTS = $(check_PROGRAMS)
 
 AM_TESTS_ENVIRONMENT = srcdir='$(srcdir)'; export srcdir;
-LDADD = $(top_builddir)/src/libbloom-vt.a -lm
+LDADD = $(top_builddir)/src/libcoffer.a -lm
 
 if HAVE_THORVG
 LDADD += $(THORVG_LIBS)
@@ -22,13 +22,13 @@ PTY_SOURCE = pty.c
 PTY_LDADD =
 endif
 
-test_bvt_parser_SOURCES = test_bvt_parser.c test_common.c
-test_bvt_sixel_SOURCES  = test_bvt_sixel.c  test_common.c
-test_bvt_lottie_SOURCES = test_bvt_lottie.c test_common.c
-test_bvt_keys_SOURCES   = test_bvt_keys.c   test_common.c
-test_bvt_pty_SOURCES    = test_bvt_pty.c    test_common.c $(PTY_SOURCE) bloom_pty.h common.h
-test_bvt_pty_LDADD      = $(LDADD) $(PTY_LDADD)
-test_bvt_altscreen_SOURCES = test_bvt_altscreen.c test_common.c
-test_bvt_sgr_SOURCES      = test_bvt_sgr.c test_common.c
+test_cfr_parser_SOURCES = test_cfr_parser.c test_common.c
+test_cfr_sixel_SOURCES  = test_cfr_sixel.c  test_common.c
+test_cfr_lottie_SOURCES = test_cfr_lottie.c test_common.c
+test_cfr_keys_SOURCES   = test_cfr_keys.c   test_common.c
+test_cfr_pty_SOURCES    = test_cfr_pty.c    test_common.c $(PTY_SOURCE) coffer_pty.h common.h
+test_cfr_pty_LDADD      = $(LDADD) $(PTY_LDADD)
+test_cfr_altscreen_SOURCES = test_cfr_altscreen.c test_common.c
+test_cfr_sgr_SOURCES      = test_cfr_sgr.c test_common.c
 
-EXTRA_DIST = test_helpers.h common.h bloom_pty.h pty_w32.c
+EXTRA_DIST = test_helpers.h common.h coffer_pty.h pty_w32.c

@@ -1,12 +1,12 @@
 /*
- * bloom-vt — lifecycle + public API entry points.
+ * coffer — lifecycle + public API entry points.
  *
- * This file is the seam between bloom_vt.h and the internal subsystems.
+ * This file is the seam between coffer.h and the internal subsystems.
  * Behavior for grid/parser/etc is implemented in their dedicated files;
  * here we own creation, destruction, allocator routing, and dispatch.
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -30,22 +30,22 @@ static void stdlib_free(void *ptr, void *user)
     (void)user;
     free(ptr);
 }
-static const BvtAllocator BVT_STDLIB_ALLOCATOR = {
+static const CfrAllocator CFR_STDLIB_ALLOCATOR = {
     .alloc = stdlib_alloc,
     .realloc = stdlib_realloc,
     .free = stdlib_free,
     .user = NULL,
 };
 
-void *bvt_alloc(BvtTerm *vt, size_t size)
+void *cfr_alloc(CfrTerm *vt, size_t size)
 {
     return vt->alloc.alloc(size, vt->alloc.user);
 }
-void *bvt_realloc(BvtTerm *vt, void *ptr, size_t size)
+void *cfr_realloc(CfrTerm *vt, void *ptr, size_t size)
 {
     return vt->alloc.realloc(ptr, size, vt->alloc.user);
 }
-void bvt_dealloc(BvtTerm *vt, void *ptr)
+void cfr_dealloc(CfrTerm *vt, void *ptr)
 {
     if (ptr)
         vt->alloc.free(ptr, vt->alloc.user);
@@ -55,19 +55,19 @@ void bvt_dealloc(BvtTerm *vt, void *ptr)
 /* Lifecycle                                                           */
 /* ------------------------------------------------------------------ */
 
-BvtTerm *bvt_new(const BvtConfig *cfg)
+CfrTerm *cfr_new(const CfrConfig *cfg)
 {
-    return bvt_new_with_allocator(cfg, NULL);
+    return cfr_new_with_allocator(cfg, NULL);
 }
 
-BvtTerm *bvt_new_with_allocator(const BvtConfig *cfg, const BvtAllocator *alloc)
+CfrTerm *cfr_new_with_allocator(const CfrConfig *cfg, const CfrAllocator *alloc)
 {
     if (!cfg || cfg->rows <= 0 || cfg->cols <= 0 ||
         cfg->cell_w_px <= 0 || cfg->cell_h_px <= 0)
         return NULL;
 
-    const BvtAllocator *a = alloc ? alloc : &BVT_STDLIB_ALLOCATOR;
-    BvtTerm *vt = a->alloc(sizeof(*vt), a->user);
+    const CfrAllocator *a = alloc ? alloc : &CFR_STDLIB_ALLOCATOR;
+    CfrTerm *vt = a->alloc(sizeof(*vt), a->user);
     if (!vt)
         return NULL;
 
@@ -79,7 +79,7 @@ BvtTerm *bvt_new_with_allocator(const BvtConfig *cfg, const BvtAllocator *alloc)
     vt->cell_h_px = cfg->cell_h_px;
     vt->scroll_top = 0;
     vt->scroll_bottom = cfg->rows - 1;
-    vt->sb_capacity = cfg->scrollback >= 0 ? cfg->scrollback : BVT_DEFAULT_SCROLLBACK;
+    vt->sb_capacity = cfg->scrollback >= 0 ? cfg->scrollback : CFR_DEFAULT_SCROLLBACK;
     vt->reflow_enabled = cfg->reflow;
     vt->ambiguous_wide = cfg->ambiguous_wide;
     vt->cursor.visible = true;
@@ -87,14 +87,14 @@ BvtTerm *bvt_new_with_allocator(const BvtConfig *cfg, const BvtAllocator *alloc)
     /* Mirror the initial cursor so the first flush doesn't spuriously damage. */
     vt->dmg_cursor_visible = true;
     vt->cursor.pen.color_flags =
-        BVT_COLOR_DEFAULT_FG | BVT_COLOR_DEFAULT_BG | BVT_COLOR_DEFAULT_UL;
-    vt->modes[BVT_MODE_CURSOR_VISIBLE] = true;
-    vt->modes[BVT_MODE_CURSOR_BLINK] = true;
-    vt->modes[BVT_MODE_DECAWM] = true;
+        CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_BG | CFR_COLOR_DEFAULT_UL;
+    vt->modes[CFR_MODE_CURSOR_VISIBLE] = true;
+    vt->modes[CFR_MODE_CURSOR_BLINK] = true;
+    vt->modes[CFR_MODE_DECAWM] = true;
     vt->charset[0] = vt->charset[1] = vt->charset[2] = vt->charset[3] = 'B';
     vt->charset_active = 0;
 
-    bvt_parser_init(&vt->parser);
+    cfr_parser_init(&vt->parser);
 
     /* Tab stops every 8 columns by default. */
     vt->tabstops = vt->alloc.alloc((size_t)cfg->cols, vt->alloc.user);
@@ -112,36 +112,36 @@ BvtTerm *bvt_new_with_allocator(const BvtConfig *cfg, const BvtAllocator *alloc)
     return vt;
 }
 
-void bvt_free(BvtTerm *vt)
+void cfr_free(CfrTerm *vt)
 {
     if (!vt)
         return;
 
     /* Drop scrollback pages. */
-    BvtPage *p = vt->sb_head;
+    CfrPage *p = vt->sb_head;
     while (p) {
-        BvtPage *next = p->next;
-        bvt_page_free(vt, p);
+        CfrPage *next = p->next;
+        cfr_page_free(vt, p);
         p = next;
     }
 
     if (vt->grid)
-        bvt_page_free(vt, vt->grid);
+        cfr_page_free(vt, vt->grid);
     if (vt->altgrid)
-        bvt_page_free(vt, vt->altgrid);
+        cfr_page_free(vt, vt->altgrid);
 
-    bvt_sixel_state_free(vt);
-    bvt_lottie_state_free(vt);
+    cfr_sixel_state_free(vt);
+    cfr_lottie_state_free(vt);
 
-    bvt_dealloc(vt, vt->tabstops);
-    bvt_dealloc(vt, vt->title);
+    cfr_dealloc(vt, vt->tabstops);
+    cfr_dealloc(vt, vt->title);
 
     /* Use saved allocator (vt->alloc.free) — vt itself is freed last. */
-    BvtAllocator a = vt->alloc;
+    CfrAllocator a = vt->alloc;
     a.free(vt, a.user);
 }
 
-void bvt_set_callbacks(BvtTerm *vt, const BvtCallbacks *cb, void *user)
+void cfr_set_callbacks(CfrTerm *vt, const CfrCallbacks *cb, void *user)
 {
     if (!vt)
         return;
@@ -152,7 +152,7 @@ void bvt_set_callbacks(BvtTerm *vt, const BvtCallbacks *cb, void *user)
     vt->callback_user = user;
 }
 
-void bvt_resize(BvtTerm *vt, int rows, int cols)
+void cfr_resize(CfrTerm *vt, int rows, int cols)
 {
     if (!vt || rows <= 0 || cols <= 0)
         return;
@@ -161,23 +161,23 @@ void bvt_resize(BvtTerm *vt, int rows, int cols)
     /* Reflow rebuilds the grid with no line identity, so anchored sixel
      * images can't be followed across a rewrap — drop them on resize. */
     if (vt->sixel)
-        bvt_sixel_clear_all(vt);
+        cfr_sixel_clear_all(vt);
     if (vt->lottie)
-        bvt_lottie_clear_all(vt);
-    bvt_reflow(vt, rows, cols);
+        cfr_lottie_clear_all(vt);
+    cfr_reflow(vt, rows, cols);
 }
 
-void bvt_set_reflow(BvtTerm *vt, bool enabled)
+void cfr_set_reflow(CfrTerm *vt, bool enabled)
 {
     if (vt)
         vt->reflow_enabled = enabled;
 }
-void bvt_set_ambiguous_wide(BvtTerm *vt, bool wide)
+void cfr_set_ambiguous_wide(CfrTerm *vt, bool wide)
 {
     if (vt)
         vt->ambiguous_wide = wide;
 }
-void bvt_set_scrollback_size(BvtTerm *vt, int lines)
+void cfr_set_scrollback_size(CfrTerm *vt, int lines)
 {
     if (vt && lines >= 0)
         vt->sb_capacity = lines;
@@ -187,26 +187,26 @@ void bvt_set_scrollback_size(BvtTerm *vt, int lines)
 /* I/O                                                                 */
 /* ------------------------------------------------------------------ */
 
-size_t bvt_input_write(BvtTerm *vt, const uint8_t *bytes, size_t len)
+size_t cfr_input_write(CfrTerm *vt, const uint8_t *bytes, size_t len)
 {
     if (!vt || !bytes || len == 0)
         return 0;
-    bvt_parser_feed(vt, bytes, len);
+    cfr_parser_feed(vt, bytes, len);
     /* Commit any in-flight grapheme cluster. Real PTY frames almost
      * never split clusters across writes; for the rare exception
      * callers can chain writes without intervening reads. */
-    bvt_flush_cluster(vt);
+    cfr_flush_cluster(vt);
     return len;
 }
 
-/* bvt_send_key, bvt_send_text, bvt_send_mouse, bvt_paste_begin,
- * bvt_paste_end are implemented in keys.c. */
+/* cfr_send_key, cfr_send_text, cfr_send_mouse, cfr_paste_begin,
+ * cfr_paste_end are implemented in keys.c. */
 
 /* ------------------------------------------------------------------ */
 /* Queries                                                             */
 /* ------------------------------------------------------------------ */
 
-const BvtCell *bvt_get_cell(const BvtTerm *vt, int row, int col)
+const CfrCell *cfr_get_cell(const CfrTerm *vt, int row, int col)
 {
     if (!vt || !vt->grid)
         return NULL;
@@ -217,7 +217,7 @@ const BvtCell *bvt_get_cell(const BvtTerm *vt, int row, int col)
     return &vt->grid->cells[(size_t)row * vt->cols + col];
 }
 
-void bvt_get_dimensions(const BvtTerm *vt, int *out_rows, int *out_cols)
+void cfr_get_dimensions(const CfrTerm *vt, int *out_rows, int *out_cols)
 {
     if (!vt)
         return;
@@ -227,22 +227,22 @@ void bvt_get_dimensions(const BvtTerm *vt, int *out_rows, int *out_cols)
         *out_cols = vt->cols;
 }
 
-int bvt_get_scrollback_lines(const BvtTerm *vt)
+int cfr_get_scrollback_lines(const CfrTerm *vt)
 {
     return vt ? vt->sb_lines : 0;
 }
 
-int bvt_get_scrollback_capacity(const BvtTerm *vt)
+int cfr_get_scrollback_capacity(const CfrTerm *vt)
 {
     return vt ? vt->sb_capacity : 0;
 }
 
-/* bvt_get_scrollback_cell, bvt_get_scrollback_wrapline are implemented
+/* cfr_get_scrollback_cell, cfr_get_scrollback_wrapline are implemented
  * in scrollback.c. */
 
-BvtCursor bvt_get_cursor(const BvtTerm *vt)
+CfrCursor cfr_get_cursor(const CfrTerm *vt)
 {
-    BvtCursor out = { 0 };
+    CfrCursor out = { 0 };
     if (!vt)
         return out;
     out.row = vt->cursor.row;
@@ -252,17 +252,17 @@ BvtCursor bvt_get_cursor(const BvtTerm *vt)
     return out;
 }
 
-const char *bvt_get_title(const BvtTerm *vt)
+const char *cfr_get_title(const CfrTerm *vt)
 {
     return vt ? vt->title : NULL;
 }
 
-bool bvt_is_altscreen(const BvtTerm *vt)
+bool cfr_is_altscreen(const CfrTerm *vt)
 {
     return vt ? vt->in_altscreen : false;
 }
 
-bool bvt_get_mode(const BvtTerm *vt, BvtMode mode)
+bool cfr_get_mode(const CfrTerm *vt, CfrMode mode)
 {
     if (!vt)
         return false;
@@ -271,26 +271,26 @@ bool bvt_get_mode(const BvtTerm *vt, BvtMode mode)
     return vt->modes[mode];
 }
 
-bool bvt_get_line_continuation(const BvtTerm *vt, int row)
+bool cfr_get_line_continuation(const CfrTerm *vt, int row)
 {
     if (!vt || !vt->grid)
         return false;
     if (row < 0 || row >= vt->rows)
         return false;
-    return (vt->grid->row_flags[row] & BVT_CELL_WRAPLINE) != 0u;
+    return (vt->grid->row_flags[row] & CFR_CELL_WRAPLINE) != 0u;
 }
 
-const BvtStyle *bvt_cell_style(const BvtTerm *vt, const BvtCell *cell)
+const CfrStyle *cfr_cell_style(const CfrTerm *vt, const CfrCell *cell)
 {
     if (!vt || !cell)
         return NULL;
-    const BvtPage *page = bvt_find_owner_page(vt, cell);
+    const CfrPage *page = cfr_find_owner_page(vt, cell);
     if (!page)
         return NULL;
-    return bvt_style_lookup(page, cell->style_id);
+    return cfr_style_lookup(page, cell->style_id);
 }
 
-size_t bvt_cell_get_grapheme(const BvtTerm *vt, const BvtCell *cell,
+size_t cfr_cell_get_grapheme(const CfrTerm *vt, const CfrCell *cell,
                              uint32_t *out, size_t out_cap)
 {
     if (!vt || !cell || !out || out_cap == 0)
@@ -299,19 +299,19 @@ size_t bvt_cell_get_grapheme(const BvtTerm *vt, const BvtCell *cell,
         out[0] = cell->cp;
         return 1;
     }
-    const BvtPage *page = bvt_find_owner_page(vt, cell);
+    const CfrPage *page = cfr_find_owner_page(vt, cell);
     if (!page)
         return 0;
-    return bvt_grapheme_read(page, cell->grapheme_id, out, out_cap);
+    return cfr_grapheme_read(page, cell->grapheme_id, out, out_cap);
 }
 
-size_t bvt_cell_get_hyperlink(const BvtTerm *vt, const BvtCell *cell,
+size_t cfr_cell_get_hyperlink(const CfrTerm *vt, const CfrCell *cell,
                               uint8_t *out_uri, size_t out_cap)
 {
     if (!vt || !cell || cell->hyperlink_id == 0 || !out_uri || out_cap == 0)
         return 0;
-    const BvtPage *page = bvt_find_owner_page(vt, cell);
+    const CfrPage *page = cfr_find_owner_page(vt, cell);
     if (!page)
         return 0;
-    return bvt_hyperlink_read(page, cell->hyperlink_id, out_uri, out_cap);
+    return cfr_hyperlink_read(page, cell->hyperlink_id, out_uri, out_cap);
 }

@@ -1,5 +1,5 @@
 /*
- * bloom-vt — 256-color palette resolution.
+ * coffer — 256-color palette resolution.
  *
  * Layout:
  *   0-15:   ANSI base colors (Charmbracelet CharmTone, per charm.land)
@@ -14,7 +14,7 @@
  * Homage to Charmbracelet (charm.land) — thanks for the gorgeous palette. 🌸
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 static const uint8_t base16[16][3] = {
     { 0x20, 0x1f, 0x26 }, /* 0  black          Pepper  */
@@ -35,7 +35,7 @@ static const uint8_t base16[16][3] = {
     { 0xff, 0xfd, 0xf5 }, /* 15 bright white   (cream) */
 };
 
-uint32_t bvt_palette_lookup(BvtTerm *vt, uint8_t idx)
+uint32_t cfr_palette_lookup(CfrTerm *vt, uint8_t idx)
 {
     (void)vt; /* OSC 4 palette overrides will hook in here later. */
     if (idx < 16) {

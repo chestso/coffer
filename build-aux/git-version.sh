@@ -1,5 +1,5 @@
 #!/bin/sh
-# git-version.sh - print the bloom-vt version string.
+# git-version.sh - print the coffer version string.
 #
 # Usage: git-version.sh [SRCDIR]
 #

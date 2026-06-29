@@ -1,6 +1,6 @@
 #ifdef _WIN32
 
-#include "bloom_pty.h"
+#include "coffer_pty.h"
 #include "common.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,10 +1,10 @@
 /*
- * bloom-vt — DEC private mode handlers that need real state changes
+ * coffer — DEC private mode handlers that need real state changes
  * beyond the boolean flag flip in csi.c (altscreen save/restore,
  * cursor key application mode, etc.).
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +12,7 @@
 /* Altscreen toggle. With save_restore_cursor, mimics DECSET 1049 (the
  * "smcup/rmcup" variant): save cursor on entry, restore on exit. With
  * save_restore_cursor=false this matches DECSET 47 / 1047 (raw alt). */
-void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor)
+void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
 {
     if (!vt)
         return;
@@ -20,12 +20,12 @@ void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor)
         return;
 
     /* Flush any pending cluster before swapping grids. */
-    bvt_flush_cluster(vt);
+    cfr_flush_cluster(vt);
 
     /* Sixel images belong to the primary grid. We don't keep a separate
      * per-screen image set yet, so clear on any altscreen switch. */
     if (vt->sixel)
-        bvt_sixel_clear_all(vt);
+        cfr_sixel_clear_all(vt);
 
     if (on) {
         if (save_restore_cursor)
@@ -36,22 +36,22 @@ void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor)
             vt->altgrid->cols != vt->cols ||
             vt->altgrid->row_capacity != vt->rows) {
             if (vt->altgrid) {
-                bvt_page_free(vt, vt->altgrid);
+                cfr_page_free(vt, vt->altgrid);
                 vt->altgrid = NULL;
             }
-            vt->altgrid = bvt_page_new(vt, vt->rows, vt->cols);
+            vt->altgrid = cfr_page_new(vt, vt->rows, vt->cols);
             if (!vt->altgrid)
                 return; /* OOM — leave altscreen flag off */
         }
 
         /* Swap. The current grid is preserved in vt->altgrid; the
-         * alt grid (which is zeroed by bvt_page_new) becomes active. */
-        BvtPage *tmp = vt->grid;
+         * alt grid (which is zeroed by cfr_page_new) becomes active. */
+        CfrPage *tmp = vt->grid;
         vt->grid = vt->altgrid;
         vt->altgrid = tmp;
 
         vt->in_altscreen = true;
-        vt->modes[BVT_MODE_ALTSCREEN] = true;
+        vt->modes[CFR_MODE_ALTSCREEN] = true;
         /* DECSET 1049 also moves cursor to home. */
         if (save_restore_cursor) {
             vt->cursor.row = 0;
@@ -59,27 +59,27 @@ void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor)
             vt->cursor.pending_wrap = false;
         }
     } else {
-        BvtPage *tmp = vt->grid;
+        CfrPage *tmp = vt->grid;
         vt->grid = vt->altgrid;
         vt->altgrid = tmp;
 
         vt->in_altscreen = false;
-        vt->modes[BVT_MODE_ALTSCREEN] = false;
+        vt->modes[CFR_MODE_ALTSCREEN] = false;
 
         /* The main grid was saved when entering the alt screen. If the
          * terminal was resized while on the alt screen (e.g. a
          * fullscreen toggle), the restored grid is stale — its cells
          * array was allocated at the old dimensions, but vt->rows and
          * vt->cols now reflect the current (possibly larger) size.
-         * bvt_get_cell uses vt->cols for the stride, so a stale grid
+         * cfr_get_cell uses vt->cols for the stride, so a stale grid
          * with fewer columns causes a heap buffer overflow when the
          * renderer reads cells beyond the old allocation.
          *
          * Resize the grid to match the current geometry.  Temporarily
          * roll vt->rows/vt->cols back to the grid's actual allocation
-         * size so bvt_reflow sees a genuine dimension change (it
+         * size so cfr_reflow sees a genuine dimension change (it
          * returns early when new == current).  in_altscreen is already
-         * false so bvt_reflow will reflow (not clamp) the main grid,
+         * false so cfr_reflow will reflow (not clamp) the main grid,
          * re-wrapping long lines instead of truncating them. */
         if (vt->grid &&
             (vt->grid->cols != vt->cols ||
@@ -88,30 +88,30 @@ void bvt_set_altscreen(BvtTerm *vt, bool on, bool save_restore_cursor)
             int saved_cols = vt->cols;
             vt->rows = vt->grid->row_count;
             vt->cols = vt->grid->cols;
-            bvt_resize(vt, saved_rows, saved_cols);
+            cfr_resize(vt, saved_rows, saved_cols);
         }
 
         if (save_restore_cursor)
-            bvt_cursor_restore(vt, &vt->saved_cursor[0]); /* normal-screen register */
+            cfr_cursor_restore(vt, &vt->saved_cursor[0]); /* normal-screen register */
     }
 
-    bvt_damage_all(vt);
+    cfr_damage_all(vt);
     if (vt->callbacks.set_mode)
-        vt->callbacks.set_mode(BVT_MODE_ALTSCREEN, on, vt->callback_user);
+        vt->callbacks.set_mode(CFR_MODE_ALTSCREEN, on, vt->callback_user);
 }
 
-void bvt_full_reset(BvtTerm *vt)
+void cfr_full_reset(CfrTerm *vt)
 {
     if (!vt)
         return;
 
-    bvt_flush_cluster(vt);
+    cfr_flush_cluster(vt);
 
     /* Drop altscreen first so the visible grid is the primary one when
      * we clear it below. RIS doesn't preserve the saved cursor across
      * the swap. */
     if (vt->in_altscreen) {
-        BvtPage *tmp = vt->grid;
+        CfrPage *tmp = vt->grid;
         vt->grid = vt->altgrid;
         vt->altgrid = tmp;
         vt->in_altscreen = false;
@@ -124,14 +124,14 @@ void bvt_full_reset(BvtTerm *vt)
     memcpy(prev_modes, vt->modes, sizeof(prev_modes));
 
     memset(vt->modes, 0, sizeof(vt->modes));
-    vt->modes[BVT_MODE_CURSOR_VISIBLE] = true;
-    vt->modes[BVT_MODE_CURSOR_BLINK] = true;
-    vt->modes[BVT_MODE_DECAWM] = true;
+    vt->modes[CFR_MODE_CURSOR_VISIBLE] = true;
+    vt->modes[CFR_MODE_CURSOR_BLINK] = true;
+    vt->modes[CFR_MODE_DECAWM] = true;
 
     if (vt->callbacks.set_mode) {
         for (size_t i = 0; i < sizeof(prev_modes) / sizeof(prev_modes[0]); ++i) {
             if (prev_modes[i] != vt->modes[i])
-                vt->callbacks.set_mode((BvtMode)i, vt->modes[i],
+                vt->callbacks.set_mode((CfrMode)i, vt->modes[i],
                                        vt->callback_user);
         }
     }
@@ -141,7 +141,7 @@ void bvt_full_reset(BvtTerm *vt)
     vt->cursor.visible = true;
     vt->cursor.blink = true;
     vt->cursor.pen.color_flags =
-        BVT_COLOR_DEFAULT_FG | BVT_COLOR_DEFAULT_BG | BVT_COLOR_DEFAULT_UL;
+        CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_BG | CFR_COLOR_DEFAULT_UL;
     vt->saved_cursor[0] = vt->saved_cursor[1] = vt->cursor;
 
     /* Scroll region back to full screen. */
@@ -173,12 +173,12 @@ void bvt_full_reset(BvtTerm *vt)
     /* Clear the visible grid. */
     if (vt->grid) {
         memset(vt->grid->cells, 0,
-               (size_t)vt->rows * vt->cols * sizeof(BvtCell));
+               (size_t)vt->rows * vt->cols * sizeof(CfrCell));
         memset(vt->grid->row_flags, 0, (size_t)vt->rows);
     }
 
     if (vt->sixel)
-        bvt_sixel_clear_all(vt);
+        cfr_sixel_clear_all(vt);
 
-    bvt_damage_all(vt);
+    cfr_damage_all(vt);
 }

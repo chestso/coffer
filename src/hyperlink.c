@@ -1,5 +1,5 @@
 /*
- * bloom-vt — per-page OSC 8 hyperlink intern table.
+ * coffer — per-page OSC 8 hyperlink intern table.
  *
  * Layout mirrors style.c (FNV-1a + open-addressed probing) and
  * grapheme.c (bump-allocated byte arena). URIs are deduped, so two
@@ -18,14 +18,14 @@
  * "stops underlining new ones" is a benign degradation.
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <string.h>
 
-#define BVT_HYPERLINK_DATA_INIT  256u
-#define BVT_HYPERLINK_IDS_INIT   8u
-#define BVT_HYPERLINK_DEDUP_INIT 16u
-#define BVT_HYPERLINK_ID_MAX     UINT16_MAX
+#define CFR_HYPERLINK_DATA_INIT  256u
+#define CFR_HYPERLINK_IDS_INIT   8u
+#define CFR_HYPERLINK_DEDUP_INIT 16u
+#define CFR_HYPERLINK_ID_MAX     UINT16_MAX
 
 static uint32_t fnv1a(const uint8_t *data, uint32_t len)
 {
@@ -37,33 +37,33 @@ static uint32_t fnv1a(const uint8_t *data, uint32_t len)
     return h;
 }
 
-static bool ensure_init(BvtTerm *vt, BvtHyperlinkTable *t)
+static bool ensure_init(CfrTerm *vt, CfrHyperlinkTable *t)
 {
     if (t->data && t->offsets && t->lengths && t->dedup_index)
         return true;
     if (!t->data) {
-        t->data = bvt_alloc(vt, BVT_HYPERLINK_DATA_INIT);
+        t->data = cfr_alloc(vt, CFR_HYPERLINK_DATA_INIT);
         if (!t->data)
             return false;
-        t->capacity = BVT_HYPERLINK_DATA_INIT;
+        t->capacity = CFR_HYPERLINK_DATA_INIT;
         t->used = 0;
     }
     if (!t->offsets) {
-        t->offsets = bvt_alloc(vt, BVT_HYPERLINK_IDS_INIT * sizeof(uint32_t));
+        t->offsets = cfr_alloc(vt, CFR_HYPERLINK_IDS_INIT * sizeof(uint32_t));
         if (!t->offsets)
             return false;
-        t->capacity_ids = BVT_HYPERLINK_IDS_INIT;
+        t->capacity_ids = CFR_HYPERLINK_IDS_INIT;
     }
     if (!t->lengths) {
-        t->lengths = bvt_alloc(vt, BVT_HYPERLINK_IDS_INIT * sizeof(uint32_t));
+        t->lengths = cfr_alloc(vt, CFR_HYPERLINK_IDS_INIT * sizeof(uint32_t));
         if (!t->lengths)
             return false;
     }
     if (!t->dedup_index) {
-        t->dedup_index = bvt_alloc(vt, BVT_HYPERLINK_DEDUP_INIT * sizeof(uint16_t));
+        t->dedup_index = cfr_alloc(vt, CFR_HYPERLINK_DEDUP_INIT * sizeof(uint16_t));
         if (!t->dedup_index)
             return false;
-        t->dedup_capacity = BVT_HYPERLINK_DEDUP_INIT;
+        t->dedup_capacity = CFR_HYPERLINK_DEDUP_INIT;
         memset(t->dedup_index, 0, t->dedup_capacity * sizeof(uint16_t));
     }
     /* Slot 0 is reserved (= "no link"); count starts at 0 and the first
@@ -72,9 +72,9 @@ static bool ensure_init(BvtTerm *vt, BvtHyperlinkTable *t)
     return true;
 }
 
-static bool grow_data(BvtTerm *vt, BvtHyperlinkTable *t, uint32_t need_extra)
+static bool grow_data(CfrTerm *vt, CfrHyperlinkTable *t, uint32_t need_extra)
 {
-    uint32_t new_cap = t->capacity ? t->capacity : BVT_HYPERLINK_DATA_INIT;
+    uint32_t new_cap = t->capacity ? t->capacity : CFR_HYPERLINK_DATA_INIT;
     while (new_cap < t->used + need_extra) {
         if (new_cap > UINT32_MAX / 2)
             return false;
@@ -82,7 +82,7 @@ static bool grow_data(BvtTerm *vt, BvtHyperlinkTable *t, uint32_t need_extra)
     }
     if (new_cap == t->capacity)
         return true;
-    uint8_t *nd = bvt_realloc(vt, t->data, new_cap);
+    uint8_t *nd = cfr_realloc(vt, t->data, new_cap);
     if (!nd)
         return false;
     t->data = nd;
@@ -90,18 +90,18 @@ static bool grow_data(BvtTerm *vt, BvtHyperlinkTable *t, uint32_t need_extra)
     return true;
 }
 
-static bool grow_ids(BvtTerm *vt, BvtHyperlinkTable *t)
+static bool grow_ids(CfrTerm *vt, CfrHyperlinkTable *t)
 {
     uint32_t new_cap = (uint32_t)t->capacity_ids * 2u;
-    if (new_cap > BVT_HYPERLINK_ID_MAX)
-        new_cap = BVT_HYPERLINK_ID_MAX;
+    if (new_cap > CFR_HYPERLINK_ID_MAX)
+        new_cap = CFR_HYPERLINK_ID_MAX;
     if (new_cap == t->capacity_ids)
         return false;
-    uint32_t *no = bvt_realloc(vt, t->offsets, new_cap * sizeof(uint32_t));
+    uint32_t *no = cfr_realloc(vt, t->offsets, new_cap * sizeof(uint32_t));
     if (!no)
         return false;
     t->offsets = no;
-    uint32_t *nl = bvt_realloc(vt, t->lengths, new_cap * sizeof(uint32_t));
+    uint32_t *nl = cfr_realloc(vt, t->lengths, new_cap * sizeof(uint32_t));
     if (!nl)
         return false;
     t->lengths = nl;
@@ -109,10 +109,10 @@ static bool grow_ids(BvtTerm *vt, BvtHyperlinkTable *t)
     return true;
 }
 
-static bool grow_dedup(BvtTerm *vt, BvtHyperlinkTable *t)
+static bool grow_dedup(CfrTerm *vt, CfrHyperlinkTable *t)
 {
     uint32_t new_cap = t->dedup_capacity * 2;
-    uint16_t *ni = bvt_alloc(vt, new_cap * sizeof(uint16_t));
+    uint16_t *ni = cfr_alloc(vt, new_cap * sizeof(uint16_t));
     if (!ni)
         return false;
     memset(ni, 0, new_cap * sizeof(uint16_t));
@@ -124,18 +124,18 @@ static bool grow_dedup(BvtTerm *vt, BvtHyperlinkTable *t)
             slot = (slot + 1) & mask;
         ni[slot] = id;
     }
-    bvt_dealloc(vt, t->dedup_index);
+    cfr_dealloc(vt, t->dedup_index);
     t->dedup_index = ni;
     t->dedup_capacity = new_cap;
     return true;
 }
 
-uint16_t bvt_hyperlink_intern(BvtTerm *vt, BvtPage *page,
+uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
                               const uint8_t *uri, uint32_t uri_len)
 {
     if (!page || !uri || uri_len == 0)
         return 0;
-    BvtHyperlinkTable *t = &page->hyperlinks;
+    CfrHyperlinkTable *t = &page->hyperlinks;
     if (!ensure_init(vt, t))
         return 0;
 
@@ -153,7 +153,7 @@ uint16_t bvt_hyperlink_intern(BvtTerm *vt, BvtPage *page,
     }
 
     /* Insert. Cap at UINT16_MAX. */
-    if (t->count >= BVT_HYPERLINK_ID_MAX)
+    if (t->count >= CFR_HYPERLINK_ID_MAX)
         return 0;
     if (t->count + 1 >= t->capacity_ids) {
         if (!grow_ids(vt, t))
@@ -178,12 +178,12 @@ uint16_t bvt_hyperlink_intern(BvtTerm *vt, BvtPage *page,
     return new_id;
 }
 
-size_t bvt_hyperlink_read(const BvtPage *page, uint16_t id,
+size_t cfr_hyperlink_read(const CfrPage *page, uint16_t id,
                           uint8_t *out, size_t out_cap)
 {
     if (!page || id == 0 || !out || out_cap == 0)
         return 0;
-    const BvtHyperlinkTable *t = &page->hyperlinks;
+    const CfrHyperlinkTable *t = &page->hyperlinks;
     if (id > t->count)
         return 0;
     uint32_t len = t->lengths[id];
@@ -192,13 +192,13 @@ size_t bvt_hyperlink_read(const BvtPage *page, uint16_t id,
     return n;
 }
 
-void bvt_hyperlink_free(BvtTerm *vt, BvtHyperlinkTable *t)
+void cfr_hyperlink_free(CfrTerm *vt, CfrHyperlinkTable *t)
 {
     if (!t)
         return;
-    bvt_dealloc(vt, t->data);
-    bvt_dealloc(vt, t->offsets);
-    bvt_dealloc(vt, t->lengths);
-    bvt_dealloc(vt, t->dedup_index);
+    cfr_dealloc(vt, t->data);
+    cfr_dealloc(vt, t->offsets);
+    cfr_dealloc(vt, t->lengths);
+    cfr_dealloc(vt, t->dedup_index);
     memset(t, 0, sizeof(*t));
 }

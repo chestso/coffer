@@ -1,11 +1,11 @@
 /*
- * bloom-vt — scrollback as a doubly-linked page ring.
+ * coffer — scrollback as a doubly-linked page ring.
  *
- * Each page holds up to BVT_SB_PAGE_ROWS chronological rows. New
+ * Each page holds up to CFR_SB_PAGE_ROWS chronological rows. New
  * lines are appended to the head page (newest); when the head page
  * fills, a new page is allocated at the front. When the configured
  * line cap is exceeded, the tail page (oldest) is freed wholesale —
- * one `free` returns up to BVT_SB_PAGE_ROWS lines plus their style
+ * one `free` returns up to CFR_SB_PAGE_ROWS lines plus their style
  * intern table and grapheme arena. No fragmentation accumulates.
  *
  * Cells are re-interned into the receiving page's tables: style_id
@@ -23,16 +23,16 @@
  * chronologically; the newest in each page is at index `row_count - 1`.
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <string.h>
 
-static BvtPage *new_sb_page(BvtTerm *vt, int cols)
+static CfrPage *new_sb_page(CfrTerm *vt, int cols)
 {
-    BvtPage *p = bvt_page_new(vt, BVT_SB_PAGE_ROWS, cols);
+    CfrPage *p = cfr_page_new(vt, CFR_SB_PAGE_ROWS, cols);
     if (!p)
         return NULL;
-    /* bvt_page_new sets row_count to row_capacity (full page); for
+    /* cfr_page_new sets row_count to row_capacity (full page); for
      * scrollback we treat row_count as "rows-used-so-far" and grow it
      * up to row_capacity. Reset to empty. */
     p->row_count = 0;
@@ -41,12 +41,12 @@ static BvtPage *new_sb_page(BvtTerm *vt, int cols)
     return p;
 }
 
-static bool ensure_head(BvtTerm *vt, int cols)
+static bool ensure_head(CfrTerm *vt, int cols)
 {
     if (vt->sb_head && vt->sb_head->row_count < vt->sb_head->row_capacity && vt->sb_head->cols == cols) {
         return true;
     }
-    BvtPage *page = new_sb_page(vt, cols);
+    CfrPage *page = new_sb_page(vt, cols);
     if (!page)
         return false;
     /* Insert as new head. */
@@ -59,21 +59,21 @@ static bool ensure_head(BvtTerm *vt, int cols)
     return true;
 }
 
-static void evict_to_capacity(BvtTerm *vt)
+static void evict_to_capacity(CfrTerm *vt)
 {
     while (vt->sb_lines > vt->sb_capacity && vt->sb_tail) {
-        BvtPage *tail = vt->sb_tail;
+        CfrPage *tail = vt->sb_tail;
         vt->sb_tail = tail->prev; /* newer than the evicted page */
         if (vt->sb_tail)
             vt->sb_tail->next = NULL;
         else
             vt->sb_head = NULL; /* the only page */
         vt->sb_lines -= tail->row_count;
-        bvt_page_free(vt, tail);
+        cfr_page_free(vt, tail);
     }
 }
 
-void bvt_scrollback_push(BvtTerm *vt, const BvtCell *src_cells, int cols,
+void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols,
                          bool wrapline)
 {
     if (!vt || vt->sb_capacity <= 0 || cols <= 0 || !src_cells)
@@ -81,44 +81,44 @@ void bvt_scrollback_push(BvtTerm *vt, const BvtCell *src_cells, int cols,
     if (!ensure_head(vt, cols))
         return;
 
-    BvtPage *head = vt->sb_head;
+    CfrPage *head = vt->sb_head;
     /* Invariant: the scrollback push reads style/grapheme/hyperlink ids
      * from vt->grid (the source) and writes them into head. If a caller
      * (most worryingly, reflow) ever passes the scrollback head AS the
      * grid, we'd alias source and dest pages — the intern table grows
      * mid-read and any held pointer dangles. Fail loud at the door. */
-    BVT_BUG_CHECK(head != vt->grid,
+    CFR_BUG_CHECK(head != vt->grid,
                   "scrollback push target page is also vt->grid (head=%p)",
                   (void *)head);
     int row = head->row_count;
-    BvtCell *dst = &head->cells[(size_t)row * head->cols];
-    head->row_flags[row] = wrapline ? (uint8_t)BVT_CELL_WRAPLINE : 0u;
+    CfrCell *dst = &head->cells[(size_t)row * head->cols];
+    head->row_flags[row] = wrapline ? (uint8_t)CFR_CELL_WRAPLINE : 0u;
 
     /* Re-intern style, grapheme, and hyperlink references into the
      * head page — page-scoped tables don't carry across pages. */
     for (int c = 0; c < cols && c < head->cols; ++c) {
-        BvtCell src = src_cells[c];
-        const BvtStyle *src_style =
-            bvt_style_lookup(vt->grid, src.style_id);
+        CfrCell src = src_cells[c];
+        const CfrStyle *src_style =
+            cfr_style_lookup(vt->grid, src.style_id);
         uint32_t new_style_id = src_style
-                                    ? bvt_style_intern(vt, head, src_style)
+                                    ? cfr_style_intern(vt, head, src_style)
                                     : 0u;
         uint32_t new_grapheme_id = 0u;
         if (src.grapheme_id != 0u) {
-            uint32_t cps[BVT_CLUSTER_MAX];
-            size_t n = bvt_grapheme_read(vt->grid, src.grapheme_id,
-                                         cps, BVT_CLUSTER_MAX);
+            uint32_t cps[CFR_CLUSTER_MAX];
+            size_t n = cfr_grapheme_read(vt->grid, src.grapheme_id,
+                                         cps, CFR_CLUSTER_MAX);
             if (n >= 2)
-                new_grapheme_id = bvt_grapheme_intern(
+                new_grapheme_id = cfr_grapheme_intern(
                     vt, head, cps, (uint32_t)n);
         }
         uint16_t new_hyperlink_id = 0u;
         if (src.hyperlink_id != 0u) {
             uint8_t uri[2084]; /* > spec-de-facto 2083-byte URI cap */
-            size_t n = bvt_hyperlink_read(vt->grid, src.hyperlink_id,
+            size_t n = cfr_hyperlink_read(vt->grid, src.hyperlink_id,
                                           uri, sizeof(uri));
             if (n > 0)
-                new_hyperlink_id = bvt_hyperlink_intern(
+                new_hyperlink_id = cfr_hyperlink_intern(
                     vt, head, uri, (uint32_t)n);
         }
         dst[c] = src;
@@ -131,14 +131,14 @@ void bvt_scrollback_push(BvtTerm *vt, const BvtCell *src_cells, int cols,
     evict_to_capacity(vt);
 }
 
-void bvt_scrollback_clear(BvtTerm *vt)
+void cfr_scrollback_clear(CfrTerm *vt)
 {
     if (!vt)
         return;
-    BvtPage *p = vt->sb_head;
+    CfrPage *p = vt->sb_head;
     while (p) {
-        BvtPage *next = p->next;
-        bvt_page_free(vt, p);
+        CfrPage *next = p->next;
+        cfr_page_free(vt, p);
         p = next;
     }
     vt->sb_head = NULL;
@@ -146,13 +146,13 @@ void bvt_scrollback_clear(BvtTerm *vt)
     vt->sb_lines = 0;
 }
 
-static const BvtPage *find_sb_row(const BvtTerm *vt, int sb_row,
+static const CfrPage *find_sb_row(const CfrTerm *vt, int sb_row,
                                   int *out_row_in_page)
 {
     if (!vt || sb_row < 0)
         return NULL;
     int remaining = sb_row;
-    const BvtPage *p = vt->sb_head;
+    const CfrPage *p = vt->sb_head;
     while (p) {
         if (remaining < p->row_count) {
             *out_row_in_page = p->row_count - 1 - remaining;
@@ -164,10 +164,10 @@ static const BvtPage *find_sb_row(const BvtTerm *vt, int sb_row,
     return NULL;
 }
 
-const BvtCell *bvt_get_scrollback_cell(const BvtTerm *vt, int sb_row, int col)
+const CfrCell *cfr_get_scrollback_cell(const CfrTerm *vt, int sb_row, int col)
 {
     int row_in_page = 0;
-    const BvtPage *p = find_sb_row(vt, sb_row, &row_in_page);
+    const CfrPage *p = find_sb_row(vt, sb_row, &row_in_page);
     if (!p)
         return NULL;
     if (col < 0 || col >= p->cols)
@@ -175,16 +175,16 @@ const BvtCell *bvt_get_scrollback_cell(const BvtTerm *vt, int sb_row, int col)
     return &p->cells[(size_t)row_in_page * p->cols + col];
 }
 
-bool bvt_get_scrollback_wrapline(const BvtTerm *vt, int sb_row)
+bool cfr_get_scrollback_wrapline(const CfrTerm *vt, int sb_row)
 {
     int row_in_page = 0;
-    const BvtPage *p = find_sb_row(vt, sb_row, &row_in_page);
+    const CfrPage *p = find_sb_row(vt, sb_row, &row_in_page);
     if (!p)
         return false;
-    return (p->row_flags[row_in_page] & BVT_CELL_WRAPLINE) != 0u;
+    return (p->row_flags[row_in_page] & CFR_CELL_WRAPLINE) != 0u;
 }
 
-const BvtPage *bvt_find_owner_page(const BvtTerm *vt, const BvtCell *cell)
+const CfrPage *cfr_find_owner_page(const CfrTerm *vt, const CfrCell *cell)
 {
     if (!vt || !cell)
         return NULL;
@@ -198,7 +198,7 @@ const BvtPage *bvt_find_owner_page(const BvtTerm *vt, const BvtCell *cell)
         if (cell >= vt->altgrid->cells && cell < vt->altgrid->cells + n)
             return vt->altgrid;
     }
-    for (const BvtPage *p = vt->sb_head; p; p = p->next) {
+    for (const CfrPage *p = vt->sb_head; p; p = p->next) {
         size_t n = (size_t)p->row_capacity * p->cols;
         if (cell >= p->cells && cell < p->cells + n)
             return p;

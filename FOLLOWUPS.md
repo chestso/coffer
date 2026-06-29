@@ -1,20 +1,20 @@
-# bloom-vt — follow-ups
+# coffer — follow-ups
 
-Living checklist for bloom-vt. Promote items to PRs as they get worked
+Living checklist for coffer. Promote items to PRs as they get worked
 on. Order is roughly priority, not strict dependency.
 
-Scope: this file tracks bloom-vt only. Items relating to portty's
-wrapper of bloom-vt (PNG harness, SDL3 / GTK4 platform layers, renderer
+Scope: this file tracks coffer only. Items relating to portty's
+wrapper of coffer (PNG harness, SDL3 / GTK4 platform layers, renderer
 work) live in portty's own roadmap and are tagged here as
 **[portty]** when referenced for context.
 
 ## Headless interactive testing infrastructure
 
-- **A. `tests/test_bvt_pty.c`** — engine-only PTY harness. Spawns a child
+- **A. `tests/test_cfr_pty.c`** — engine-only PTY harness. Spawns a child
   shell on a real PTY using `pty_create()` / `pty_read()` / `pty_write()` /
-  `pty_destroy()` from `src/pty.c`, pipes raw output into `bvt_input_write()`,
-  asserts on `bvt_get_cell` / `bvt_get_cursor` / `bvt_get_scrollback_lines` /
-  `bvt_get_title`. **Status: done.** In tree and runs under `make check`.
+  `pty_destroy()` from `src/pty.c`, pipes raw output into `cfr_input_write()`,
+  asserts on `cfr_get_cell` / `cfr_get_cursor` / `cfr_get_scrollback_lines` /
+  `cfr_get_title`. **Status: done.** In tree and runs under `make check`.
 
 - **[portty] B. `portty -P --exec CMD [--wait MS]`** —
   visual A/B harness in portty's `src/png_mode.c`.
@@ -27,7 +27,7 @@ work) live in portty's own roadmap and are tagged here as
 B / C / D live in portty's roadmap, not this one.
 
 `scripts/pty_record.py` (in portty) is a simpler cousin to C —
-Python, no SDL, no bloom-vt — for diagnosing what a TUI emits _before_
+Python, no SDL, no coffer — for diagnosing what a TUI emits _before_
 any terminal renders it. Useful when a TUI's progressive enhancement
 seems to silently fail: often the answer is that the TUI never tried.
 
@@ -71,7 +71,7 @@ assertions instead):
 
 ## [portty] Manual interactive sweep (workstation with display only)
 
-Run the binary directly with `PORTTY_VT=bloomvt`:
+Run the binary directly with `PORTTY_VT=coffer`:
 
 - `vim`, `nvim`, `emacs -nw`
 - `htop`, `btop`, `lazygit`, `claude-code`
@@ -83,19 +83,19 @@ Run the binary directly with `PORTTY_VT=bloomvt`:
 
 ## Extraction history (done)
 
-bloom-vt was extracted from portty across steps 15–18:
+coffer was extracted from portty across steps 15–18:
 
-- Step 15 (d5e62d8 + aae22d7): bloom-vt became the default and only
+- Step 15 (d5e62d8 + aae22d7): coffer became the default and only
   backend in portty. libvterm, `term_vt.c`, the
   `PORTTY_VT` env-var dispatch, the `ext_grid` SGR rewriting,
   and the libvterm cross-compile blocks are gone.
 - Step 16 (7225bd7): VS16 shift hack removal — `TerminalRowIter` is a
   plain `vt_col += cell.width` walk.
-- Step 17: renderer migration to `bvt_cell_get_grapheme()`. The
+- Step 17: renderer migration to `cfr_cell_get_grapheme()`. The
   6-codepoint-per-cell cap is gone; arbitrary-length clusters are
   retrieved via the public accessor.
-- Step 18 (4d61c26): lift to `/home/thomasc/git/bloom-vt` as a
-  standalone autotools project with `bloom-vt.pc` for pkg-config
+- Step 18 (4d61c26): lift to `/home/thomasc/git/coffer` as a
+  standalone autotools project with `coffer.pc` for pkg-config
   consumers.
 
 Original detail lives in `git log` of portty.
@@ -116,25 +116,25 @@ URI/params bytes are constrained to 32–126 per spec; URI size limit is
 
 Implementation: `src/hyperlink.c` interns URIs per page (FNV-1a +
 open-addressed dedup); cells reference URIs by `uint16_t hyperlink_id`.
-The active id lives on `BvtCursorState` and is stamped into each cell at
-print time. `bvt_scrollback_push` re-interns ids so URIs survive the
+The active id lives on `CfrCursorState` and is stamped into each cell at
+print time. `cfr_scrollback_push` re-interns ids so URIs survive the
 boundary into a scrollback page. Public accessor:
-`bvt_cell_get_hyperlink(vt, cell, out, cap) -> length`. Coverage in
-`tests/test_bvt_parser.c::test_osc8_*` (9 tests).
+`cfr_cell_get_hyperlink(vt, cell, out, cap) -> length`. Coverage in
+`tests/test_cfr_parser.c::test_osc8_*` (9 tests).
 
 Rendering — clickable link styling, hover state, click dispatch — is
 **[portty]**'s next slice.
 
 ## Investigate
 
-- **Hoist `bvt_flush_cluster()` into `bvt_osc_dispatch`.** OSC 8 added a
+- **Hoist `cfr_flush_cluster()` into `cfr_osc_dispatch`.** OSC 8 added a
   flush at the top of its handler (mirroring the csi.c / esc.c / modes.c
   pattern) so the previous link's still-pending cluster gets the old
   pen. Title-setting (OSC 0/1/2) doesn't currently mutate render state,
   so the missing flush there is benign — but the asymmetry is a trap:
   the next OSC code that touches the pen will quietly miscolour the
   pending cluster. Cheap fix: move the flush to the top of
-  `bvt_osc_dispatch`. Wait for either a second consumer or a
+  `cfr_osc_dispatch`. Wait for either a second consumer or a
   reproducible corpus bug before changing it.
 
 ## Out of scope for v1 (defer indefinitely)
@@ -146,7 +146,7 @@ Rendering — clickable link styling, hover state, click dispatch — is
 - **Right-to-left text shaping** — handled at HarfBuzz in **[portty]**,
   not at the VT layer.
 - **OSC 8 link rendering / click dispatch / hover styling** —
-  **[portty]**. bloom-vt parses and stores OSC 8 (see "Planned"
+  **[portty]**. coffer parses and stores OSC 8 (see "Planned"
   above); rendering it as clickable underlined text is portty's
   job.
 - **OSC 8 `id=` continuity parameter** — parsed-and-discarded for v1.
@@ -163,7 +163,7 @@ Implemented: **flag 0x1** (Disambiguate escape codes) and **flag 0x8**
 (Report all keys as escape codes). Push/pop/set/query of the flag
 stack is wired in `csi.c` and the four special-key paths plus the
 Ctrl/Alt+ASCII text path in `keys.c` honour the active flags.
-Coverage in `tests/test_bvt_keys.c`.
+Coverage in `tests/test_cfr_keys.c`.
 
 The remaining three flags are accepted-and-stored on the stack but
 have no behavioural effect:
@@ -193,34 +193,34 @@ until a concrete consumer asks for them.
 - ~~`printf 'A\033[s\nB\033[uC'` (DECSC across LF) reported an 18-byte
   PNG diff against libvterm~~ — bvt was already correct per spec
   (DECSC saves cursor pos; LF preserves column; DECRC restores
-  exactly). Coverage in `tests/test_bvt_parser.c::test_decsc_across_lf`.
+  exactly). Coverage in `tests/test_cfr_parser.c::test_decsc_across_lf`.
 - ~~`printf 'A\tB\tC\033[3g\rX\tY'` (HT after CSI 3 g) diverged from
   xterm~~ — TBC (CSI g) was unimplemented; `\033[3g` was silently
   dropped so default 8-column tab stops survived. Implemented in
   `csi.c` (mode 0 clears stop at cursor; mode 3 clears all). HT then
   advances to the last column when no stops remain, matching xterm /
-  foot / alacritty. Coverage in `tests/test_bvt_parser.c::test_tbc_*`.
+  foot / alacritty. Coverage in `tests/test_cfr_parser.c::test_tbc_*`.
 - ~~DEC special graphics (line drawing) was unimplemented — `\033(0`
   designation was silently swallowed and `lqk\nx x\nmqj` rendered as
   literal ASCII instead of `┌─┐ │ │ └─┘`~~ — added charset slot
-  tracking on BvtTerm, ESC ( ) \* + dispatch, SO / SI shifts, and the
+  tracking on CfrTerm, ESC ( ) \* + dispatch, SO / SI shifts, and the
   standard VT100 0x5F..0x7E translation table at print time. Coverage
-  in `test_bvt_parser.c::test_dec_graphics_g0` and `::test_dec_graphics_si_so`.
+  in `test_cfr_parser.c::test_dec_graphics_g0` and `::test_dec_graphics_si_so`.
 - ~~Wrap-aware selection broke at the visible/scrollback boundary, and
   resize never reflowed because reflow was off by default~~ — backend
   adapter now translates wrapline semantics across the boundary and
   flips reflow on by default for bvt. Tests in `test_term_bvt.c`. See
   cae5f69.
-- ~~Ctrl+letter key combos didn't work in bloom-vt — Ctrl+C produced raw
-  `c` instead of 0x03~~ — `bvt_send_text` now applies the standard
+- ~~Ctrl+letter key combos didn't work in coffer — Ctrl+C produced raw
+  `c` instead of 0x03~~ — `cfr_send_text` now applies the standard
   Ctrl-byte transformation (Ctrl+@ → 0x00, Ctrl+A..Z → 0x01..0x1A, etc.)
   before forwarding. Fixed in 2de4465.
 - ~~cf wiped the screen on launch — the brick (Haskell vty) inline TUI
   drew at row 0 instead of preserving prompts above~~ — bvt was missing
   DECOM (origin mode 6) entirely, and DECSTBM accepted the degenerate
   `CSI 1;1 r` brick emits during setup. Both fixed; see 04f4854.
-  Repro lives in `tests/test_bvt_pty.c::test_cf_brick_inline_preserves_history`
-  and unit coverage in `tests/test_bvt_parser.c::test_decom_cup` /
+  Repro lives in `tests/test_cfr_pty.c::test_cf_brick_inline_preserves_history`
+  and unit coverage in `tests/test_cfr_parser.c::test_decom_cup` /
   `::test_decstbm_invalid_rejected` / `::test_cf_byte_replay`.
 
 ## Resolved during scaffolding (kept here for context)
@@ -233,7 +233,7 @@ until a concrete consumer asks for them.
 - ~~Reverse video (`\033[7m … \033[27m`) PNG diverged from libvterm~~ —
   `term_bvt.c::convert_cell` now pre-swaps fg/bg and clears
   `bg.is_default`, matching the libvterm backend. Byte-identical PNG.
-- ~~`test_bvt_parser` link error against `bvt_palette_lookup`~~ — added
+- ~~`test_cfr_parser` link error against `cfr_palette_lookup`~~ — added
   `palette.c` to `tests/Makefile.am`.
 - ~~Reflow shrink put real content into scrollback because trailing
   empty rows produced empty logical lines~~ — `reflow.c` now tracks
@@ -243,7 +243,7 @@ until a concrete consumer asks for them.
   removed C1 anywhere transition in the parser (xterm UTF-8 mode).
 - ~~`test_style_intern_dedup` failed: pen color_flags was 0 initially,
   then set to defaults after first SGR reset~~ — initialize pen with
-  `BVT_COLOR_DEFAULT_FG | _BG | _UL` in `bvt_new`.
+  `CFR_COLOR_DEFAULT_FG | _BG | _UL` in `cfr_new`.
 - ~~256-color SGR (`\033[48;5;220m`) PNG diverged from libvterm~~ —
   _accepted divergence_. libvterm uses a naive 51-step ramp
   `(0, 51, 102, 153, 204, 255)` and produces `#FFCC00` for color 220.

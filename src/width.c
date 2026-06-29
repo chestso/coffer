@@ -1,5 +1,5 @@
 /*
- * bloom-vt — UAX #11 East Asian Width + UAX #29 grapheme cluster width.
+ * coffer — UAX #11 East Asian Width + UAX #29 grapheme cluster width.
  *
  * Tables are sorted, contiguous interval lists looked up by binary
  * search. The hot path (ASCII printable) is a branch-free fast exit.
@@ -9,7 +9,7 @@
  *     presentation. Sufficient for vim/htop/glow/cat/lazygit.
  *   - ZERO: ASCII controls, combining marks (most common ranges),
  *     variation selectors, ZWJ, joiners, BOM, tag sequences.
- *   - AMBIGUOUS: not yet enumerated; bvt_set_ambiguous_wide(true)
+ *   - AMBIGUOUS: not yet enumerated; cfr_set_ambiguous_wide(true)
  *     currently has no effect because the table is empty. The
  *     Python generator at scripts/gen_unicode_tables.py is the
  *     intended source for the full UCD-derived list.
@@ -19,7 +19,7 @@
  * without widening.
  */
 
-#include "bloom_vt_internal.h"
+#include "coffer_internal.h"
 
 #include <stdint.h>
 
@@ -489,7 +489,7 @@ static int range_lookup(const Range *table, size_t n, uint32_t cp)
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
-int bvt_codepoint_width(BvtTerm *vt, uint32_t cp)
+int cfr_codepoint_width(CfrTerm *vt, uint32_t cp)
 {
     /* ASCII fast path */
     if (cp < 0x7Fu) {
@@ -557,7 +557,7 @@ static bool has_vs15(const uint32_t *cps, uint32_t len)
     return false;
 }
 
-int bvt_cluster_width(BvtTerm *vt, const uint32_t *cps, uint32_t len)
+int cfr_cluster_width(CfrTerm *vt, const uint32_t *cps, uint32_t len)
 {
     if (len == 0)
         return 0;
@@ -572,10 +572,10 @@ int bvt_cluster_width(BvtTerm *vt, const uint32_t *cps, uint32_t len)
     if (has_vs15(cps, len))
         return 1;
     /* Otherwise: width of base codepoint. */
-    return bvt_codepoint_width(vt, cps[0]);
+    return cfr_codepoint_width(vt, cps[0]);
 }
 
-bool bvt_grapheme_break_before(uint32_t prev, uint32_t cur, void *state_in)
+bool cfr_grapheme_break_before(uint32_t prev, uint32_t cur, void *state_in)
 {
     /* `state_in` is reserved for future per-cluster state (RI parity,
      * Pictographic+Extend* + ZWJ continuation). For now we use a

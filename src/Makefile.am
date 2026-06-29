@@ -1,8 +1,8 @@
-# src/Makefile.am - bloom-vt static library
+# src/Makefile.am - coffer static library
 
-lib_LIBRARIES = libbloom-vt.a
+lib_LIBRARIES = libcoffer.a
 
-libbloom_vt_a_SOURCES = \
+libcoffer_a_SOURCES = \
     term.c \
     parser.c \
     csi.c \
@@ -23,10 +23,10 @@ libbloom_vt_a_SOURCES = \
     lottie.c \
     esc.c \
     hyperlink.c \
-    bloom_vt_internal.h
+    coffer_internal.h
 
-libbloom_vt_a_CPPFLAGS = -I$(top_srcdir)/include
+libcoffer_a_CPPFLAGS = -I$(top_srcdir)/include
 
 if HAVE_THORVG
-libbloom_vt_a_CPPFLAGS += $(THORVG_CFLAGS)
+libcoffer_a_CPPFLAGS += $(THORVG_CFLAGS)
 endif

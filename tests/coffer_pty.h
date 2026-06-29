@@ -1,5 +1,5 @@
-#ifndef BLOOM_PTY_H
-#define BLOOM_PTY_H
+#ifndef COFFER_PTY_H
+#define COFFER_PTY_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -136,4 +136,4 @@ void *pty_get_output_handle(PtyContext *ctx);
 void pty_close_console(PtyContext *ctx);
 #endif
 
-#endif /* BLOOM_PTY_H */
+#endif /* COFFER_PTY_H */

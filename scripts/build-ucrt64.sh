@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-ucrt64.sh - build bloom-vt natively on Windows (MSYS2 UCRT64).
+# build-ucrt64.sh - build coffer natively on Windows (MSYS2 UCRT64).
 #
 # Two MSYS2 quirks defeat a plain "./autogen.sh && ./configure && make" from a
 # non-MSYS shell (git-bash, cmd, PowerShell):
@@ -137,4 +137,4 @@ if [ "$DO_INSTALL" -eq 1 ]; then
 	make -C build install
 fi
 
-echo "==> Build complete: build/src/libbloom-vt.a"
+echo "==> Build complete: build/src/libcoffer.a"

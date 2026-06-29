@@ -1,4 +1,4 @@
-# include/Makefile.am - install public headers under $(includedir)/bloom-vt/
+# include/Makefile.am - install public headers under $(includedir)/coffer/
 
-bloom_vtdir = $(includedir)/bloom-vt
-bloom_vt_HEADERS = bloom-vt/bloom_vt.h
+cofferdir = $(includedir)/coffer
+coffer_HEADERS = coffer/coffer.h
