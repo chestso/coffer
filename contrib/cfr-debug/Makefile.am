@@ -1,6 +1,10 @@
 # contrib/cfr-debug/Makefile.am - cfr-debug: headless coffer PTY inspector
 
+# cfr-debug requires POSIX (forkpty, poll) — cannot build on Windows.
+if HOST_WINDOWS
+else
 bin_PROGRAMS = cfr-debug
+endif
 
 cfr_debug_SOURCES = cfr_debug.c
 
