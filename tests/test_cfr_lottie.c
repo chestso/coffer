@@ -117,7 +117,7 @@ static void test_load_basic(void)
                 "{\"cmd\":\"load\",\"id\":1,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
                 "\"w\":40,\"h\":24,\"layers\":[]},"
-                "\"placement\":{\"row\":5,\"col\":10,\"rows\":4,\"cols\":4},"
+                "\"placement\":{\"row\":5,\"col\":10},"
                 "\"layer\":\"foreground\"}");
 
     int count = 0;
@@ -507,7 +507,7 @@ static void test_clear_display_rows_foreground(void)
                 "{\"cmd\":\"load\",\"id\":1,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
                 "\"w\":20,\"h\":20,\"layers\":[]},"
-                "\"placement\":{\"row\":5,\"col\":0,\"rows\":2,\"cols\":2},"
+                "\"placement\":{\"row\":5,\"col\":0},"
                 "\"layer\":\"foreground\"}");
 
     int count = 0;
@@ -532,7 +532,7 @@ static void test_clear_preserves_background(void)
                 "{\"cmd\":\"load\",\"id\":1,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
                 "\"w\":80,\"h\":144,\"layers\":[]},"
-                "\"placement\":{\"row\":0,\"col\":0,\"rows\":24,\"cols\":80},"
+                "\"placement\":{\"row\":0,\"col\":0},"
                 "\"layer\":\"background\"}");
 
     /* ED 2 — clear entire screen */
@@ -848,7 +848,7 @@ static void test_contain_cell_constraints(void)
                 "{\"cmd\":\"load\",\"id\":1,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
                 "\"w\":40,\"h\":40,\"layers\":[]},"
-                "\"max_cols\":8,\"max_rows\":4}");
+                "\"placement\":{\"cols\":8,\"rows\":4}}");
 
     int count = 0;
     const CfrLottie *lotties = cfr_get_lotties(vt, &count);
@@ -875,7 +875,7 @@ static void test_contain_pixel_constraints(void)
                 "{\"cmd\":\"load\",\"id\":1,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
                 "\"w\":40,\"h\":40,\"layers\":[]},"
-                "\"max_width\":80,\"max_height\":30}");
+                "\"placement\":{\"width\":80,\"height\":30}}");
 
     int count = 0;
     const CfrLottie *lotties = cfr_get_lotties(vt, &count);
@@ -902,7 +902,7 @@ static void test_contain_mixed_constraints(void)
                 "{\"cmd\":\"load\",\"id\":1,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
                 "\"w\":40,\"h\":40,\"layers\":[]},"
-                "\"max_cols\":4,\"max_width\":50}");
+                "\"placement\":{\"cols\":4,\"width\":50}}");
 
     int count = 0;
     const CfrLottie *lotties = cfr_get_lotties(vt, &count);
@@ -936,8 +936,7 @@ static void test_region_fit(void)
                 "{\"cmd\":\"load\",\"id\":1,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
                 "\"w\":40,\"h\":40,\"layers\":[]},"
-                "\"max_cols\":20,\"max_rows\":10,"
-                "\"placement\":{\"row\":0,\"col\":0}}");
+                "\"placement\":{\"row\":0,\"col\":0,\"cols\":20,\"rows\":10}}");
 
     int count = 0;
     const CfrLottie *lotties = cfr_get_lotties(vt, &count);
@@ -948,7 +947,8 @@ static void test_region_fit(void)
     const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
     ASSERT_EQ(pl[0].cols, 6);
     ASSERT_EQ(pl[0].rows, 10);
-    ASSERT_EQ(pl[0].col, 0);
+    /* Centered in 20x10 region: col=(20-6)/2=7, row=(10-10)/2=0 */
+    ASSERT_EQ(pl[0].col, 7);
     ASSERT_EQ(pl[0].row, 0);
 
     cfr_free(vt);
@@ -1008,8 +1008,7 @@ static void test_report_on_place(void)
     g_out[0] = '\0';
     feed_lottie(vt,
                 "{\"cmd\":\"place\",\"id\":1,"
-                "\"max_cols\":8,\"max_rows\":4,"
-                "\"placement\":{\"row\":2,\"col\":3},"
+                "\"placement\":{\"row\":2,\"col\":3,\"cols\":8,\"rows\":4},"
                 "\"report\":true}");
 
     uint64_t rid = 0;
@@ -1019,8 +1018,9 @@ static void test_report_on_place(void)
                           &r_rw, &r_rh, &r_cw, &r_ch);
     ASSERT_EQ(rc, 0);
     ASSERT_EQ((long long)rid, 1);
+    /* Centered in 8x4 region: col=3+(8-3)/2=5, row=2+(4-4)/2=2 */
     ASSERT_EQ(r_row, 2);
-    ASSERT_EQ(r_col, 3);
+    ASSERT_EQ(r_col, 5);
     ASSERT_EQ(r_rows, 4);
     ASSERT_EQ(r_cols, 3);
     ASSERT_EQ(r_rw, 24);
@@ -1056,8 +1056,7 @@ static void test_place_rescale_seamless(void)
     /* Place with max_width=80, max_height=80 → scale=2.0, raster=80x80 */
     feed_lottie(vt,
                 "{\"cmd\":\"place\",\"id\":1,"
-                "\"max_width\":80,\"max_height\":80,"
-                "\"placement\":{\"row\":0,\"col\":0}}");
+                "\"placement\":{\"row\":0,\"col\":0,\"width\":80,\"height\":80}}");
 
     lotties = cfr_get_lotties(vt, &count);
     ASSERT_EQ(lotties[0].canvas_w, 80);
@@ -1165,7 +1164,7 @@ static void test_fit_none_ignores_max_cols(void)
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
                 "\"w\":40,\"h\":40,\"layers\":[]},"
                 "\"fit\":\"none\",\"scale\":1.0,"
-                "\"max_cols\":4,\"max_rows\":2}");
+                "\"placement\":{\"cols\":4,\"rows\":2}}");
 
     int count = 0;
     const CfrLottie *lotties = cfr_get_lotties(vt, &count);

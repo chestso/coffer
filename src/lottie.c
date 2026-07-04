@@ -60,11 +60,11 @@ typedef struct
     int px_w;
     int px_h;
 
-    /* Size constraints (from load/place commands) */
-    int max_width;         /* pixel constraint, 0 = no limit */
-    int max_height;        /* pixel constraint, 0 = no limit */
-    int max_cols;          /* cell constraint, 0 = no limit */
-    int max_rows;          /* cell constraint, 0 = no limit */
+    /* Placement region (from load/place commands) */
+    int p_width;           /* pixel region width, 0 = no limit */
+    int p_height;          /* pixel region height, 0 = no limit */
+    int p_cols;            /* cell region width, 0 = no limit */
+    int p_rows;            /* cell region height, 0 = no limit */
     double explicit_scale; /* user scale, only used with fit:"none" (default 1.0) */
     bool fit_none;         /* true = no auto-fit, false = contain */
 
@@ -850,6 +850,8 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         opacity = (uint8_t)(lt_json_double(val, vlen) * 255.0 + 0.5);
 
     int prow = -1, pcol = -1;
+    int p_cols = 0, p_rows = 0;
+    int p_width = 0, p_height = 0;
     const char *placement = lt_json_find_key(json, json_len, "placement", &vlen);
     if (placement) {
         const char *pv;
@@ -860,27 +862,24 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         pv = lt_json_find_key(placement, vlen, "col", &pvlen);
         if (pv)
             pcol = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "cols", &pvlen);
+        if (pv)
+            p_cols = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "rows", &pvlen);
+        if (pv)
+            p_rows = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "width", &pvlen);
+        if (pv)
+            p_width = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "height", &pvlen);
+        if (pv)
+            p_height = (int)lt_json_int(pv, pvlen);
     }
 
     if (prow < 0)
         prow = vt->cursor.row;
     if (pcol < 0)
         pcol = vt->cursor.col;
-
-    /* Parse size constraints */
-    int max_width = 0, max_height = 0, max_cols = 0, max_rows = 0;
-    val = lt_json_find_key(json, json_len, "max_width", &vlen);
-    if (val)
-        max_width = (int)lt_json_int(val, vlen);
-    val = lt_json_find_key(json, json_len, "max_height", &vlen);
-    if (val)
-        max_height = (int)lt_json_int(val, vlen);
-    val = lt_json_find_key(json, json_len, "max_cols", &vlen);
-    if (val)
-        max_cols = (int)lt_json_int(val, vlen);
-    val = lt_json_find_key(json, json_len, "max_rows", &vlen);
-    if (val)
-        max_rows = (int)lt_json_int(val, vlen);
 
     /* Parse fit mode (default "contain") and explicit scale */
     bool fit_none = false;
@@ -919,8 +918,8 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
 
     /* Compute aspect-correct rasterization size from constraints */
     double scale = lt_compute_scale(design_w, design_h,
-                                    max_width, max_height,
-                                    max_cols, max_rows,
+                                    p_width, p_height,
+                                    p_cols, p_rows,
                                     vt->cell_w_px, vt->cell_h_px,
                                     fit_none, explicit_scale);
     int px_w = (int)((double)design_w * scale + 0.5);
@@ -943,6 +942,16 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         pcols = 1;
     if (prows < 1)
         prows = 1;
+
+    /* Center cell box within the placement region */
+    if (p_cols > 0)
+        pcol += (p_cols - pcols) / 2;
+    if (p_rows > 0)
+        prow += (p_rows - prows) / 2;
+    if (prow < 0)
+        prow = 0;
+    if (pcol < 0)
+        pcol = 0;
 
     bool autostart = true;
     double speed = 1.0;
@@ -1035,10 +1044,10 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     rec->design_h = design_h;
     rec->px_w = px_w;
     rec->px_h = px_h;
-    rec->max_width = max_width;
-    rec->max_height = max_height;
-    rec->max_cols = max_cols;
-    rec->max_rows = max_rows;
+    rec->p_width = p_width;
+    rec->p_height = p_height;
+    rec->p_cols = p_cols;
+    rec->p_rows = p_rows;
     rec->explicit_scale = explicit_scale;
     rec->fit_none = fit_none;
     rec->frame_ip = frame_ip;
@@ -1114,9 +1123,10 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
     if (val)
         opacity = (uint8_t)(lt_json_double(val, vlen) * 255.0 + 0.5);
 
-    /* Parse placement position */
+    /* Parse placement position and region */
     const char *placement = lt_json_find_key(json, json_len, "placement", &vlen);
     int prow = vt->cursor.row, pcol = vt->cursor.col;
+    int p_cols = 0, p_rows = 0, p_width = 0, p_height = 0;
     if (placement) {
         const char *pv;
         size_t pvlen;
@@ -1126,28 +1136,28 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
         pv = lt_json_find_key(placement, vlen, "col", &pvlen);
         if (pv)
             pcol = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "cols", &pvlen);
+        if (pv)
+            p_cols = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "rows", &pvlen);
+        if (pv)
+            p_rows = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "width", &pvlen);
+        if (pv)
+            p_width = (int)lt_json_int(pv, pvlen);
+        pv = lt_json_find_key(placement, vlen, "height", &pvlen);
+        if (pv)
+            p_height = (int)lt_json_int(pv, pvlen);
     }
 
     /* Parse size constraints (default: keep current values) */
-    int new_max_w = rec->max_width;
-    int new_max_h = rec->max_height;
-    int new_max_cols = rec->max_cols;
-    int new_max_rows = rec->max_rows;
+    int new_w = p_width ? p_width : rec->p_width;
+    int new_h = p_height ? p_height : rec->p_height;
+    int new_cols = p_cols ? p_cols : rec->p_cols;
+    int new_rows = p_rows ? p_rows : rec->p_rows;
     bool new_fit_none = rec->fit_none;
     double new_scale = rec->explicit_scale;
 
-    val = lt_json_find_key(json, json_len, "max_width", &vlen);
-    if (val)
-        new_max_w = (int)lt_json_int(val, vlen);
-    val = lt_json_find_key(json, json_len, "max_height", &vlen);
-    if (val)
-        new_max_h = (int)lt_json_int(val, vlen);
-    val = lt_json_find_key(json, json_len, "max_cols", &vlen);
-    if (val)
-        new_max_cols = (int)lt_json_int(val, vlen);
-    val = lt_json_find_key(json, json_len, "max_rows", &vlen);
-    if (val)
-        new_max_rows = (int)lt_json_int(val, vlen);
     val = lt_json_find_key(json, json_len, "fit", &vlen);
     if (val && vlen >= 6 && memcmp(val, "\"none\"", 6) == 0)
         new_fit_none = true;
@@ -1160,23 +1170,23 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
         new_scale = 1.0;
 
     /* Recompute rasterization size if constraints or fit changed */
-    bool size_changed = (new_max_w != rec->max_width ||
-                         new_max_h != rec->max_height ||
-                         new_max_cols != rec->max_cols ||
-                         new_max_rows != rec->max_rows ||
+    bool size_changed = (new_w != rec->p_width ||
+                         new_h != rec->p_height ||
+                         new_cols != rec->p_cols ||
+                         new_rows != rec->p_rows ||
                          new_fit_none != rec->fit_none ||
                          new_scale != rec->explicit_scale);
     if (size_changed) {
-        rec->max_width = new_max_w;
-        rec->max_height = new_max_h;
-        rec->max_cols = new_max_cols;
-        rec->max_rows = new_max_rows;
+        rec->p_width = new_w;
+        rec->p_height = new_h;
+        rec->p_cols = new_cols;
+        rec->p_rows = new_rows;
         rec->fit_none = new_fit_none;
         rec->explicit_scale = new_scale;
 
         double scale = lt_compute_scale(
             rec->design_w, rec->design_h,
-            new_max_w, new_max_h, new_max_cols, new_max_rows,
+            new_w, new_h, new_cols, new_rows,
             vt->cell_w_px, vt->cell_h_px,
             new_fit_none, new_scale);
 
@@ -1243,6 +1253,16 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
         pcols = 1;
     if (prows < 1)
         prows = 1;
+
+    /* Center cell box within the placement region */
+    if (new_cols > 0)
+        pcol += (new_cols - pcols) / 2;
+    if (new_rows > 0)
+        prow += (new_rows - prows) / 2;
+    if (prow < 0)
+        prow = 0;
+    if (pcol < 0)
+        pcol = 0;
 
     long abs_line = vt->sixel_abs_top + prow;
     CfrLottiePlacement *pl = lt_add_placement(vt, st, rec, abs_line, pcol,
