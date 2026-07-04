@@ -86,13 +86,13 @@ the appropriate handler.
   "cmd": "load",
   "id": 1,
   "lottie": { ... },
-  "max_cols": 20,
-  "max_rows": 10,
   "fit": "contain",
   "scale": 1.0,
   "placement": {
     "row": 5,
-    "col": 10
+    "col": 10,
+    "cols": 20,
+    "rows": 10
   },
   "layer": "background",
   "opacity": 0.85,
@@ -104,46 +104,43 @@ the appropriate handler.
 }
 ```
 
-| Field            | Type   | Default        | Description                                                              |
-| ---------------- | ------ | -------------- | ------------------------------------------------------------------------ |
-| `id`             | int    | **required**   | Client-assigned identifier (1–4294967295). Stable across commands        |
-| `lottie`         | object | **required**   | Complete Lottie JSON body                                                |
-| `max_width`      | int    | 0 (unset)      | Max rasterization width in px. 0 = no px width constraint.               |
-| `max_height`     | int    | 0 (unset)      | Max rasterization height in px. 0 = no px height constraint.             |
-| `max_cols`       | int    | 0 (unset)      | Max placement width in cells. Converted to px: `max_cols * cell_w_px`.   |
-| `max_rows`       | int    | 0 (unset)      | Max placement height in cells. Converted to px: `max_rows * cell_h_px`.  |
-| `fit`            | string | `"contain"`    | `"contain"` = scale to fit constraints, `"none"` = use explicit `scale`. |
-| `scale`          | float  | 1.0            | Uniform scale factor. Only used when `fit: "none"`. Ignored for contain. |
-| `placement`      | object | cursor pos     | Initial cell placement (see §2.2)                                        |
-| `placement.row`  | int    | cursor row     | Top-left of the available area                                           |
-| `placement.col`  | int    | cursor col     | Top-left of the region                                                   |
-| `layer`          | string | `"foreground"` | `"background"` or `"foreground"`                                         |
-| `opacity`        | float  | 1.0            | Global alpha (0.0–1.0)                                                   |
-| `play`           | object | —              | Playback parameters                                                      |
-| `play.speed`     | float  | 1.0            | Playback rate multiplier                                                 |
-| `play.loop`      | bool   | true           | Loop at end                                                              |
-| `play.autostart` | bool   | true           | Start playing immediately                                                |
-| `report`         | bool   | false          | If true, emit an APC report after placement (see §2.8)                   |
+| Field              | Type   | Default        | Description                                                              |
+| ------------------ | ------ | -------------- | ------------------------------------------------------------------------ |
+| `id`               | int    | **required**   | Client-assigned identifier (1–4294967295). Stable across commands        |
+| `lottie`           | object | **required**   | Complete Lottie JSON body                                                |
+| `fit`              | string | `"contain"`    | Sizing mode: `"contain"` or `"none"` (see §2.2)                          |
+| `scale`            | float  | 1.0            | Uniform scale factor. Only used when `fit: "none"`. Ignored for contain. |
+| `placement`        | object | cursor pos     | Placement region and position (see §2.2)                                 |
+| `placement.row`    | int    | cursor row     | Top-left of the region                                                   |
+| `placement.col`    | int    | cursor col     | Top-left of the region                                                   |
+| `placement.cols`   | int    | 0 (unset)      | Region width in cells. Used for fitting (`contain`) and centering.       |
+| `placement.rows`   | int    | 0 (unset)      | Region height in cells. Used for fitting (`contain`) and centering.      |
+| `placement.width`  | int    | 0 (unset)      | Region width in px. Alternative to `cols`.                               |
+| `placement.height` | int    | 0 (unset)      | Region height in px. Alternative to `rows`.                              |
+| `layer`            | string | `"foreground"` | `"background"` or `"foreground"`                                         |
+| `opacity`          | float  | 1.0            | Global alpha (0.0–1.0)                                                   |
+| `play`             | object | —              | Playback parameters                                                      |
+| `play.speed`       | float  | 1.0            | Playback rate multiplier                                                 |
+| `play.loop`        | bool   | true           | Loop at end                                                              |
+| `play.autostart`   | bool   | true           | Start playing immediately                                                |
+| `report`           | bool   | false          | If true, emit an APC report after placement (see §2.8)                   |
 
-**Placement rows/cols are engine-computed** from the rasterization size:
+**Fit modes:**
 
-```
-cols = ceil(raster_w / cell_w_px)
-rows = ceil(raster_h / cell_h_px)
-```
-
-Client-specified `rows`/`cols` in the placement are silently ignored.
+| `fit`       | Sizing                                              | Centering                   |
+| ----------- | --------------------------------------------------- | --------------------------- |
+| `"contain"` | Scale to fit within region (largest aspect-correct) | Cell box centered in region |
+| `"none"`    | Scale by explicit `scale` field (default 1.0)       | Cell box centered in region |
 
 **Size computation** (always aspect-correct):
 
 ```
-# Convert cell constraints to pixels, take tightest
-px_max_w = max_width  > 0 ? max_width  : infinity
-px_max_h = max_height > 0 ? max_height : infinity
-if max_cols  > 0: px_max_w = min(px_max_w, max_cols  * cell_w_px)
-if max_rows  > 0: px_max_h = min(px_max_h, max_rows  * cell_h_px)
-
 if fit == "contain":
+    # Convert region to px, take tightest
+    px_max_w = width > 0 ? width : infinity
+    px_max_h = height > 0 ? height : infinity
+    if cols > 0: px_max_w = min(px_max_w, cols * cell_w_px)
+    if rows > 0: px_max_h = min(px_max_h, rows * cell_h_px)
     scale = min(px_max_w / design_w, px_max_h / design_h)
 else:  # fit == "none"
     scale = explicit scale field
@@ -152,8 +149,27 @@ raster_w = round(design_w * scale)
 raster_h = round(design_h * scale)
 ```
 
-If all constraints are 0 and `fit` is omitted, the animation renders at design
-size (scale = 1.0).
+**Placement cells** are engine-computed from the rasterization size:
+
+```
+cols = ceil(raster_w / cell_w_px)
+rows = ceil(raster_h / cell_h_px)
+```
+
+**Centering**: the cell box is always centered within the region defined by
+`placement.cols`/`placement.rows`:
+
+```
+actual_row = row + (rows - cell_rows) / 2
+actual_col = col + (cols - cell_cols) / 2
+```
+
+The host renderer additionally centers the rasterized texture within the cell
+box with transparent padding — this is automatic and not client-controllable.
+
+If no region is specified (`cols`/`rows`/`width`/`height` all 0) and `fit` is
+omitted, the animation renders at design size (scale = 1.0) with no centering
+offset.
 
 **Replacement**: sending `load` with an existing `id` replaces the animation
 in-place. The pixel buffer is reused if dimensions match; ThorVG state is
@@ -176,12 +192,13 @@ This means animations scroll with text — identical to sixel images.
 
 - `row`/`col` are in terminal cell coordinates (0-based), defining the top-left
   of the region.
-- `rows`/`cols` are **engine-computed** from the rasterization size and cell
-  pixels. Client-specified values are ignored.
-- `max_cols`/`max_rows` define the region size in cells. The animation is
-  scaled to fit within this region (aspect-correct, `fit: "contain"`), and
-  the rasterized texture is always centered within the cell box with
-  transparent padding by the host renderer.
+- `cols`/`rows` define the region size in cells. The animation is scaled to
+  fit within this region (aspect-correct, `fit: "contain"`), or rendered at
+  explicit scale (`fit: "none"`) and centered within the region.
+- `width`/`height` are alternatives to `cols`/`rows` in pixels.
+- The engine-computed cell box (`ceil(raster / cell_px)`) is centered within
+  the region. The host renderer additionally centers the rasterized texture
+  within the cell box with transparent padding — this is automatic.
 - The rasterization pixel dimensions are `design_w * scale` by `design_h *
 scale` — always aspect-correct.
 - `abs_line = sixel_abs_top + row` at the time of placement.
@@ -192,13 +209,13 @@ scale` — always aspect-correct.
 {
   "cmd": "place",
   "id": 1,
-  "max_cols": 40,
-  "max_rows": 20,
-  "fit": "contain",
+  "fit": "none",
   "scale": 1.0,
   "placement": {
     "row": 0,
-    "col": 0
+    "col": 0,
+    "cols": 40,
+    "rows": 20
   },
   "layer": "background",
   "opacity": 0.9
@@ -208,10 +225,10 @@ scale` — always aspect-correct.
 An animation can have **multiple placements** at different cell positions. Each
 placement can independently specify `layer` and `opacity`.
 
-- `max_width`/`max_height`/`max_cols`/`max_rows`/`fit`/`scale` optional — if
-  any present and different from current, triggers seamless re-rasterization
-  - buffer realloc + cell recompute. Playback continues from the current frame.
-- `placement.rows`/`placement.cols` **removed** — always engine-computed.
+- `fit`/`scale`/`placement.cols`/`placement.rows`/`placement.width`/`placement.height`
+  optional — if any present and different from current, triggers seamless
+  re-rasterization + buffer realloc + cell recompute. Playback continues from
+  the current frame.
 - `report` (bool, default false) — if true, emit an APC report after placement (see §2.8).
 
 **Deduplication**: placements are keyed by `(abs_line, col)`. Sending `place`
@@ -338,7 +355,7 @@ The report payload is a JSON object:
 
 ```json
 {"cmd":"load","id":1,"lottie":{...},"report":true}
-{"cmd":"place","id":1,"max_cols":20,"report":true}
+{"cmd":"place","id":1,"placement":{"cols":20},"report":true}
 ```
 
 ---
