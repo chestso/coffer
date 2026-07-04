@@ -921,8 +921,9 @@ static void test_contain_mixed_constraints(void)
 /* Tests: Centering                                                    */
 /* ------------------------------------------------------------------ */
 
-/* center:true centers the placement within the available area. */
-static void test_center_placement(void)
+/* max_cols/max_rows define a region — animation fits and is centered
+ * within the cell box by the renderer (always, not opt-in). */
+static void test_region_fit(void)
 {
     CfrTerm *vt = make_term(24, 80);
 
@@ -930,14 +931,13 @@ static void test_center_placement(void)
      * px_max_w = 200, px_max_h = 60
      * scale = min(200/40, 60/40) = min(5.0, 1.5) = 1.5
      * raster = 60x60, cells = ceil(60/10)=6, ceil(60/6)=10
-     * area = 20x10, centered at row (10-10)/2=0, col (20-6)/2=7
-     * placement at row=0, col=0 → actual row=0, col=7 */
+     * placement at row=0, col=0 (top-left of region) */
     feed_lottie(vt,
                 "{\"cmd\":\"load\",\"id\":1,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
                 "\"w\":40,\"h\":40,\"layers\":[]},"
                 "\"max_cols\":20,\"max_rows\":10,"
-                "\"placement\":{\"row\":0,\"col\":0,\"center\":true}}");
+                "\"placement\":{\"row\":0,\"col\":0}}");
 
     int count = 0;
     const CfrLottie *lotties = cfr_get_lotties(vt, &count);
@@ -948,7 +948,7 @@ static void test_center_placement(void)
     const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
     ASSERT_EQ(pl[0].cols, 6);
     ASSERT_EQ(pl[0].rows, 10);
-    ASSERT_EQ(pl[0].col, 7);
+    ASSERT_EQ(pl[0].col, 0);
     ASSERT_EQ(pl[0].row, 0);
 
     cfr_free(vt);
@@ -1099,7 +1099,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_contain_cell_constraints);
     RUN_TEST(test_contain_pixel_constraints);
     RUN_TEST(test_contain_mixed_constraints);
-    RUN_TEST(test_center_placement);
+    RUN_TEST(test_region_fit);
     RUN_TEST(test_report_on_load);
     RUN_TEST(test_report_on_place);
     RUN_TEST(test_place_rescale_seamless);

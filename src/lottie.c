@@ -850,7 +850,6 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         opacity = (uint8_t)(lt_json_double(val, vlen) * 255.0 + 0.5);
 
     int prow = -1, pcol = -1;
-    bool center = false;
     const char *placement = lt_json_find_key(json, json_len, "placement", &vlen);
     if (placement) {
         const char *pv;
@@ -861,9 +860,6 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         pv = lt_json_find_key(placement, vlen, "col", &pvlen);
         if (pv)
             pcol = (int)lt_json_int(pv, pvlen);
-        pv = lt_json_find_key(placement, vlen, "center", &pvlen);
-        if (pv)
-            center = lt_json_bool(pv, pvlen);
     }
 
     if (prow < 0)
@@ -947,18 +943,6 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         pcols = 1;
     if (prows < 1)
         prows = 1;
-
-    /* Center within the available area if requested */
-    if (center) {
-        int area_cols = max_cols > 0 ? max_cols : (vt->cols - pcol);
-        int area_rows = max_rows > 0 ? max_rows : (vt->rows - prow);
-        prow += (area_rows - prows) / 2;
-        pcol += (area_cols - pcols) / 2;
-        if (prow < 0)
-            prow = 0;
-        if (pcol < 0)
-            pcol = 0;
-    }
 
     bool autostart = true;
     double speed = 1.0;
@@ -1130,10 +1114,9 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
     if (val)
         opacity = (uint8_t)(lt_json_double(val, vlen) * 255.0 + 0.5);
 
-    /* Parse placement position and center flag */
+    /* Parse placement position */
     const char *placement = lt_json_find_key(json, json_len, "placement", &vlen);
     int prow = vt->cursor.row, pcol = vt->cursor.col;
-    bool center = false;
     if (placement) {
         const char *pv;
         size_t pvlen;
@@ -1143,9 +1126,6 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
         pv = lt_json_find_key(placement, vlen, "col", &pvlen);
         if (pv)
             pcol = (int)lt_json_int(pv, pvlen);
-        pv = lt_json_find_key(placement, vlen, "center", &pvlen);
-        if (pv)
-            center = lt_json_bool(pv, pvlen);
     }
 
     /* Parse size constraints (default: keep current values) */
@@ -1263,18 +1243,6 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
         pcols = 1;
     if (prows < 1)
         prows = 1;
-
-    /* Center within the available area if requested */
-    if (center) {
-        int area_cols = new_max_cols > 0 ? new_max_cols : (vt->cols - pcol);
-        int area_rows = new_max_rows > 0 ? new_max_rows : (vt->rows - prow);
-        prow += (area_rows - prows) / 2;
-        pcol += (area_cols - pcols) / 2;
-        if (prow < 0)
-            prow = 0;
-        if (pcol < 0)
-            pcol = 0;
-    }
 
     long abs_line = vt->sixel_abs_top + prow;
     CfrLottiePlacement *pl = lt_add_placement(vt, st, rec, abs_line, pcol,
