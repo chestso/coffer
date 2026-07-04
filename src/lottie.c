@@ -40,6 +40,12 @@ typedef struct
     size_t cap;
 } LtSpare;
 
+enum
+{
+    LT_FIT_CONTAIN = 0, /* default — scale to fit within region */
+    LT_FIT_NONE = 1,    /* no auto-scaling — use explicit scale or design size */
+};
+
 typedef struct
 {
     uint64_t id;      /* client-assigned, stable cache key */
@@ -66,7 +72,7 @@ typedef struct
     int p_cols;            /* cell region width, 0 = no limit */
     int p_rows;            /* cell region height, 0 = no limit */
     double explicit_scale; /* user scale, only used with fit:"none" (default 1.0) */
-    bool fit_none;         /* true = no auto-fit, false = contain */
+    int fit;               /* LT_FIT_CONTAIN or LT_FIT_NONE */
 
     /* Playback state */
     int current_frame;
@@ -677,44 +683,46 @@ static size_t lt_base64_encode(const uint8_t *in, size_t in_len,
 /* Compute aspect-correct rasterization pixels from design size and
  * constraints.  Returns the uniform scale factor via *out_scale. */
 static double lt_compute_scale(int design_w, int design_h,
-                               int max_width, int max_height,
-                               int max_cols, int max_rows,
+                               int p_width, int p_height,
+                               int p_cols, int p_rows,
                                int cell_w_px, int cell_h_px,
-                               bool fit_none, double explicit_scale)
+                               int fit, double explicit_scale)
 {
-    if (fit_none) {
-        if (explicit_scale <= 0.0)
-            return 1.0;
-        return explicit_scale;
-    }
+    switch (fit) {
+    case LT_FIT_NONE:
+        return explicit_scale > 0.0 ? explicit_scale : 1.0;
+    case LT_FIT_CONTAIN:
+    default:
+    {
+        /* Convert region to px, take tightest */
+        double px_max_w = -1.0; /* -1 = infinity */
+        double px_max_h = -1.0;
+        if (p_width > 0)
+            px_max_w = (double)p_width;
+        if (p_cols > 0) {
+            double cw = (double)p_cols * cell_w_px;
+            if (px_max_w < 0 || cw < px_max_w)
+                px_max_w = cw;
+        }
+        if (p_height > 0)
+            px_max_h = (double)p_height;
+        if (p_rows > 0) {
+            double ch = (double)p_rows * cell_h_px;
+            if (px_max_h < 0 || ch < px_max_h)
+                px_max_h = ch;
+        }
 
-    /* Convert cell constraints to pixels, take tightest */
-    double px_max_w = -1.0; /* -1 = infinity */
-    double px_max_h = -1.0;
-    if (max_width > 0)
-        px_max_w = (double)max_width;
-    if (max_cols > 0) {
-        double cw = (double)max_cols * cell_w_px;
-        if (px_max_w < 0 || cw < px_max_w)
-            px_max_w = cw;
+        double scale = 1.0;
+        if (px_max_w > 0 && design_w > 0)
+            scale = px_max_w / design_w;
+        if (px_max_h > 0 && design_h > 0) {
+            double sh = px_max_h / design_h;
+            if (sh < scale)
+                scale = sh;
+        }
+        return scale;
     }
-    if (max_height > 0)
-        px_max_h = (double)max_height;
-    if (max_rows > 0) {
-        double ch = (double)max_rows * cell_h_px;
-        if (px_max_h < 0 || ch < px_max_h)
-            px_max_h = ch;
     }
-
-    double scale = 1.0;
-    if (px_max_w > 0 && design_w > 0)
-        scale = px_max_w / design_w;
-    if (px_max_h > 0 && design_h > 0) {
-        double sh = px_max_h / design_h;
-        if (sh < scale)
-            scale = sh;
-    }
-    return scale;
 }
 
 /* Emit an APC report (OSC 5556 on Windows) with placement info. */
@@ -882,10 +890,10 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         pcol = vt->cursor.col;
 
     /* Parse fit mode (default "contain") and explicit scale */
-    bool fit_none = false;
+    int fit = LT_FIT_CONTAIN;
     val = lt_json_find_key(json, json_len, "fit", &vlen);
     if (val && vlen >= 6 && memcmp(val, "\"none\"", 6) == 0)
-        fit_none = true;
+        fit = LT_FIT_NONE;
     double explicit_scale = 1.0;
     val = lt_json_find_key(json, json_len, "scale", &vlen);
     if (val)
@@ -921,7 +929,7 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
                                     p_width, p_height,
                                     p_cols, p_rows,
                                     vt->cell_w_px, vt->cell_h_px,
-                                    fit_none, explicit_scale);
+                                    fit, explicit_scale);
     int px_w = (int)((double)design_w * scale + 0.5);
     int px_h = (int)((double)design_h * scale + 0.5);
     if (px_w < 1)
@@ -1049,7 +1057,7 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     rec->p_cols = p_cols;
     rec->p_rows = p_rows;
     rec->explicit_scale = explicit_scale;
-    rec->fit_none = fit_none;
+    rec->fit = fit;
     rec->frame_ip = frame_ip;
     rec->frame_op = frame_op;
     rec->frame_fr = frame_fr;
@@ -1155,14 +1163,14 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
     int new_h = p_height ? p_height : rec->p_height;
     int new_cols = p_cols ? p_cols : rec->p_cols;
     int new_rows = p_rows ? p_rows : rec->p_rows;
-    bool new_fit_none = rec->fit_none;
+    int new_fit = rec->fit;
     double new_scale = rec->explicit_scale;
 
     val = lt_json_find_key(json, json_len, "fit", &vlen);
     if (val && vlen >= 6 && memcmp(val, "\"none\"", 6) == 0)
-        new_fit_none = true;
+        new_fit = LT_FIT_NONE;
     else if (val && vlen >= 9 && memcmp(val, "\"contain\"", 9) == 0)
-        new_fit_none = false;
+        new_fit = LT_FIT_CONTAIN;
     val = lt_json_find_key(json, json_len, "scale", &vlen);
     if (val)
         new_scale = lt_json_double(val, vlen);
@@ -1174,21 +1182,21 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
                          new_h != rec->p_height ||
                          new_cols != rec->p_cols ||
                          new_rows != rec->p_rows ||
-                         new_fit_none != rec->fit_none ||
+                         new_fit != rec->fit ||
                          new_scale != rec->explicit_scale);
     if (size_changed) {
         rec->p_width = new_w;
         rec->p_height = new_h;
         rec->p_cols = new_cols;
         rec->p_rows = new_rows;
-        rec->fit_none = new_fit_none;
+        rec->fit = new_fit;
         rec->explicit_scale = new_scale;
 
         double scale = lt_compute_scale(
             rec->design_w, rec->design_h,
             new_w, new_h, new_cols, new_rows,
             vt->cell_w_px, vt->cell_h_px,
-            new_fit_none, new_scale);
+            new_fit, new_scale);
 
         int new_px_w = (int)((double)rec->design_w * scale + 0.5);
         int new_px_h = (int)((double)rec->design_h * scale + 0.5);
