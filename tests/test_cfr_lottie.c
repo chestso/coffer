@@ -748,12 +748,27 @@ static int parse_report(uint64_t *out_id, int *out_row, int *out_col,
     const char *p = g_out;
     const char *end = g_out + g_out_len;
     while (p < end) {
+        const char *b64_start = NULL;
+        const char *b64_end = NULL;
+
         if (p[0] == '\x1b' && p + 1 < end && p[1] == '_') {
-            p += 2;
-            const char *b64_start = p;
-            while (p < end && !(p[0] == '\x1b' && p + 1 < end && p[1] == '\\'))
-                p++;
-            size_t b64_len = (size_t)(p - b64_start);
+            /* APC: ESC _ <base64> ESC \ */
+            b64_start = p + 2;
+            const char *q = b64_start;
+            while (q < end && !(q[0] == '\x1b' && q + 1 < end && q[1] == '\\'))
+                q++;
+            b64_end = q;
+        } else if (p[0] == '\x1b' && p + 1 < end && p[1] == ']' && p + 6 < end && memcmp(p + 2, "5556;", 5) == 0) {
+            /* OSC 5556 (Windows): ESC ] 5556 ; <base64> BEL */
+            b64_start = p + 7;
+            const char *q = b64_start;
+            while (q < end && *q != '\x07')
+                q++;
+            b64_end = q;
+        }
+
+        if (b64_start && b64_end) {
+            size_t b64_len = (size_t)(b64_end - b64_start);
             /* Decode base64 */
             uint8_t decoded[512];
             size_t dec_len = 0;
