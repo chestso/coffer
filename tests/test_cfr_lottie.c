@@ -195,9 +195,9 @@ static void test_load_multiple(void)
     ASSERT_EQ(l1->frame_count, 30);
     ASSERT_EQ(l2->frame_count, 120);
     ASSERT_EQ(l1->canvas_w, 20);
-    ASSERT_EQ(l1->canvas_h, 24);
+    ASSERT_EQ(l1->canvas_h, 20);
     ASSERT_EQ(l2->canvas_w, 40);
-    ASSERT_EQ(l2->canvas_h, 42);
+    ASSERT_EQ(l2->canvas_h, 40);
 
     cfr_free(vt);
 }
@@ -227,7 +227,7 @@ static void test_load_replace(void)
     ASSERT_TRUE(lotties[0].version > v1);
     ASSERT_EQ(lotties[0].frame_count, 60);
     ASSERT_EQ(lotties[0].canvas_w, 40);
-    ASSERT_EQ(lotties[0].canvas_h, 42);
+    ASSERT_EQ(lotties[0].canvas_h, 40);
 
     cfr_free(vt);
 }
@@ -245,14 +245,15 @@ static void test_place_multiple(void)
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
                 "\"w\":20,\"h\":20,\"layers\":[]}}");
 
+    /* place at (0,0) — rows/cols now engine-computed from rasterization */
     feed_lottie(vt,
                 "{\"cmd\":\"place\",\"id\":1,"
-                "\"placement\":{\"row\":0,\"col\":0,\"rows\":2,\"cols\":2},"
+                "\"placement\":{\"row\":0,\"col\":0},"
                 "\"layer\":\"foreground\"}");
 
     feed_lottie(vt,
                 "{\"cmd\":\"place\",\"id\":1,"
-                "\"placement\":{\"row\":0,\"col\":78,\"rows\":2,\"cols\":2},"
+                "\"placement\":{\"row\":0,\"col\":78},"
                 "\"layer\":\"background\",\"opacity\":0.8}");
 
     int count = 0;
@@ -261,9 +262,10 @@ static void test_place_multiple(void)
     ASSERT_EQ(lotties[0].placement_count, 2); /* load+place at (0,0) dedup'd, +1 at (0,78) */
 
     const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    /* 20x20 design, 10x6 cells -> pcols=2, prows=4 */
     ASSERT_EQ(pl[0].col, 0);
     ASSERT_EQ(pl[0].layer, 0);
-    ASSERT_EQ(pl[0].rows, 2);
+    ASSERT_EQ(pl[0].rows, 4);
     ASSERT_EQ(pl[0].cols, 2);
     ASSERT_EQ(pl[1].col, 78);
     ASSERT_EQ(pl[1].layer, 1);
@@ -474,12 +476,12 @@ static void test_scroll_cull(void)
     CfrTerm *vt = make_term(24, 80);
     cfr_set_scrollback_size(vt, 5);
 
-    /* Place animation at the last row */
+    /* Place animation at the last row — small design so it fits 1 cell row */
     feed_lottie(vt,
                 "{\"cmd\":\"load\",\"id\":1,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
-                "\"w\":20,\"h\":20,\"layers\":[]},"
-                "\"placement\":{\"row\":23,\"col\":0,\"rows\":1,\"cols\":1}}");
+                "\"w\":10,\"h\":6,\"layers\":[]},"
+                "\"placement\":{\"row\":23,\"col\":0}}");
 
     int count = 0;
     cfr_get_lotties(vt, &count);
@@ -668,7 +670,7 @@ static void test_load_chunk(void)
     ASSERT_EQ(count, 1);
     ASSERT_EQ(lotties[0].id, 1);
     ASSERT_EQ(lotties[0].canvas_w, 20);
-    ASSERT_EQ(lotties[0].canvas_h, 24);
+    ASSERT_EQ(lotties[0].canvas_h, 20);
     ASSERT_EQ(lotties[0].frame_count, 30);
     ASSERT_EQ(lotties[0].playing, true);
 
@@ -691,7 +693,7 @@ static void test_load_chunk_restart(void)
     ASSERT_EQ(count, 1);
     ASSERT_EQ(lotties[0].id, 1);
     ASSERT_EQ(lotties[0].canvas_w, 20);
-    ASSERT_EQ(lotties[0].canvas_h, 24);
+    ASSERT_EQ(lotties[0].canvas_h, 20);
 
     cfr_free(vt);
 }
@@ -716,7 +718,7 @@ static void test_place_opacity_update(void)
     /* Re-place at same position with new opacity — should update, not append */
     feed_lottie(vt,
                 "{\"cmd\":\"place\",\"id\":1,"
-                "\"placement\":{\"row\":0,\"col\":0,\"rows\":1,\"cols\":2},"
+                "\"placement\":{\"row\":0,\"col\":0},"
                 "\"layer\":\"foreground\",\"opacity\":0.3}");
 
     lotties = cfr_get_lotties(vt, &count);
@@ -725,7 +727,8 @@ static void test_place_opacity_update(void)
 
     pl = get_placements(vt, &lotties[0]);
     ASSERT_EQ(pl[0].opacity_x256, 77);
-    ASSERT_EQ(pl[0].rows, 1);
+    /* 20x20 design, 10x6 cells -> pcols=2, prows=4 */
+    ASSERT_EQ(pl[0].rows, 4);
     ASSERT_EQ(pl[0].cols, 2);
 
     cfr_free(vt);
@@ -734,6 +737,335 @@ static void test_place_opacity_update(void)
 /* ------------------------------------------------------------------ */
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
+
+/* Helper: parse the first APC report from g_out. Returns 0 on success. */
+static int parse_report(uint64_t *out_id, int *out_row, int *out_col,
+                        int *out_rows, int *out_cols,
+                        int *out_raster_w, int *out_raster_h,
+                        int *out_cell_w, int *out_cell_h)
+{
+    /* Find ESC _ in g_out */
+    const char *p = g_out;
+    const char *end = g_out + g_out_len;
+    while (p < end) {
+        if (p[0] == '\x1b' && p + 1 < end && p[1] == '_') {
+            p += 2;
+            const char *b64_start = p;
+            while (p < end && !(p[0] == '\x1b' && p + 1 < end && p[1] == '\\'))
+                p++;
+            size_t b64_len = (size_t)(p - b64_start);
+            /* Decode base64 */
+            uint8_t decoded[512];
+            size_t dec_len = 0;
+            for (size_t i = 0; i < b64_len && dec_len < sizeof(decoded) - 1;) {
+                uint32_t accum = 0;
+                int bits = 0;
+                while (i < b64_len && bits < 8) {
+                    int8_t v = -1;
+                    char c = b64_start[i++];
+                    if (c >= 'A' && c <= 'Z')
+                        v = c - 'A';
+                    else if (c >= 'a' && c <= 'z')
+                        v = c - 'a' + 26;
+                    else if (c >= '0' && c <= '9')
+                        v = c - '0' + 52;
+                    else if (c == '+')
+                        v = 62;
+                    else if (c == '/')
+                        v = 63;
+                    else
+                        continue;
+                    accum = (accum << 6) | (uint32_t)v;
+                    bits += 6;
+                    if (bits >= 8) {
+                        bits -= 8;
+                        decoded[dec_len++] = (uint8_t)(accum >> bits);
+                    }
+                }
+            }
+            decoded[dec_len] = '\0';
+
+            /* Parse JSON fields */
+            const char *j = (const char *)decoded;
+            size_t jlen = dec_len;
+            size_t vlen;
+            const char *val;
+
+            val = strstr(j, "\"id\":");
+            if (!val)
+                return -1;
+            val += 5;
+            *out_id = 0;
+            while (*val >= '0' && *val <= '9') {
+                *out_id = *out_id * 10 + (*val - '0');
+                val++;
+            }
+
+#define PARSE_INT(field, out)                        \
+    do {                                             \
+        val = strstr(j, "\"" field "\":");           \
+        if (val) {                                   \
+            val += sizeof(field) + 2;                \
+            *(out) = 0;                              \
+            while (*val >= '0' && *val <= '9') {     \
+                *(out) = *(out) * 10 + (*val - '0'); \
+                val++;                               \
+            }                                        \
+        }                                            \
+    } while (0)
+
+            PARSE_INT("row", out_row);
+            PARSE_INT("col", out_col);
+            PARSE_INT("rows", out_rows);
+            PARSE_INT("cols", out_cols);
+            PARSE_INT("raster_w", out_raster_w);
+            PARSE_INT("raster_h", out_raster_h);
+            PARSE_INT("cell_w_px", out_cell_w);
+            PARSE_INT("cell_h_px", out_cell_h);
+
+#undef PARSE_INT
+            return 0;
+        }
+        p++;
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Size constraints (contain)                                  */
+/* ------------------------------------------------------------------ */
+
+/* max_cols/max_rows constrain the rasterization to fit within a cell area. */
+static void test_contain_cell_constraints(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* 40x40 design, max_cols=8, max_rows=4, cell 10x6:
+     * px_max_w = 8*10 = 80, px_max_h = 4*6 = 24
+     * scale = min(80/40, 24/40) = min(2.0, 0.6) = 0.6
+     * raster = 24x24, cells = ceil(24/10)=3, ceil(24/6)=4 */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":40,\"layers\":[]},"
+                "\"max_cols\":8,\"max_rows\":4}");
+
+    int count = 0;
+    const CfrLottie *lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].canvas_w, 24);
+    ASSERT_EQ(lotties[0].canvas_h, 24);
+
+    const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].cols, 3);
+    ASSERT_EQ(pl[0].rows, 4);
+
+    cfr_free(vt);
+}
+
+/* max_width/max_height constrain in pixels directly. */
+static void test_contain_pixel_constraints(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* 40x40 design, max_width=80, max_height=30:
+     * scale = min(80/40, 30/40) = min(2.0, 0.75) = 0.75
+     * raster = 30x30, cells = ceil(30/10)=3, ceil(30/6)=5 */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":40,\"layers\":[]},"
+                "\"max_width\":80,\"max_height\":30}");
+
+    int count = 0;
+    const CfrLottie *lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].canvas_w, 30);
+    ASSERT_EQ(lotties[0].canvas_h, 30);
+
+    const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].cols, 3);
+    ASSERT_EQ(pl[0].rows, 5);
+
+    cfr_free(vt);
+}
+
+/* Mixed cell + pixel constraints take the tightest. */
+static void test_contain_mixed_constraints(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* 40x40 design, max_cols=4 (→40px), max_width=50:
+     * px_max_w = min(50, 40) = 40, scale = 40/40 = 1.0
+     * raster = 40x40, cells = ceil(40/10)=4, ceil(40/6)=7 */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":40,\"layers\":[]},"
+                "\"max_cols\":4,\"max_width\":50}");
+
+    int count = 0;
+    const CfrLottie *lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].canvas_w, 40);
+    ASSERT_EQ(lotties[0].canvas_h, 40);
+
+    const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].cols, 4);
+    ASSERT_EQ(pl[0].rows, 7);
+
+    cfr_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Centering                                                    */
+/* ------------------------------------------------------------------ */
+
+/* center:true centers the placement within the available area. */
+static void test_center_placement(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* 40x40 design, max_cols=20, max_rows=10, cell 10x6:
+     * px_max_w = 200, px_max_h = 60
+     * scale = min(200/40, 60/40) = min(5.0, 1.5) = 1.5
+     * raster = 60x60, cells = ceil(60/10)=6, ceil(60/6)=10
+     * area = 20x10, centered at row (10-10)/2=0, col (20-6)/2=7
+     * placement at row=0, col=0 → actual row=0, col=7 */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":40,\"layers\":[]},"
+                "\"max_cols\":20,\"max_rows\":10,"
+                "\"placement\":{\"row\":0,\"col\":0,\"center\":true}}");
+
+    int count = 0;
+    const CfrLottie *lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].canvas_w, 60);
+    ASSERT_EQ(lotties[0].canvas_h, 60);
+
+    const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].cols, 6);
+    ASSERT_EQ(pl[0].rows, 10);
+    ASSERT_EQ(pl[0].col, 7);
+    ASSERT_EQ(pl[0].row, 0);
+
+    cfr_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: APC report                                                   */
+/* ------------------------------------------------------------------ */
+
+/* load emits an APC report with correct fields. */
+static void test_report_on_load(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    g_out_len = 0;
+    g_out[0] = '\0';
+
+    /* 20x20 design, no constraints → raster=20x20, cells=2x4 */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":42,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]},"
+                "\"placement\":{\"row\":3,\"col\":5}}");
+
+    uint64_t rid = 0;
+    int r_row = -1, r_col = -1, r_rows = -1, r_cols = -1;
+    int r_rw = -1, r_rh = -1, r_cw = -1, r_ch = -1;
+    int rc = parse_report(&rid, &r_row, &r_col, &r_rows, &r_cols,
+                          &r_rw, &r_rh, &r_cw, &r_ch);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ((long long)rid, 42);
+    ASSERT_EQ(r_row, 3);
+    ASSERT_EQ(r_col, 5);
+    ASSERT_EQ(r_rows, 4);
+    ASSERT_EQ(r_cols, 2);
+    ASSERT_EQ(r_rw, 20);
+    ASSERT_EQ(r_rh, 20);
+    ASSERT_EQ(r_cw, 10);
+    ASSERT_EQ(r_ch, 6);
+
+    cfr_free(vt);
+}
+
+/* place emits an APC report with updated fields. */
+static void test_report_on_place(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Load at design size */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":40,\"layers\":[]}}");
+
+    /* Place with max_cols=8, max_rows=4 → raster=24x24, cells=3x4 */
+    g_out_len = 0;
+    g_out[0] = '\0';
+    feed_lottie(vt,
+                "{\"cmd\":\"place\",\"id\":1,"
+                "\"max_cols\":8,\"max_rows\":4,"
+                "\"placement\":{\"row\":2,\"col\":3}}");
+
+    uint64_t rid = 0;
+    int r_row = -1, r_col = -1, r_rows = -1, r_cols = -1;
+    int r_rw = -1, r_rh = -1, r_cw = -1, r_ch = -1;
+    int rc = parse_report(&rid, &r_row, &r_col, &r_rows, &r_cols,
+                          &r_rw, &r_rh, &r_cw, &r_ch);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ((long long)rid, 1);
+    ASSERT_EQ(r_row, 2);
+    ASSERT_EQ(r_col, 3);
+    ASSERT_EQ(r_rows, 4);
+    ASSERT_EQ(r_cols, 3);
+    ASSERT_EQ(r_rw, 24);
+    ASSERT_EQ(r_rh, 24);
+
+    cfr_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: Seamless rescale via place                                   */
+/* ------------------------------------------------------------------ */
+
+/* place with new constraints re-rasterizes without resetting frame. */
+static void test_place_rescale_seamless(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Load at design size (40x40), autostart=false */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":40,\"layers\":[]},"
+                "\"play\":{\"autostart\":false}}");
+
+    /* Seek to frame 10 */
+    feed_lottie(vt, "{\"cmd\":\"seek\",\"id\":1,\"frame\":10}");
+
+    int count = 0;
+    const CfrLottie *lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(lotties[0].current_frame, 10);
+    ASSERT_FALSE(lotties[0].playing);
+
+    /* Place with max_width=80, max_height=80 → scale=2.0, raster=80x80 */
+    feed_lottie(vt,
+                "{\"cmd\":\"place\",\"id\":1,"
+                "\"max_width\":80,\"max_height\":80,"
+                "\"placement\":{\"row\":0,\"col\":0}}");
+
+    lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(lotties[0].canvas_w, 80);
+    ASSERT_EQ(lotties[0].canvas_h, 80);
+    /* Frame should be preserved (seamless rescale) */
+    ASSERT_EQ(lotties[0].current_frame, 10);
+    ASSERT_FALSE(lotties[0].playing);
+
+    cfr_free(vt);
+}
 
 int main(int argc, char *argv[])
 {
@@ -762,6 +1094,13 @@ int main(int argc, char *argv[])
     RUN_TEST(test_load_chunk);
     RUN_TEST(test_load_chunk_restart);
     RUN_TEST(test_place_opacity_update);
+    RUN_TEST(test_contain_cell_constraints);
+    RUN_TEST(test_contain_pixel_constraints);
+    RUN_TEST(test_contain_mixed_constraints);
+    RUN_TEST(test_center_placement);
+    RUN_TEST(test_report_on_load);
+    RUN_TEST(test_report_on_place);
+    RUN_TEST(test_place_rescale_seamless);
 
     TEST_SUMMARY();
 }

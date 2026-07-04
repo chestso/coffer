@@ -461,8 +461,8 @@ typedef struct
 {
     uint64_t id;
     uint32_t version;
-    int canvas_w;        /* rasterization width in pixels (placement cells × cell px) */
-    int canvas_h;        /* rasterization height in pixels (placement cells × cell px) */
+    int canvas_w;        /* rasterization width in px (design × scale, aspect-correct) */
+    int canvas_h;        /* rasterization height in px (design × scale, aspect-correct) */
     const uint8_t *rgba; /* canvas_w * canvas_h * 4, RGBA32, engine-owned */
     int current_frame;
     int frame_count;

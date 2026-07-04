@@ -86,11 +86,14 @@ the appropriate handler.
   "cmd": "load",
   "id": 1,
   "lottie": { ... },
+  "max_cols": 20,
+  "max_rows": 10,
+  "fit": "contain",
+  "scale": 1.0,
   "placement": {
     "row": 5,
     "col": 10,
-    "rows": 4,
-    "cols": 8
+    "center": true
   },
   "layer": "background",
   "opacity": 0.85,
@@ -102,33 +105,69 @@ the appropriate handler.
 }
 ```
 
-| Field            | Type   | Default        | Description                                                       |
-| ---------------- | ------ | -------------- | ----------------------------------------------------------------- |
-| `id`             | int    | **required**   | Client-assigned identifier (1–4294967295). Stable across commands |
-| `lottie`         | object | **required**   | Complete Lottie JSON body                                         |
-| `placement`      | object | cursor pos     | Initial cell placement (see §2.2)                                 |
-| `placement.row`  | int    | cursor row     | Anchor row (0-based)                                              |
-| `placement.col`  | int    | cursor col     | Anchor column (0-based)                                           |
-| `placement.rows` | int    | computed       | Cell height; computed from Lottie `h` and cell pixels if omitted  |
-| `placement.cols` | int    | computed       | Cell width; computed from Lottie `w` and cell pixels if omitted   |
-| `layer`          | string | `"foreground"` | `"background"` or `"foreground"`                                  |
-| `opacity`        | float  | 1.0            | Global alpha (0.0–1.0)                                            |
-| `play`           | object | —              | Playback parameters                                               |
-| `play.speed`     | float  | 1.0            | Playback rate multiplier                                          |
-| `play.loop`      | bool   | true           | Loop at end                                                       |
-| `play.autostart` | bool   | true           | Start playing immediately                                         |
+| Field              | Type   | Default        | Description                                                              |
+| ------------------ | ------ | -------------- | ------------------------------------------------------------------------ |
+| `id`               | int    | **required**   | Client-assigned identifier (1–4294967295). Stable across commands        |
+| `lottie`           | object | **required**   | Complete Lottie JSON body                                                |
+| `max_width`        | int    | 0 (unset)      | Max rasterization width in px. 0 = no px width constraint.               |
+| `max_height`       | int    | 0 (unset)      | Max rasterization height in px. 0 = no px height constraint.             |
+| `max_cols`         | int    | 0 (unset)      | Max placement width in cells. Converted to px: `max_cols * cell_w_px`.   |
+| `max_rows`         | int    | 0 (unset)      | Max placement height in cells. Converted to px: `max_rows * cell_h_px`.  |
+| `fit`              | string | `"contain"`    | `"contain"` = scale to fit constraints, `"none"` = use explicit `scale`. |
+| `scale`            | float  | 1.0            | Uniform scale factor. Only used when `fit: "none"`. Ignored for contain. |
+| `placement`        | object | cursor pos     | Initial cell placement (see §2.2)                                        |
+| `placement.row`    | int    | cursor row     | Top-left of the available area                                           |
+| `placement.col`    | int    | cursor col     | Top-left of the available area                                           |
+| `placement.center` | bool   | false          | Center the placement within the area defined by row/col + constraints    |
+| `layer`            | string | `"foreground"` | `"background"` or `"foreground"`                                         |
+| `opacity`          | float  | 1.0            | Global alpha (0.0–1.0)                                                   |
+| `play`             | object | —              | Playback parameters                                                      |
+| `play.speed`       | float  | 1.0            | Playback rate multiplier                                                 |
+| `play.loop`        | bool   | true           | Loop at end                                                              |
+| `play.autostart`   | bool   | true           | Start playing immediately                                                |
+
+**Placement rows/cols are engine-computed** from the rasterization size:
+
+```
+cols = ceil(raster_w / cell_w_px)
+rows = ceil(raster_h / cell_h_px)
+```
+
+Client-specified `rows`/`cols` in the placement are silently ignored.
+
+**Size computation** (always aspect-correct):
+
+```
+# Convert cell constraints to pixels, take tightest
+px_max_w = max_width  > 0 ? max_width  : infinity
+px_max_h = max_height > 0 ? max_height : infinity
+if max_cols  > 0: px_max_w = min(px_max_w, max_cols  * cell_w_px)
+if max_rows  > 0: px_max_h = min(px_max_h, max_rows  * cell_h_px)
+
+if fit == "contain":
+    scale = min(px_max_w / design_w, px_max_h / design_h)
+else:  # fit == "none"
+    scale = explicit scale field
+
+raster_w = round(design_w * scale)
+raster_h = round(design_h * scale)
+```
+
+If all constraints are 0 and `fit` is omitted, the animation renders at design
+size (scale = 1.0).
 
 **Replacement**: sending `load` with an existing `id` replaces the animation
 in-place. The pixel buffer is reused if dimensions match; ThorVG state is
 rebuilt. The version bumps, signaling the host to re-upload pixels.
 
 **Default placement**: if `placement` is omitted, the animation is placed at
-the current cursor position with dimensions computed from the Lottie canvas
-size and the terminal's cell pixel dimensions:
+the current cursor position with rasterization at design size (scale = 1.0).
+Cell dimensions are computed from the rasterization size and the terminal's
+cell pixel dimensions:
 
 ```
-cols = ceil(lottie.w / cell_w_px)
-rows = ceil(lottie.h / cell_h_px)
+cols = ceil(raster_w / cell_w_px)
+rows = ceil(raster_h / cell_h_px)
 ```
 
 ### 2.2 Placement Coordinates
@@ -136,10 +175,17 @@ rows = ceil(lottie.h / cell_h_px)
 Placements are anchored by **absolute line** (`abs_line`), not display row.
 This means animations scroll with text — identical to sixel images.
 
-- `row`/`col` are in terminal cell coordinates (0-based).
-- `rows`/`cols` specify the cell rectangle the animation occupies.
-- The actual pixel rasterization dimensions are `cols × cell_w_px` by
-  `rows × cell_h_px`.
+- `row`/`col` are in terminal cell coordinates (0-based), defining the top-left
+  of the available area.
+- `rows`/`cols` are **engine-computed** from the rasterization size and cell
+  pixels. Client-specified values are ignored.
+- `center` (bool, default false) centers the placement within the area defined
+  by `row`/`col` and `max_rows`/`max_cols` (or the full terminal if no
+  constraints).
+- The rasterization pixel dimensions are `design_w * scale` by `design_h *
+scale` — always aspect-correct.
+- The host renderer centers the rasterized texture within the cell box,
+  padding with transparency.
 - `abs_line = sixel_abs_top + row` at the time of placement.
 
 ### 2.3 `place` — Add or update a placement
@@ -148,11 +194,14 @@ This means animations scroll with text — identical to sixel images.
 {
   "cmd": "place",
   "id": 1,
+  "max_cols": 40,
+  "max_rows": 20,
+  "fit": "contain",
+  "scale": 1.0,
   "placement": {
     "row": 0,
     "col": 0,
-    "rows": 4,
-    "cols": 8
+    "center": true
   },
   "layer": "background",
   "opacity": 0.9
@@ -162,10 +211,17 @@ This means animations scroll with text — identical to sixel images.
 An animation can have **multiple placements** at different cell positions. Each
 placement can independently specify `layer` and `opacity`.
 
+- `max_width`/`max_height`/`max_cols`/`max_rows`/`fit`/`scale` optional — if
+  any present and different from current, triggers seamless re-rasterization
+  - buffer realloc + cell recompute. Playback continues from the current frame.
+- `placement.center` — re-centers within the area without re-rasterizing.
+- `placement.rows`/`placement.cols` **removed** — always engine-computed.
+
 **Deduplication**: placements are keyed by `(abs_line, col)`. Sending `place`
 with the same position as an existing placement **updates** that placement's
-`rows`, `cols`, `layer`, and `opacity` rather than creating a duplicate. This
-enables efficient toggling (e.g. foreground ↔ background) at the same position.
+`layer` and `opacity` (and size if constraints changed) rather than creating a
+duplicate. This enables efficient toggling (e.g. foreground ↔ background) at
+the same position.
 
 Each placement is auto-assigned a stable `id` by the engine (incrementing
 counter in `CfrLottieState.next_placement_id`).
@@ -233,6 +289,48 @@ chunk the upload:
   initialization, rasterization of frame 0, and adds a default placement.
 - If a new `load-chunk` with `seq == 0` arrives while a previous chunked upload
   is in progress, the previous upload is discarded.
+
+### 2.8 Report — Engine-to-client feedback
+
+After every `load` or `place`, the engine emits a report via the output
+callback. The report uses the same wire format as commands — APC with
+base64-encoded JSON on POSIX, OSC 5556 with base64-encoded JSON on Windows
+(mirroring the OSC 5555 command carrier):
+
+| Direction       | POSIX                       | Windows                          |
+| --------------- | --------------------------- | -------------------------------- |
+| Client → engine | `ESC _ <base64-json> ESC \` | `ESC ] 5555 ; <base64-json> BEL` |
+| Engine → client | `ESC _ <base64-json> ESC \` | `ESC ] 5556 ; <base64-json> BEL` |
+
+The report payload is a JSON object:
+
+```json
+{
+  "type": "report",
+  "id": 1,
+  "row": 5,
+  "col": 10,
+  "rows": 4,
+  "cols": 8,
+  "raster_w": 375,
+  "raster_h": 375,
+  "cell_w_px": 9,
+  "cell_h_px": 22
+}
+```
+
+| Field       | Type | Description                                         |
+| ----------- | ---- | --------------------------------------------------- |
+| `type`      | str  | Always `"report"`                                   |
+| `id`        | int  | Animation id                                        |
+| `row`       | int  | Final placement row (after centering, if requested) |
+| `col`       | int  | Final placement col (after centering, if requested) |
+| `rows`      | int  | Cell rows occupied (engine-computed)                |
+| `cols`      | int  | Cell cols occupied (engine-computed)                |
+| `raster_w`  | int  | Rasterization width in px (design × scale)          |
+| `raster_h`  | int  | Rasterization height in px (design × scale)         |
+| `cell_w_px` | int  | Terminal cell width in px                           |
+| `cell_h_px` | int  | Terminal cell height in px                          |
 
 ---
 
@@ -419,8 +517,8 @@ typedef struct
 {
     uint64_t      id;
     uint32_t      version;
-    int           canvas_w;        /* rasterization width in pixels  */
-    int           canvas_h;        /* rasterization height in pixels */
+    int           canvas_w;        /* rasterization width in px (design × scale)  */
+    int           canvas_h;        /* rasterization height in px (design × scale) */
     const uint8_t *rgba;           /* canvas_w × canvas_h × 4, engine-owned */
     int           current_frame;
     int           frame_count;     /* frame_op - frame_ip            */

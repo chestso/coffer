@@ -56,9 +56,17 @@ typedef struct
     int design_w;
     int design_h;
 
-    /* Rasterization pixel dimensions (placement cells × cell pixel size) */
+    /* Rasterization pixel dimensions (design × scale, not cell box) */
     int px_w;
     int px_h;
+
+    /* Size constraints (from load/place commands) */
+    int max_width;         /* pixel constraint, 0 = no limit */
+    int max_height;        /* pixel constraint, 0 = no limit */
+    int max_cols;          /* cell constraint, 0 = no limit */
+    int max_rows;          /* cell constraint, 0 = no limit */
+    double explicit_scale; /* user scale, only used with fit:"none" (default 1.0) */
+    bool fit_none;         /* true = no auto-fit, false = contain */
 
     /* Playback state */
     int current_frame;
@@ -626,9 +634,107 @@ static size_t lt_base64_decode(const uint8_t *in, size_t in_len,
     return out_len;
 }
 
+static size_t lt_base64_encode(const uint8_t *in, size_t in_len,
+                               char *out, size_t out_cap)
+{
+    static const char chars[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t out_len = 0;
+    for (size_t i = 0; i < in_len; i += 3) {
+        if (out_len + 4 > out_cap)
+            break;
+        uint32_t a = in[i];
+        uint32_t b = (i + 1 < in_len) ? in[i + 1] : 0;
+        uint32_t c = (i + 2 < in_len) ? in[i + 2] : 0;
+        uint32_t t = (a << 16) | (b << 8) | c;
+        out[out_len++] = chars[(t >> 18) & 0x3F];
+        out[out_len++] = chars[(t >> 12) & 0x3F];
+        out[out_len++] = (i + 1 < in_len) ? chars[(t >> 6) & 0x3F] : '=';
+        out[out_len++] = (i + 2 < in_len) ? chars[t & 0x3F] : '=';
+    }
+    if (out_len < out_cap)
+        out[out_len] = '\0';
+    return out_len;
+}
+
 /* ------------------------------------------------------------------ */
-/* Placement helpers                                                  */
+/* Size computation                                                   */
 /* ------------------------------------------------------------------ */
+
+/* Compute aspect-correct rasterization pixels from design size and
+ * constraints.  Returns the uniform scale factor via *out_scale. */
+static double lt_compute_scale(int design_w, int design_h,
+                               int max_width, int max_height,
+                               int max_cols, int max_rows,
+                               int cell_w_px, int cell_h_px,
+                               bool fit_none, double explicit_scale)
+{
+    if (fit_none) {
+        if (explicit_scale <= 0.0)
+            return 1.0;
+        return explicit_scale;
+    }
+
+    /* Convert cell constraints to pixels, take tightest */
+    double px_max_w = -1.0; /* -1 = infinity */
+    double px_max_h = -1.0;
+    if (max_width > 0)
+        px_max_w = (double)max_width;
+    if (max_cols > 0) {
+        double cw = (double)max_cols * cell_w_px;
+        if (px_max_w < 0 || cw < px_max_w)
+            px_max_w = cw;
+    }
+    if (max_height > 0)
+        px_max_h = (double)max_height;
+    if (max_rows > 0) {
+        double ch = (double)max_rows * cell_h_px;
+        if (px_max_h < 0 || ch < px_max_h)
+            px_max_h = ch;
+    }
+
+    double scale = 1.0;
+    if (px_max_w > 0 && design_w > 0)
+        scale = px_max_w / design_w;
+    if (px_max_h > 0 && design_h > 0) {
+        double sh = px_max_h / design_h;
+        if (sh < scale)
+            scale = sh;
+    }
+    return scale;
+}
+
+/* Emit an APC report (OSC 5556 on Windows) with placement info. */
+static void lt_emit_report(CfrTerm *vt, uint64_t id,
+                           int row, int col, int rows, int cols,
+                           int raster_w, int raster_h)
+{
+    char json[200];
+    int jn = snprintf(json, sizeof(json),
+                      "{\"type\":\"report\",\"id\":%llu,\"row\":%d,\"col\":%d,"
+                      "\"rows\":%d,\"cols\":%d,\"raster_w\":%d,\"raster_h\":%d,"
+                      "\"cell_w_px\":%d,\"cell_h_px\":%d}",
+                      (unsigned long long)id, row, col, rows, cols,
+                      raster_w, raster_h, vt->cell_w_px, vt->cell_h_px);
+    if (jn <= 0)
+        return;
+
+    char b64[300];
+    size_t b64_len = lt_base64_encode(
+        (const uint8_t *)json, (size_t)jn, b64, sizeof(b64));
+    if (b64_len == 0)
+        return;
+
+    char seq[340];
+    int n;
+#ifdef _WIN32
+    n = snprintf(seq, sizeof(seq), "\x1b]5556;%.*s\x07", (int)b64_len, b64);
+#else
+    n = snprintf(seq, sizeof(seq), "\x1b_%.*s\x1b\\", (int)b64_len, b64);
+#endif
+    if (n > 0)
+        cfr_emit_bytes(vt, (const uint8_t *)seq, (size_t)n);
+}
 
 static CfrLottiePlacement *lt_add_placement(
     CfrTerm *vt, struct CfrLottieState *st, LtRec *rec,
@@ -724,7 +830,8 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     if (val)
         opacity = (uint8_t)(lt_json_double(val, vlen) * 255.0 + 0.5);
 
-    int prow = -1, pcol = -1, prows = 0, pcols = 0;
+    int prow = -1, pcol = -1;
+    bool center = false;
     const char *placement = lt_json_find_key(json, json_len, "placement", &vlen);
     if (placement) {
         const char *pv;
@@ -735,18 +842,42 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         pv = lt_json_find_key(placement, vlen, "col", &pvlen);
         if (pv)
             pcol = (int)lt_json_int(pv, pvlen);
-        pv = lt_json_find_key(placement, vlen, "rows", &pvlen);
+        pv = lt_json_find_key(placement, vlen, "center", &pvlen);
         if (pv)
-            prows = (int)lt_json_int(pv, pvlen);
-        pv = lt_json_find_key(placement, vlen, "cols", &pvlen);
-        if (pv)
-            pcols = (int)lt_json_int(pv, pvlen);
+            center = lt_json_bool(pv, pvlen);
     }
 
     if (prow < 0)
         prow = vt->cursor.row;
     if (pcol < 0)
         pcol = vt->cursor.col;
+
+    /* Parse size constraints */
+    int max_width = 0, max_height = 0, max_cols = 0, max_rows = 0;
+    val = lt_json_find_key(json, json_len, "max_width", &vlen);
+    if (val)
+        max_width = (int)lt_json_int(val, vlen);
+    val = lt_json_find_key(json, json_len, "max_height", &vlen);
+    if (val)
+        max_height = (int)lt_json_int(val, vlen);
+    val = lt_json_find_key(json, json_len, "max_cols", &vlen);
+    if (val)
+        max_cols = (int)lt_json_int(val, vlen);
+    val = lt_json_find_key(json, json_len, "max_rows", &vlen);
+    if (val)
+        max_rows = (int)lt_json_int(val, vlen);
+
+    /* Parse fit mode (default "contain") and explicit scale */
+    bool fit_none = false;
+    val = lt_json_find_key(json, json_len, "fit", &vlen);
+    if (val && vlen >= 6 && memcmp(val, "\"none\"", 6) == 0)
+        fit_none = true;
+    double explicit_scale = 1.0;
+    val = lt_json_find_key(json, json_len, "scale", &vlen);
+    if (val)
+        explicit_scale = lt_json_double(val, vlen);
+    if (explicit_scale <= 0.0)
+        explicit_scale = 1.0;
 
     int design_w = 0, design_h = 0;
     int frame_ip = 0, frame_op = 30;
@@ -771,24 +902,44 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
             frame_fr = lt_json_double(lv, lvlen);
     }
 
-    if (prows <= 0 && design_h > 0)
-        prows = (design_h + vt->cell_h_px - 1) / vt->cell_h_px;
-    if (pcols <= 0 && design_w > 0)
-        pcols = (design_w + vt->cell_w_px - 1) / vt->cell_w_px;
-    if (prows <= 0)
-        prows = 1;
-    if (pcols <= 0)
-        pcols = 1;
-
-    /* Derive pixel dimensions from placement cells × cell pixel size */
-    int px_w = pcols * vt->cell_w_px;
-    int px_h = prows * vt->cell_h_px;
+    /* Compute aspect-correct rasterization size from constraints */
+    double scale = lt_compute_scale(design_w, design_h,
+                                    max_width, max_height,
+                                    max_cols, max_rows,
+                                    vt->cell_w_px, vt->cell_h_px,
+                                    fit_none, explicit_scale);
+    int px_w = (int)((double)design_w * scale + 0.5);
+    int px_h = (int)((double)design_h * scale + 0.5);
+    if (px_w < 1)
+        px_w = 1;
+    if (px_h < 1)
+        px_h = 1;
 
     /* Ensure design space has a fallback too */
     if (design_w <= 0)
         design_w = px_w;
     if (design_h <= 0)
         design_h = px_h;
+
+    /* Placement cells derived from rasterization size / cell px */
+    int pcols = (px_w + vt->cell_w_px - 1) / vt->cell_w_px;
+    int prows = (px_h + vt->cell_h_px - 1) / vt->cell_h_px;
+    if (pcols < 1)
+        pcols = 1;
+    if (prows < 1)
+        prows = 1;
+
+    /* Center within the available area if requested */
+    if (center) {
+        int area_cols = max_cols > 0 ? max_cols : (vt->cols - pcol);
+        int area_rows = max_rows > 0 ? max_rows : (vt->rows - prow);
+        prow += (area_rows - prows) / 2;
+        pcol += (area_cols - pcols) / 2;
+        if (prow < 0)
+            prow = 0;
+        if (pcol < 0)
+            pcol = 0;
+    }
 
     bool autostart = true;
     double speed = 1.0;
@@ -881,6 +1032,12 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     rec->design_h = design_h;
     rec->px_w = px_w;
     rec->px_h = px_h;
+    rec->max_width = max_width;
+    rec->max_height = max_height;
+    rec->max_cols = max_cols;
+    rec->max_rows = max_rows;
+    rec->explicit_scale = explicit_scale;
+    rec->fit_none = fit_none;
     rec->frame_ip = frame_ip;
     rec->frame_op = frame_op;
     rec->frame_fr = frame_fr;
@@ -917,6 +1074,8 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     if (pl)
         lt_damage_placement(vt, pl);
 
+    lt_emit_report(vt, id, prow, pcol, prows, pcols, px_w, px_h);
+
     rec->version++;
 }
 
@@ -945,9 +1104,10 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
     if (val)
         opacity = (uint8_t)(lt_json_double(val, vlen) * 255.0 + 0.5);
 
+    /* Parse placement position and center flag */
     const char *placement = lt_json_find_key(json, json_len, "placement", &vlen);
     int prow = vt->cursor.row, pcol = vt->cursor.col;
-    int prows = 1, pcols = 1;
+    bool center = false;
     if (placement) {
         const char *pv;
         size_t pvlen;
@@ -957,12 +1117,137 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
         pv = lt_json_find_key(placement, vlen, "col", &pvlen);
         if (pv)
             pcol = (int)lt_json_int(pv, pvlen);
-        pv = lt_json_find_key(placement, vlen, "rows", &pvlen);
+        pv = lt_json_find_key(placement, vlen, "center", &pvlen);
         if (pv)
-            prows = (int)lt_json_int(pv, pvlen);
-        pv = lt_json_find_key(placement, vlen, "cols", &pvlen);
-        if (pv)
-            pcols = (int)lt_json_int(pv, pvlen);
+            center = lt_json_bool(pv, pvlen);
+    }
+
+    /* Parse size constraints (default: keep current values) */
+    int new_max_w = rec->max_width;
+    int new_max_h = rec->max_height;
+    int new_max_cols = rec->max_cols;
+    int new_max_rows = rec->max_rows;
+    bool new_fit_none = rec->fit_none;
+    double new_scale = rec->explicit_scale;
+
+    val = lt_json_find_key(json, json_len, "max_width", &vlen);
+    if (val)
+        new_max_w = (int)lt_json_int(val, vlen);
+    val = lt_json_find_key(json, json_len, "max_height", &vlen);
+    if (val)
+        new_max_h = (int)lt_json_int(val, vlen);
+    val = lt_json_find_key(json, json_len, "max_cols", &vlen);
+    if (val)
+        new_max_cols = (int)lt_json_int(val, vlen);
+    val = lt_json_find_key(json, json_len, "max_rows", &vlen);
+    if (val)
+        new_max_rows = (int)lt_json_int(val, vlen);
+    val = lt_json_find_key(json, json_len, "fit", &vlen);
+    if (val && vlen >= 6 && memcmp(val, "\"none\"", 6) == 0)
+        new_fit_none = true;
+    else if (val && vlen >= 9 && memcmp(val, "\"contain\"", 9) == 0)
+        new_fit_none = false;
+    val = lt_json_find_key(json, json_len, "scale", &vlen);
+    if (val)
+        new_scale = lt_json_double(val, vlen);
+    if (new_scale <= 0.0)
+        new_scale = 1.0;
+
+    /* Recompute rasterization size if constraints or fit changed */
+    bool size_changed = (new_max_w != rec->max_width ||
+                         new_max_h != rec->max_height ||
+                         new_max_cols != rec->max_cols ||
+                         new_max_rows != rec->max_rows ||
+                         new_fit_none != rec->fit_none ||
+                         new_scale != rec->explicit_scale);
+    if (size_changed) {
+        rec->max_width = new_max_w;
+        rec->max_height = new_max_h;
+        rec->max_cols = new_max_cols;
+        rec->max_rows = new_max_rows;
+        rec->fit_none = new_fit_none;
+        rec->explicit_scale = new_scale;
+
+        double scale = lt_compute_scale(
+            rec->design_w, rec->design_h,
+            new_max_w, new_max_h, new_max_cols, new_max_rows,
+            vt->cell_w_px, vt->cell_h_px,
+            new_fit_none, new_scale);
+
+        int new_px_w = (int)((double)rec->design_w * scale + 0.5);
+        int new_px_h = (int)((double)rec->design_h * scale + 0.5);
+        if (new_px_w < 1)
+            new_px_w = 1;
+        if (new_px_h < 1)
+            new_px_h = 1;
+
+        /* Realloc RGBA buffer if size changed */
+        size_t need = (size_t)new_px_w * (size_t)new_px_h * 4;
+        if (need > LT_LIVE_MAX)
+            return;
+        lt_evict_to_budget(vt, st, need);
+        if (need != rec->rgba_cap) {
+            st->live_bytes -= rec->rgba_cap;
+            lt_buf_release(vt, st, rec->rgba, rec->rgba_cap);
+            rec->rgba = lt_buf_alloc(vt, st, need);
+            rec->rgba_cap = need;
+            st->live_bytes += need;
+            if (!rec->rgba)
+                return;
+        }
+
+        rec->px_w = new_px_w;
+        rec->px_h = new_px_h;
+
+#ifdef HAVE_THORVG
+        /* Update ThorVG picture size (no JSON reload) */
+        if (rec->tvg_anim) {
+            Tvg_Paint pic = tvg_animation_get_picture(rec->tvg_anim);
+            tvg_picture_set_size(pic, (float)new_px_w, (float)new_px_h);
+
+            /* Recreate SW canvas with new target buffer */
+            if (rec->tvg_canvas) {
+                tvg_canvas_remove(rec->tvg_canvas,
+                                  tvg_animation_get_picture(rec->tvg_anim));
+                tvg_canvas_destroy(rec->tvg_canvas);
+            }
+            rec->tvg_canvas = tvg_swcanvas_create(TVG_ENGINE_OPTION_DEFAULT);
+            tvg_swcanvas_set_target(rec->tvg_canvas,
+                                    (uint32_t *)rec->rgba,
+                                    (uint32_t)new_px_w,
+                                    (uint32_t)new_px_w,
+                                    (uint32_t)new_px_h,
+                                    TVG_COLORSPACE_ARGB8888);
+            tvg_canvas_add(rec->tvg_canvas, pic);
+
+            /* Re-rasterize current frame — seamless rescale */
+            lt_rasterize(rec);
+        }
+#endif
+        if (!rec->tvg_anim)
+            memset(rec->rgba, 0, rec->rgba_cap);
+
+        rec->version++;
+    }
+
+    /* Compute placement cells from current rasterization size */
+    int pcols = (rec->px_w + vt->cell_w_px - 1) / vt->cell_w_px;
+    int prows = (rec->px_h + vt->cell_h_px - 1) / vt->cell_h_px;
+    if (pcols < 1)
+        pcols = 1;
+    if (prows < 1)
+        prows = 1;
+
+    /* Center within the available area if requested */
+    if (center) {
+        int area_cols = new_max_cols > 0 ? new_max_cols : (vt->cols - pcol);
+        int area_rows = new_max_rows > 0 ? new_max_rows : (vt->rows - prow);
+        prow += (area_rows - prows) / 2;
+        pcol += (area_cols - pcols) / 2;
+        if (prow < 0)
+            prow = 0;
+        if (pcol < 0)
+            pcol = 0;
     }
 
     long abs_line = vt->sixel_abs_top + prow;
@@ -970,6 +1255,9 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
                                               prows, pcols, layer, opacity);
     if (pl)
         lt_damage_placement(vt, pl);
+
+    lt_emit_report(vt, id, prow, pcol, prows, pcols, rec->px_w, rec->px_h);
+
     rec->version++;
 }
 
