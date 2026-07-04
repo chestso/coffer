@@ -527,14 +527,19 @@ typedef struct
 {
     uint64_t id;           /* auto-assigned stable placement id */
     long     abs_line;     /* absolute line (scrolls with text)  */
-    int      row;          /* display-relative row               */
-    int      col;
-    int      rows;         /* cell height                        */
-    int      cols;         /* cell width                         */
+    int      row;          /* display-relative row (after centering) */
+    int      col;          /* display-relative col (after centering) */
+    int      rows;         /* engine-computed cell box height    */
+    int      cols;         /* engine-computed cell box width     */
     uint8_t  layer;        /* 0 = foreground, 1 = background    */
     uint8_t  opacity_x256; /* 0–255                              */
 } CfrLottiePlacement;
 ```
+
+`row`/`col` are the final placement position after centering within the
+region. `rows`/`cols` are the engine-computed cell box dimensions derived
+from the rasterization size (`ceil(raster / cell_px)`), not the client-specified
+region.
 
 #### CfrLottie
 
