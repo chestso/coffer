@@ -970,7 +970,8 @@ static void test_report_on_load(void)
                 "{\"cmd\":\"load\",\"id\":42,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
                 "\"w\":20,\"h\":20,\"layers\":[]},"
-                "\"placement\":{\"row\":3,\"col\":5}}");
+                "\"placement\":{\"row\":3,\"col\":5},"
+                "\"report\":true}");
 
     uint64_t rid = 0;
     int r_row = -1, r_col = -1, r_rows = -1, r_cols = -1;
@@ -1008,7 +1009,8 @@ static void test_report_on_place(void)
     feed_lottie(vt,
                 "{\"cmd\":\"place\",\"id\":1,"
                 "\"max_cols\":8,\"max_rows\":4,"
-                "\"placement\":{\"row\":2,\"col\":3}}");
+                "\"placement\":{\"row\":2,\"col\":3},"
+                "\"report\":true}");
 
     uint64_t rid = 0;
     int r_row = -1, r_col = -1, r_rows = -1, r_cols = -1;

@@ -125,6 +125,7 @@ the appropriate handler.
 | `play.speed`       | float  | 1.0            | Playback rate multiplier                                                 |
 | `play.loop`        | bool   | true           | Loop at end                                                              |
 | `play.autostart`   | bool   | true           | Start playing immediately                                                |
+| `report`           | bool   | false          | If true, emit an APC report after placement (see §2.8)                   |
 
 **Placement rows/cols are engine-computed** from the rasterization size:
 
@@ -216,6 +217,7 @@ placement can independently specify `layer` and `opacity`.
   - buffer realloc + cell recompute. Playback continues from the current frame.
 - `placement.center` — re-centers within the area without re-rasterizing.
 - `placement.rows`/`placement.cols` **removed** — always engine-computed.
+- `report` (bool, default false) — if true, emit an APC report after placement (see §2.8).
 
 **Deduplication**: placements are keyed by `(abs_line, col)`. Sending `place`
 with the same position as an existing placement **updates** that placement's
@@ -292,10 +294,15 @@ chunk the upload:
 
 ### 2.8 Report — Engine-to-client feedback
 
-After every `load` or `place`, the engine emits a report via the output
-callback. The report uses the same wire format as commands — APC with
-base64-encoded JSON on POSIX, OSC 5556 with base64-encoded JSON on Windows
-(mirroring the OSC 5555 command carrier):
+The engine emits a report **only when the client requests it** by including
+`"report": true` in the `load` or `place` command. This is opt-in because the
+report is sent via the output callback to the PTY — the child process receives
+it on stdin. Clients that don't expect report data (e.g. TUI frameworks that
+interpret raw bytes as key events) should not request reports.
+
+The report uses the same wire format as commands — APC with base64-encoded
+JSON on POSIX, OSC 5556 with base64-encoded JSON on Windows (mirroring the
+OSC 5555 command carrier):
 
 | Direction       | POSIX                       | Windows                          |
 | --------------- | --------------------------- | -------------------------------- |
@@ -331,6 +338,13 @@ The report payload is a JSON object:
 | `raster_h`  | int  | Rasterization height in px (design × scale)         |
 | `cell_w_px` | int  | Terminal cell width in px                           |
 | `cell_h_px` | int  | Terminal cell height in px                          |
+
+**Requesting a report**: add `"report": true` to the `load` or `place` command:
+
+```json
+{"cmd":"load","id":1,"lottie":{...},"report":true}
+{"cmd":"place","id":1,"max_cols":20,"report":true}
+```
 
 ---
 

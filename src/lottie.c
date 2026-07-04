@@ -283,12 +283,20 @@ static void lt_evict_to_budget(CfrTerm *vt, struct CfrLottieState *st,
 #ifdef HAVE_THORVG
 static uint8_t lt_srgb_to_linear(uint8_t v)
 {
-    float s = (float)v / 255.0f;
-    float l = s <= 0.04045f ? s / 12.92f
-                            : powf((s + 0.055f) / 1.055f, 2.4f);
-    int out = (int)(l * 255.0f + 0.5f);
-    return (uint8_t)(out < 0 ? 0 : out > 255 ? 255
-                                             : out);
+    static uint8_t table[256];
+    static bool init = false;
+    if (!init) {
+        for (int i = 0; i < 256; i++) {
+            float s = (float)i / 255.0f;
+            float l = s <= 0.04045f ? s / 12.92f
+                                    : powf((s + 0.055f) / 1.055f, 2.4f);
+            int out = (int)(l * 255.0f + 0.5f);
+            table[i] = (uint8_t)(out < 0 ? 0 : out > 255 ? 255
+                                                         : out);
+        }
+        init = true;
+    }
+    return table[v];
 }
 
 static void lt_linearize_rgba(uint8_t *rgba, int w, int h)
@@ -817,6 +825,12 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         return;
     uint64_t id = (uint64_t)lt_json_int(val, vlen);
 
+    /* Parse report flag (default false — opt-in) */
+    bool want_report = false;
+    val = lt_json_find_key(json, json_len, "report", &vlen);
+    if (val)
+        want_report = lt_json_bool(val, vlen);
+
     const char *lottie_obj = lt_json_find_key(json, json_len, "lottie", &vlen);
     size_t lottie_obj_len = vlen;
 
@@ -1074,7 +1088,8 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     if (pl)
         lt_damage_placement(vt, pl);
 
-    lt_emit_report(vt, id, prow, pcol, prows, pcols, px_w, px_h);
+    if (want_report)
+        lt_emit_report(vt, id, prow, pcol, prows, pcols, px_w, px_h);
 
     rec->version++;
 }
@@ -1089,6 +1104,12 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
     if (!val)
         return;
     uint64_t id = (uint64_t)lt_json_int(val, vlen);
+
+    /* Parse report flag (default false — opt-in) */
+    bool want_report = false;
+    val = lt_json_find_key(json, json_len, "report", &vlen);
+    if (val)
+        want_report = lt_json_bool(val, vlen);
 
     LtRec *rec = lt_find_by_id(st, id);
     if (!rec)
@@ -1256,9 +1277,8 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
     if (pl)
         lt_damage_placement(vt, pl);
 
-    lt_emit_report(vt, id, prow, pcol, prows, pcols, rec->px_w, rec->px_h);
-
-    rec->version++;
+    if (want_report)
+        lt_emit_report(vt, id, prow, pcol, prows, pcols, rec->px_w, rec->px_h);
 }
 
 static void lt_cmd_play(struct CfrLottieState *st, CfrTerm *vt,
