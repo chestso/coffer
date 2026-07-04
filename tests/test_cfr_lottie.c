@@ -1069,6 +1069,153 @@ static void test_place_rescale_seamless(void)
     cfr_free(vt);
 }
 
+/* ------------------------------------------------------------------ */
+/* Tests: fit:"none" — explicit scale, no auto-fit                    */
+/* ------------------------------------------------------------------ */
+
+/* fit:"none" with no scale renders at design size (scale = 1.0). */
+static void test_fit_none_design_size(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* 40x40 design, fit:"none", no scale → raster = 40x40
+     * cells = ceil(40/10)=4, ceil(40/6)=7 */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":40,\"layers\":[]},"
+                "\"fit\":\"none\"}");
+
+    int count = 0;
+    const CfrLottie *lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].canvas_w, 40);
+    ASSERT_EQ(lotties[0].canvas_h, 40);
+
+    const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].cols, 4);
+    ASSERT_EQ(pl[0].rows, 7);
+
+    cfr_free(vt);
+}
+
+/* fit:"none" with scale:2.0 doubles the rasterization size. */
+static void test_fit_none_scale_2x(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* 40x40 design, fit:"none", scale:2.0 → raster = 80x80
+     * cells = ceil(80/10)=8, ceil(80/6)=14 */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":40,\"layers\":[]},"
+                "\"fit\":\"none\",\"scale\":2.0}");
+
+    int count = 0;
+    const CfrLottie *lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].canvas_w, 80);
+    ASSERT_EQ(lotties[0].canvas_h, 80);
+
+    const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].cols, 8);
+    ASSERT_EQ(pl[0].rows, 14);
+
+    cfr_free(vt);
+}
+
+/* fit:"none" with scale:0.5 halves the rasterization size. */
+static void test_fit_none_scale_half(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* 40x40 design, fit:"none", scale:0.5 → raster = 20x20
+     * cells = ceil(20/10)=2, ceil(20/6)=4 */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":40,\"layers\":[]},"
+                "\"fit\":\"none\",\"scale\":0.5}");
+
+    int count = 0;
+    const CfrLottie *lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(lotties[0].canvas_w, 20);
+    ASSERT_EQ(lotties[0].canvas_h, 20);
+
+    const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].cols, 2);
+    ASSERT_EQ(pl[0].rows, 4);
+
+    cfr_free(vt);
+}
+
+/* fit:"none" ignores max_cols/max_rows — the explicit scale wins. */
+static void test_fit_none_ignores_max_cols(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* 40x40 design, fit:"none", scale:1.0, max_cols:4, max_rows:2
+     * fit:"none" means max_cols/max_rows are ignored for sizing
+     * raster = 40x40 (design size, scale 1.0)
+     * cells = ceil(40/10)=4, ceil(40/6)=7 */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":40,\"layers\":[]},"
+                "\"fit\":\"none\",\"scale\":1.0,"
+                "\"max_cols\":4,\"max_rows\":2}");
+
+    int count = 0;
+    const CfrLottie *lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+    /* max_cols/max_rows ignored — raster is design size */
+    ASSERT_EQ(lotties[0].canvas_w, 40);
+    ASSERT_EQ(lotties[0].canvas_h, 40);
+
+    const CfrLottiePlacement *pl = get_placements(vt, &lotties[0]);
+    ASSERT_EQ(pl[0].cols, 4);
+    ASSERT_EQ(pl[0].rows, 7);
+
+    cfr_free(vt);
+}
+
+/* place with fit:"none" and new scale re-rasterizes seamlessly. */
+static void test_fit_none_place_rescale(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Load at design size with fit:"none" */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":40,\"layers\":[]},"
+                "\"fit\":\"none\",\"play\":{\"autostart\":false}}");
+
+    /* Seek to frame 10 */
+    feed_lottie(vt, "{\"cmd\":\"seek\",\"id\":1,\"frame\":10}");
+
+    int count = 0;
+    const CfrLottie *lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(lotties[0].current_frame, 10);
+
+    /* Place with scale:3.0 → raster = 120x120, frame preserved */
+    feed_lottie(vt,
+                "{\"cmd\":\"place\",\"id\":1,"
+                "\"fit\":\"none\",\"scale\":3.0,"
+                "\"placement\":{\"row\":0,\"col\":0}}");
+
+    lotties = cfr_get_lotties(vt, &count);
+    ASSERT_EQ(lotties[0].canvas_w, 120);
+    ASSERT_EQ(lotties[0].canvas_h, 120);
+    /* Frame preserved across rescale */
+    ASSERT_EQ(lotties[0].current_frame, 10);
+    ASSERT_FALSE(lotties[0].playing);
+
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -1103,6 +1250,13 @@ int main(int argc, char *argv[])
     RUN_TEST(test_report_on_load);
     RUN_TEST(test_report_on_place);
     RUN_TEST(test_place_rescale_seamless);
+
+    /* fit: "none" — explicit scale, no auto-fit */
+    RUN_TEST(test_fit_none_design_size);
+    RUN_TEST(test_fit_none_scale_2x);
+    RUN_TEST(test_fit_none_scale_half);
+    RUN_TEST(test_fit_none_ignores_max_cols);
+    RUN_TEST(test_fit_none_place_rescale);
 
     TEST_SUMMARY();
 }
