@@ -92,8 +92,7 @@ the appropriate handler.
   "scale": 1.0,
   "placement": {
     "row": 5,
-    "col": 10,
-    "center": true
+    "col": 10
   },
   "layer": "background",
   "opacity": 0.85,
@@ -199,8 +198,7 @@ scale` — always aspect-correct.
   "scale": 1.0,
   "placement": {
     "row": 0,
-    "col": 0,
-    "center": true
+    "col": 0
   },
   "layer": "background",
   "opacity": 0.9
@@ -323,18 +321,18 @@ The report payload is a JSON object:
 }
 ```
 
-| Field       | Type | Description                                         |
-| ----------- | ---- | --------------------------------------------------- |
-| `type`      | str  | Always `"report"`                                   |
-| `id`        | int  | Animation id                                        |
-| `row`       | int  | Final placement row (after centering, if requested) |
-| `col`       | int  | Final placement col (after centering, if requested) |
-| `rows`      | int  | Cell rows occupied (engine-computed)                |
-| `cols`      | int  | Cell cols occupied (engine-computed)                |
-| `raster_w`  | int  | Rasterization width in px (design × scale)          |
-| `raster_h`  | int  | Rasterization height in px (design × scale)         |
-| `cell_w_px` | int  | Terminal cell width in px                           |
-| `cell_h_px` | int  | Terminal cell height in px                          |
+| Field       | Type | Description                                 |
+| ----------- | ---- | ------------------------------------------- |
+| `type`      | str  | Always `"report"`                           |
+| `id`        | int  | Animation id                                |
+| `row`       | int  | Placement row (top-left of region)          |
+| `col`       | int  | Placement col (top-left of region)          |
+| `rows`      | int  | Cell rows occupied (engine-computed)        |
+| `cols`      | int  | Cell cols occupied (engine-computed)        |
+| `raster_w`  | int  | Rasterization width in px (design × scale)  |
+| `raster_h`  | int  | Rasterization height in px (design × scale) |
+| `cell_w_px` | int  | Terminal cell width in px                   |
+| `cell_h_px` | int  | Terminal cell height in px                  |
 
 **Requesting a report**: add `"report": true` to the `load` or `place` command:
 
