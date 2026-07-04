@@ -281,49 +281,54 @@ static void lt_evict_to_budget(CfrTerm *vt, struct CfrLottieState *st,
 /* ------------------------------------------------------------------ */
 
 #ifdef HAVE_THORVG
-static uint8_t lt_srgb_to_linear(uint8_t v)
+static uint8_t lt_srgb_lut[256];
+static bool lt_srgb_lut_init = false;
+
+static void lt_srgb_lut_ensure(void)
 {
-    static uint8_t table[256];
-    static bool init = false;
-    if (!init) {
-        for (int i = 0; i < 256; i++) {
-            float s = (float)i / 255.0f;
-            float l = s <= 0.04045f ? s / 12.92f
-                                    : powf((s + 0.055f) / 1.055f, 2.4f);
-            int out = (int)(l * 255.0f + 0.5f);
-            table[i] = (uint8_t)(out < 0 ? 0 : out > 255 ? 255
-                                                         : out);
-        }
-        init = true;
+    if (lt_srgb_lut_init)
+        return;
+    for (int i = 0; i < 256; i++) {
+        float s = (float)i / 255.0f;
+        float l = s <= 0.04045f ? s / 12.92f
+                                : powf((s + 0.055f) / 1.055f, 2.4f);
+        int out = (int)(l * 255.0f + 0.5f);
+        lt_srgb_lut[i] = (uint8_t)(out < 0 ? 0 : out > 255 ? 255
+                                                           : out);
     }
-    return table[v];
+    lt_srgb_lut_init = true;
 }
 
 static void lt_linearize_rgba(uint8_t *rgba, int w, int h)
 {
+    lt_srgb_lut_ensure();
+
     /* ThorVG renders to ARGB8888 with premultiplied alpha
      * (little-endian memory: B,G,R,A bytes; uint32 = A<<24|R<<16|G<<8|B).
      * The host renderer expects RGBA32 (R,G,B,A) with non-premultiplied
      * alpha, pre-linearized for the linear-light compositing path.
-     * Un-premultiply, swap R<->B, linearize RGB. */
-    size_t n = (size_t)w * (size_t)h * 4;
-    for (size_t i = 0; i < n; i += 4) {
-        uint8_t b = rgba[i + 0];
-        uint8_t g = rgba[i + 1];
-        uint8_t r = rgba[i + 2];
-        uint8_t a = rgba[i + 3];
-
-        if (a > 0) {
-            /* Un-premultiply: divide by alpha, clamp to 255 */
+     * Un-premultiply, swap R<->B, linearize RGB.
+     * Skip fully transparent pixels (alpha=0) — they're already zero. */
+    const uint8_t *lut = lt_srgb_lut;
+    size_t n = (size_t)w * (size_t)h;
+    for (size_t i = 0; i < n; i++) {
+        uint8_t *px = rgba + i * 4;
+        uint8_t a = px[3];
+        if (a == 0) {
+            px[0] = px[1] = px[2] = 0;
+            continue;
+        }
+        uint8_t b = px[0];
+        uint8_t g = px[1];
+        uint8_t r = px[2];
+        if (a < 255) {
             r = (uint8_t)((int)r * 255 / a);
             g = (uint8_t)((int)g * 255 / a);
             b = (uint8_t)((int)b * 255 / a);
         }
-
-        rgba[i + 0] = lt_srgb_to_linear(r); /* R */
-        rgba[i + 1] = lt_srgb_to_linear(g); /* G */
-        rgba[i + 2] = lt_srgb_to_linear(b); /* B */
-        /* alpha stays as-is (non-premultiplied) */
+        px[0] = lut[r];
+        px[1] = lut[g];
+        px[2] = lut[b];
     }
 }
 
