@@ -1248,7 +1248,9 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
             lt_rasterize(rec);
         }
 #endif
+#ifdef HAVE_THORVG
         if (!rec->tvg_anim)
+#endif
             memset(rec->rgba, 0, rec->rgba_cap);
 
         rec->version++;
