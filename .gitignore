@@ -7,6 +7,8 @@
 /build-aux/missing
 /build-aux/ar-lib
 /build-aux/test-driver
+/build-aux/config.guess
+/build-aux/config.sub
 /configure
 /configure~
 /config.h
