@@ -118,6 +118,8 @@ fi
 # autoreconf) so ./version is written from git first — autoreconf alone
 # would bake 0.0.0-unknown into PACKAGE_VERSION on a fresh clone (version
 # is gitignored).
+rm -f config.status config.log config.h stamp-h1
+
 echo "==> ./autogen.sh"
 ./autogen.sh
 
