@@ -1,30 +1,37 @@
 /*
  * cfr-debug — headless coffer PTY inspector.
  *
- * Spawns a child process on a PTY, pipes its output through coffer,
- * and renders the resulting grid as plain text. Optional features:
- *   - Send scripted input (with timing)
+ * Spawns a child process on a PTY (forkpty on POSIX, ConPTY on
+ * Windows), pipes its output through coffer, and renders the
+ * resulting grid as plain text. Optional features:
+ *   - Scripted input with timing via -f script file
  *   - Save raw PTY output for offline replay
  *   - Dump individual rows or raw cell data
+ *   - Assert grid contents for CI
  *
  * The coffer output callback is wired back to the PTY so that
  * terminal queries (DA, DSR, kitty keyboard) receive proper replies.
- * This allows interactive TUI applications (crush, helix, etc.) to
- * render correctly without a real terminal emulator.
- *
- * POSIX only (uses forkpty / poll).
+ * This allows interactive TUI applications (crush, helix, mudlark,
+ * etc.) to render correctly without a real terminal emulator.
  */
 
 #define _GNU_SOURCE
 #include <coffer/coffer.h>
 
+#include <ctype.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <wchar.h>
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -35,19 +42,38 @@
 #else
 #include <pty.h>
 #endif
+#endif
 
-/* ---- PTY ---- */
+/* ================================================================ */
+/* PTY abstraction                                                  */
+/* ================================================================ */
 
-typedef struct
+typedef struct PtyCtx PtyCtx;
+
+PtyCtx *pty_spawn(int rows, int cols, char *const argv[]);
+void pty_kill(PtyCtx *p);
+ssize_t pty_write(PtyCtx *p, const char *data, size_t len);
+ssize_t pty_read(PtyCtx *p, char *buf, size_t bufsize);
+int pty_get_fd(PtyCtx *p);
+#ifdef _WIN32
+void *pty_get_data_event(PtyCtx *p);
+int pty_is_eof(PtyCtx *p);
+#endif
+
+/* ---- POSIX PTY (forkpty + poll) ---- */
+
+#ifndef _WIN32
+
+struct PtyCtx
 {
     int master_fd;
     pid_t child_pid;
     int rows, cols;
-} Pty;
+};
 
-static Pty *pty_spawn(int rows, int cols, char *const argv[])
+PtyCtx *pty_spawn(int rows, int cols, char *const argv[])
 {
-    Pty *p = calloc(1, sizeof(*p));
+    PtyCtx *p = calloc(1, sizeof(*p));
     if (!p)
         return NULL;
     p->rows = rows;
@@ -77,7 +103,7 @@ static Pty *pty_spawn(int rows, int cols, char *const argv[])
     return p;
 }
 
-static void pty_kill(Pty *p)
+void pty_kill(PtyCtx *p)
 {
     if (!p)
         return;
@@ -92,42 +118,493 @@ static void pty_kill(Pty *p)
     free(p);
 }
 
-/* ---- Callbacks ---- */
+ssize_t pty_write(PtyCtx *p, const char *data, size_t len)
+{
+    if (!p || p->master_fd < 0)
+        return -1;
+    return write(p->master_fd, data, len);
+}
 
-static Pty *g_pty;
+ssize_t pty_read(PtyCtx *p, char *buf, size_t bufsize)
+{
+    if (!p || p->master_fd < 0)
+        return -1;
+    return read(p->master_fd, buf, bufsize);
+}
+
+int pty_get_fd(PtyCtx *p)
+{
+    return p ? p->master_fd : -1;
+}
+
+#endif /* !_WIN32 */
+
+/* ---- Windows PTY (ConPTY) ---- */
+
+#ifdef _WIN32
+
+struct PtyCtx
+{
+    HPCON hpc;
+    HANDLE input_write;
+    HANDLE output_read;
+    HANDLE process;
+    HANDLE thread;
+    HANDLE waiter_thread;
+    HANDLE reader_thread;
+    HANDLE data_event;     /* signaled when reader has data */
+    HANDLE reader_done;    /* signaled when reader thread exits */
+    CRITICAL_SECTION lock; /* protects buf, buf_len, buf_eof */
+    char buf[65536];
+    size_t buf_len;
+    int buf_eof;
+    int rows, cols;
+};
+
+static DWORD WINAPI pty_waiter_thread(LPVOID param)
+{
+    PtyCtx *ctx = (PtyCtx *)param;
+    WaitForSingleObject(ctx->process, INFINITE);
+    if (ctx->hpc != INVALID_HANDLE_VALUE) {
+        ClosePseudoConsole(ctx->hpc);
+        ctx->hpc = INVALID_HANDLE_VALUE;
+    }
+    return 0;
+}
+
+/* Reader thread: continuously reads from the ConPTY output pipe.
+ * Anonymous pipes can't be used with WaitForMultipleObjects, so a
+ * background thread does blocking ReadFile and signals data_event
+ * when new data arrives. */
+static DWORD WINAPI pty_reader_thread(LPVOID param)
+{
+    PtyCtx *ctx = (PtyCtx *)param;
+    char buf[65536];
+
+    while (1) {
+        DWORD got = 0;
+        if (!ReadFile(ctx->output_read, buf, sizeof(buf), &got, NULL)) {
+            DWORD err = GetLastError();
+            if (got > 0) {
+                EnterCriticalSection(&ctx->lock);
+                size_t avail = sizeof(ctx->buf) - ctx->buf_len;
+                size_t copy = got < avail ? got : avail;
+                memcpy(ctx->buf + ctx->buf_len, buf, copy);
+                ctx->buf_len += copy;
+                SetEvent(ctx->data_event);
+                LeaveCriticalSection(&ctx->lock);
+            }
+            if (err == ERROR_BROKEN_PIPE || err == ERROR_HANDLE_EOF)
+                ctx->buf_eof = 1;
+            break;
+        }
+        if (got == 0)
+            break;
+        EnterCriticalSection(&ctx->lock);
+        size_t avail = sizeof(ctx->buf) - ctx->buf_len;
+        size_t copy = got < avail ? got : avail;
+        memcpy(ctx->buf + ctx->buf_len, buf, copy);
+        ctx->buf_len += copy;
+        SetEvent(ctx->data_event);
+        LeaveCriticalSection(&ctx->lock);
+    }
+
+    SetEvent(ctx->data_event);
+    SetEvent(ctx->reader_done);
+    return 0;
+}
+
+PtyCtx *pty_spawn(int rows, int cols, char *const argv[])
+{
+    PtyCtx *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx)
+        return NULL;
+    ctx->rows = rows;
+    ctx->cols = cols;
+    ctx->hpc = INVALID_HANDLE_VALUE;
+    ctx->input_write = INVALID_HANDLE_VALUE;
+    ctx->output_read = INVALID_HANDLE_VALUE;
+    ctx->process = INVALID_HANDLE_VALUE;
+    ctx->thread = INVALID_HANDLE_VALUE;
+    ctx->waiter_thread = INVALID_HANDLE_VALUE;
+    ctx->reader_thread = INVALID_HANDLE_VALUE;
+    ctx->data_event = INVALID_HANDLE_VALUE;
+    ctx->reader_done = INVALID_HANDLE_VALUE;
+    InitializeCriticalSection(&ctx->lock);
+
+    HANDLE input_read = INVALID_HANDLE_VALUE;
+    HANDLE output_write = INVALID_HANDLE_VALUE;
+
+    if (!CreatePipe(&input_read, &ctx->input_write, NULL, 0)) {
+        fprintf(stderr, "ERROR: CreatePipe (input) failed: %lu\n",
+                GetLastError());
+        goto fail;
+    }
+
+    if (!CreatePipe(&ctx->output_read, &output_write, NULL, 0)) {
+        fprintf(stderr, "ERROR: CreatePipe (output) failed: %lu\n",
+                GetLastError());
+        goto fail;
+    }
+
+    COORD size;
+    size.X = (SHORT)cols;
+    size.Y = (SHORT)rows;
+
+    HRESULT hr = CreatePseudoConsole(size, input_read, output_write, 0,
+                                     &ctx->hpc);
+    if (FAILED(hr)) {
+        fprintf(stderr, "ERROR: CreatePseudoConsole failed: 0x%lx\n",
+                (unsigned long)hr);
+        goto fail;
+    }
+
+    CloseHandle(input_read);
+    input_read = INVALID_HANDLE_VALUE;
+    CloseHandle(output_write);
+    output_write = INVALID_HANDLE_VALUE;
+
+    /* STARTUPINFOEX with pseudo-console attribute */
+    STARTUPINFOEXW si;
+    ZeroMemory(&si, sizeof(si));
+    si.StartupInfo.cb = sizeof(STARTUPINFOEXW);
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+    si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
+    si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
+
+    SIZE_T attr_size = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
+    si.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attr_size);
+    if (!si.lpAttributeList)
+        goto fail;
+
+    if (!InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0,
+                                           &attr_size)) {
+        free(si.lpAttributeList);
+        goto fail;
+    }
+
+    if (!UpdateProcThreadAttribute(
+            si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+            ctx->hpc, sizeof(HPCON), NULL, NULL)) {
+        DeleteProcThreadAttributeList(si.lpAttributeList);
+        free(si.lpAttributeList);
+        goto fail;
+    }
+
+    /* Build command line */
+    WCHAR cmdline[MAX_PATH * 2];
+    if (argv && argv[0]) {
+        const char *ext = strrchr(argv[0], '.');
+        int is_cmd_script =
+            ext && (_stricmp(ext, ".cmd") == 0 ||
+                    _stricmp(ext, ".bat") == 0);
+
+        WCHAR *p = cmdline;
+        if (is_cmd_script) {
+            const char *comspec = getenv("COMSPEC");
+            if (!comspec)
+                comspec = "cmd.exe";
+            MultiByteToWideChar(CP_UTF8, 0, comspec, -1, p, MAX_PATH * 2);
+            p += wcslen(p);
+            wcscpy(p, L" /c ");
+            p += 4;
+        }
+
+        MultiByteToWideChar(CP_UTF8, 0, argv[0], -1, p,
+                            (MAX_PATH * 2) - (p - cmdline));
+        p += wcslen(p);
+        for (int i = 1; argv[i]; i++) {
+            *p++ = L' ';
+            MultiByteToWideChar(CP_UTF8, 0, argv[i], -1, p,
+                                (MAX_PATH * 2) - (p - cmdline));
+            p += wcslen(p);
+        }
+    } else {
+        const char *comspec = getenv("COMSPEC");
+        if (!comspec)
+            comspec = "cmd.exe";
+        MultiByteToWideChar(CP_UTF8, 0, comspec, -1, cmdline, MAX_PATH * 2);
+    }
+
+    /* Build environment block with terminal overrides */
+    LPWCH parent_env = GetEnvironmentStringsW();
+    WCHAR envBlock[65536];
+    WCHAR *ep = envBlock;
+
+    {
+        static const WCHAR *overrides[] = {
+            L"TERM=xterm-256color",
+            L"COLORTERM=truecolor",
+        };
+        for (int i = 0; i < 2; i++) {
+            size_t len = wcslen(overrides[i]);
+            if (ep + len + 1 >= envBlock + 65536)
+                break;
+            wmemcpy(ep, overrides[i], len + 1);
+            ep += len + 1;
+        }
+    }
+
+    if (parent_env) {
+        LPWCH p = parent_env;
+        while (*p) {
+            size_t len = wcslen(p);
+            if (ep + len + 1 >= envBlock + 65536)
+                break;
+            wmemcpy(ep, p, len + 1);
+            ep += len + 1;
+            p += len + 1;
+        }
+        FreeEnvironmentStringsW(parent_env);
+    }
+    *ep = L'\0';
+
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
+
+    if (!CreateProcessW(NULL, cmdline, NULL, NULL, FALSE,
+                        EXTENDED_STARTUPINFO_PRESENT |
+                            CREATE_UNICODE_ENVIRONMENT,
+                        envBlock, NULL, &si.StartupInfo, &pi)) {
+        fprintf(stderr, "ERROR: CreateProcessW failed: %lu\n",
+                GetLastError());
+        DeleteProcThreadAttributeList(si.lpAttributeList);
+        free(si.lpAttributeList);
+        goto fail;
+    }
+
+    ctx->process = pi.hProcess;
+    ctx->thread = pi.hThread;
+
+    DeleteProcThreadAttributeList(si.lpAttributeList);
+    free(si.lpAttributeList);
+
+    ctx->waiter_thread =
+        CreateThread(NULL, 0, pty_waiter_thread, ctx, 0, NULL);
+
+    /* Create events and start reader thread */
+    ctx->data_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+    ctx->reader_done = CreateEvent(NULL, TRUE, FALSE, NULL);
+    ctx->reader_thread =
+        CreateThread(NULL, 0, pty_reader_thread, ctx, 0, NULL);
+
+    return ctx;
+
+fail:
+    if (input_read != INVALID_HANDLE_VALUE)
+        CloseHandle(input_read);
+    if (output_write != INVALID_HANDLE_VALUE)
+        CloseHandle(output_write);
+    if (ctx->input_write != INVALID_HANDLE_VALUE)
+        CloseHandle(ctx->input_write);
+    if (ctx->output_read != INVALID_HANDLE_VALUE)
+        CloseHandle(ctx->output_read);
+    if (ctx->hpc != INVALID_HANDLE_VALUE)
+        ClosePseudoConsole(ctx->hpc);
+    free(ctx);
+    return NULL;
+}
+
+void pty_kill(PtyCtx *ctx)
+{
+    if (!ctx)
+        return;
+
+    /* Close pseudo-console first — this unblocks the reader thread's
+     * ReadFile (pipe breaks) and the waiter thread's wait. */
+    if (ctx->hpc != INVALID_HANDLE_VALUE) {
+        ClosePseudoConsole(ctx->hpc);
+        ctx->hpc = INVALID_HANDLE_VALUE;
+    }
+
+    if (ctx->waiter_thread != INVALID_HANDLE_VALUE) {
+        WaitForSingleObject(ctx->waiter_thread, 2000);
+        CloseHandle(ctx->waiter_thread);
+    }
+
+    /* Reader thread should exit now that the pipe is broken */
+    if (ctx->reader_thread != INVALID_HANDLE_VALUE) {
+        WaitForSingleObject(ctx->reader_done, 2000);
+        CloseHandle(ctx->reader_thread);
+    }
+
+    if (ctx->process != INVALID_HANDLE_VALUE) {
+        if (WaitForSingleObject(ctx->process, 500) != WAIT_OBJECT_0) {
+            TerminateProcess(ctx->process, 1);
+            WaitForSingleObject(ctx->process, 1000);
+        }
+        CloseHandle(ctx->process);
+    }
+    if (ctx->thread != INVALID_HANDLE_VALUE)
+        CloseHandle(ctx->thread);
+    if (ctx->input_write != INVALID_HANDLE_VALUE)
+        CloseHandle(ctx->input_write);
+    if (ctx->output_read != INVALID_HANDLE_VALUE)
+        CloseHandle(ctx->output_read);
+    if (ctx->data_event != INVALID_HANDLE_VALUE)
+        CloseHandle(ctx->data_event);
+    if (ctx->reader_done != INVALID_HANDLE_VALUE)
+        CloseHandle(ctx->reader_done);
+
+    DeleteCriticalSection(&ctx->lock);
+    free(ctx);
+}
+
+ssize_t pty_write(PtyCtx *ctx, const char *data, size_t len)
+{
+    if (!ctx || ctx->input_write == INVALID_HANDLE_VALUE || !data || len == 0)
+        return -1;
+
+    size_t total = 0;
+    while (total < len) {
+        DWORD written = 0;
+        DWORD chunk =
+            (DWORD)((len - total) > 0x7FFFFFFFu ? 0x7FFFFFFFu
+                                                : (len - total));
+        if (!WriteFile(ctx->input_write, data + total, chunk, &written, NULL))
+            return total > 0 ? (ssize_t)total : -1;
+        if (written == 0)
+            break;
+        total += (size_t)written;
+    }
+    return (ssize_t)total;
+}
+
+ssize_t pty_read(PtyCtx *ctx, char *buf, size_t bufsize)
+{
+    if (!ctx || !buf || !bufsize)
+        return -1;
+
+    /* On Windows, the reader thread owns the blocking ReadFile. We
+     * drain its accumulated buffer under the lock. */
+    EnterCriticalSection(&ctx->lock);
+    size_t to_copy = ctx->buf_len < bufsize ? ctx->buf_len : bufsize;
+    memcpy(buf, ctx->buf, to_copy);
+    if (to_copy < ctx->buf_len)
+        memmove(ctx->buf, ctx->buf + to_copy, ctx->buf_len - to_copy);
+    ctx->buf_len -= to_copy;
+    LeaveCriticalSection(&ctx->lock);
+    return (ssize_t)to_copy;
+}
+
+void *pty_get_data_event(PtyCtx *ctx)
+{
+    if (!ctx)
+        return NULL;
+    return (void *)ctx->data_event;
+}
+
+int pty_is_eof(PtyCtx *ctx)
+{
+    if (!ctx)
+        return 1;
+    EnterCriticalSection(&ctx->lock);
+    int eof = ctx->buf_eof && ctx->buf_len == 0;
+    LeaveCriticalSection(&ctx->lock);
+    return eof;
+}
+
+int pty_get_fd(PtyCtx *ctx)
+{
+    (void)ctx;
+    return -1;
+}
+
+#endif /* _WIN32 */
+
+/* ================================================================ */
+/* Time                                                             */
+/* ================================================================ */
+
+static double now_sec(void)
+{
+#ifdef _WIN32
+    static LARGE_INTEGER freq;
+    static int initialized;
+    if (!initialized) {
+        QueryPerformanceFrequency(&freq);
+        initialized = 1;
+    }
+    LARGE_INTEGER count;
+    QueryPerformanceCounter(&count);
+    return (double)count.QuadPart / (double)freq.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+#endif
+}
+
+static void sleep_sec(double seconds)
+{
+#ifdef _WIN32
+    Sleep((DWORD)(seconds * 1000));
+#else
+    usleep((useconds_t)(seconds * 1e6));
+#endif
+}
+
+/* ================================================================ */
+/* Drain PTY into coffer                                            */
+/* ================================================================ */
+
+static PtyCtx *g_pty;
 static FILE *g_raw_out;
 
 static void cb_output(const uint8_t *bytes, size_t len, void *user)
 {
     (void)user;
     if (g_pty)
-        (void)write(g_pty->master_fd, bytes, len);
+        pty_write(g_pty, (const char *)bytes, len);
 }
 
-/* ---- Time ---- */
-
-static long long now_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
-}
-
-/* ---- Drain PTY into coffer ---- */
-
-static void drain(CfrTerm *vt, Pty *pty, int timeout_ms)
+static void drain(CfrTerm *vt, PtyCtx *pty, double timeout_sec)
 {
     char buf[65536];
-    int fd = pty->master_fd;
-    long long deadline = now_ms() + timeout_ms;
-    while (now_ms() < deadline) {
-        struct pollfd pfd = { .fd = fd, .events = POLLIN };
-        int wait = (int)(deadline - now_ms());
-        if (wait <= 0)
+    double deadline = now_sec() + timeout_sec;
+
+    while (now_sec() < deadline) {
+        double remaining = deadline - now_sec();
+        if (remaining <= 0)
             break;
-        int r = poll(&pfd, 1, wait);
+
+#ifdef _WIN32
+        HANDLE data_ev = (HANDLE)pty_get_data_event(pty);
+        if (!data_ev || data_ev == INVALID_HANDLE_VALUE)
+            break;
+
+        DWORD wait_ms = (DWORD)(remaining * 1000);
+        DWORD r = WaitForSingleObject(data_ev, wait_ms);
+
+        if (r == WAIT_FAILED || r == WAIT_TIMEOUT)
+            break;
+
+        /* Reader thread signaled — drain all available data */
+        ssize_t n;
+        while ((n = pty_read(pty, buf, sizeof(buf))) > 0) {
+            if (g_raw_out) {
+                fwrite(buf, 1, (size_t)n, g_raw_out);
+                fflush(g_raw_out);
+            }
+            cfr_input_write(vt, (const uint8_t *)buf, (size_t)n);
+        }
+
+        if (pty_is_eof(pty))
+            break;
+#else
+        int fd = pty_get_fd(pty);
+        if (fd < 0)
+            break;
+
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        int wait_ms = (int)(remaining * 1000);
+        if (wait_ms <= 0)
+            wait_ms = 1;
+        int r = poll(&pfd, 1, wait_ms);
         if (r <= 0)
-            continue;
+            break;
         if (pfd.revents & POLLIN) {
             ssize_t n = read(fd, buf, sizeof(buf));
             if (n <= 0)
@@ -140,10 +617,13 @@ static void drain(CfrTerm *vt, Pty *pty, int timeout_ms)
         }
         if (pfd.revents & (POLLHUP | POLLERR))
             break;
+#endif
     }
 }
 
-/* ---- Grid rendering ---- */
+/* ================================================================ */
+/* Grid rendering                                                   */
+/* ================================================================ */
 
 static void utf8_put(uint32_t cp)
 {
@@ -202,9 +682,70 @@ static void render_row_cells(CfrTerm *vt, int row, int cols)
     putchar('\n');
 }
 
-/* ---- Input expansion ---- */
+static void render_grid(CfrTerm *vt, int rows, int cols,
+                        const int *show_rows, int n_show,
+                        int show_cells, int quiet)
+{
+    for (int r = 0; r < rows; r++) {
+        if (quiet && n_show > 0) {
+            int found = 0;
+            for (int i = 0; i < n_show; i++)
+                if (show_rows[i] == r)
+                    found = 1;
+            if (!found)
+                continue;
+        }
+        printf("%2d|", r);
+        render_row_text(vt, r, cols);
+        if (show_cells)
+            render_row_cells(vt, r, cols);
+    }
+}
 
-static void expand_input(char *s)
+/* ================================================================ */
+/* Grid search                                                      */
+/* ================================================================ */
+
+static int grid_contains(CfrTerm *vt, int rows, int cols, const char *needle)
+{
+    int needle_len = (int)strlen(needle);
+    if (needle_len == 0)
+        return 1;
+
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            const CfrCell *cell = cfr_get_cell(vt, r, c);
+            if (!cell || cell->cp == 0)
+                continue;
+            if (cell->width == 2) {
+                c++;
+                continue;
+            }
+            int ci = c;
+            const char *np = needle;
+            while (*np && ci < cols) {
+                cell = cfr_get_cell(vt, r, ci);
+                if (!cell)
+                    break;
+                if ((char)cell->cp != *np)
+                    break;
+                np++;
+                ci++;
+                if (cell->width == 2)
+                    ci++;
+            }
+            if (*np == '\0')
+                return 1;
+        }
+    }
+    return 0;
+}
+
+/* ================================================================ */
+/* Escape expansion                                                 */
+/* ================================================================ */
+
+static void expand_escapes(char *s)
 {
     char *src = s, *dst = s;
     while (*src) {
@@ -214,8 +755,14 @@ static void expand_input(char *s)
         } else if (src[0] == '\\' && src[1] == 'r') {
             *dst++ = '\r';
             src += 2;
+        } else if (src[0] == '\\' && src[1] == 't') {
+            *dst++ = '\t';
+            src += 2;
         } else if (src[0] == '\\' && src[1] == 'e') {
             *dst++ = '\x1b';
+            src += 2;
+        } else if (src[0] == '\\' && src[1] == '\\') {
+            *dst++ = '\\';
             src += 2;
         } else {
             *dst++ = *src++;
@@ -224,7 +771,126 @@ static void expand_input(char *s)
     *dst = '\0';
 }
 
-/* ---- Main ---- */
+/* Parse hex bytes from a string: "ff fc 01" -> \xff\xfc\x01 */
+static int parse_hex_bytes(const char *s, unsigned char *out, int max)
+{
+    int count = 0;
+    while (*s && count < max) {
+        while (*s == ' ' || *s == '\t')
+            s++;
+        if (!*s)
+            break;
+        char hex[3] = { 0 };
+        hex[0] = *s++;
+        if (!*s)
+            break;
+        hex[1] = *s++;
+        out[count++] = (unsigned char)strtol(hex, NULL, 16);
+    }
+    return count;
+}
+
+/* ================================================================ */
+/* Script file processing                                           */
+/* ================================================================ */
+
+static int run_script(CfrTerm *vt, PtyCtx *pty, int rows, int cols,
+                      const char *script_path, const int *show_rows,
+                      int n_show, int show_cells, int quiet)
+{
+    FILE *f = fopen(script_path, "r");
+    if (!f) {
+        fprintf(stderr, "Cannot open script file: %s: %s\n", script_path,
+                strerror(errno));
+        return 1;
+    }
+
+    char line[4096];
+    int line_num = 0;
+    int rc = 0;
+
+    while (fgets(line, sizeof(line), f)) {
+        line_num++;
+
+        /* Strip trailing newline */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+            line[--len] = '\0';
+
+        /* Skip blank lines and comments */
+        if (len == 0 || line[0] == '#')
+            continue;
+
+        /* Parse command keyword */
+        char *cmd = line;
+        while (*cmd == ' ' || *cmd == '\t')
+            cmd++;
+        char *args = cmd;
+        while (*args && *args != ' ' && *args != '\t')
+            args++;
+        if (*args) {
+            *args++ = '\0';
+            while (*args == ' ' || *args == '\t')
+                args++;
+        }
+
+        /* Strip surrounding quotes from args */
+        size_t alen = strlen(args);
+        if (alen >= 2 && ((args[0] == '"' && args[alen - 1] == '"') ||
+                          (args[0] == '\'' && args[alen - 1] == '\''))) {
+            args[alen - 1] = '\0';
+            args++;
+        }
+
+        if (strcmp(cmd, "wait") == 0) {
+            double sec = atof(args);
+            if (sec <= 0)
+                sec = 1.0;
+            fprintf(stderr, "[%d] wait %.2fs\n", line_num, sec);
+            drain(vt, pty, sec);
+        } else if (strcmp(cmd, "send") == 0) {
+            expand_escapes(args);
+            fprintf(stderr, "[%d] send: %s\n", line_num, args);
+            pty_write(pty, args, strlen(args));
+        } else if (strcmp(cmd, "raw") == 0) {
+            unsigned char bytes[1024];
+            int n = parse_hex_bytes(args, bytes, (int)sizeof(bytes));
+            fprintf(stderr, "[%d] raw: %d bytes\n", line_num, n);
+            pty_write(pty, (const char *)bytes, (size_t)n);
+        } else if (strcmp(cmd, "assert-contains") == 0) {
+            if (!grid_contains(vt, rows, cols, args)) {
+                fprintf(stderr, "[%d] FAIL: grid does not contain \"%s\"\n",
+                        line_num, args);
+                rc = 1;
+                break;
+            }
+            fprintf(stderr, "[%d] OK: grid contains \"%s\"\n", line_num, args);
+        } else if (strcmp(cmd, "assert-not-contains") == 0) {
+            if (grid_contains(vt, rows, cols, args)) {
+                fprintf(stderr, "[%d] FAIL: grid contains \"%s\"\n",
+                        line_num, args);
+                rc = 1;
+                break;
+            }
+            fprintf(stderr, "[%d] OK: grid does not contain \"%s\"\n",
+                    line_num, args);
+        } else if (strcmp(cmd, "render") == 0) {
+            fprintf(stderr, "[%d] render\n", line_num);
+            render_grid(vt, rows, cols, show_rows, n_show, show_cells,
+                        quiet);
+        } else {
+            fprintf(stderr, "[%d] WARN: unknown command: %s\n", line_num,
+                    cmd);
+        }
+    }
+
+    fclose(f);
+    return rc;
+}
+
+/* ================================================================ */
+/* Main                                                             */
+/* ================================================================ */
 
 static void usage(void)
 {
@@ -235,29 +901,34 @@ static void usage(void)
         "\n"
         "  -r ROWS   terminal rows (default 24)\n"
         "  -c COLS   terminal cols (default 80)\n"
-        "  -w SEC    wait before input (default 3)\n"
-        "  -i TEXT   first input (\\n=CR, \\r=CR, \\e=ESC)\n"
-        "  -W SEC    wait after first input (default 15)\n"
-        "  -I TEXT   second input\n"
-        "  -W2 SEC   wait after second input (default 15)\n"
+        "  -w SEC    initial wait before any script (default 3)\n"
+        "  -f FILE   script file (one command per line)\n"
         "  -o FILE   save raw PTY output\n"
         "  -s ROW    dump specific row (repeatable)\n"
         "  -d        dump raw cell data\n"
         "  -q        quiet: only specified rows\n"
         "  -h        this help\n"
         "\n"
+        "Script file commands:\n"
+        "  wait SECONDS              drain PTY for N seconds\n"
+        "  send TEXT                 send text to PTY (\\n=CR \\r=CR \\e=ESC \\t=TAB)\n"
+        "  raw HEX [HEX ...]         send literal bytes (e.g. raw ff fc 01)\n"
+        "  assert-contains TEXT      fail if grid does not contain TEXT\n"
+        "  assert-not-contains TEXT  fail if grid contains TEXT\n"
+        "  render                    dump current grid to stdout\n"
+        "  # comment                 skipped\n"
+        "\n"
         "Examples:\n"
         "  cfr-debug -- bash -l\n"
-        "  cfr-debug -c 68 -r 20 -- crush\n"
-        "  cfr-debug -c 68 -r 20 -i \"hello world\\n\" -W 20 -o /tmp/out.raw -- crush\n"
-        "  cfr-debug -s 18 -d -q -c 68 -r 20 -- crush\n");
+        "  cfr-debug -c 68 -r 20 -w 5 -- crush\n"
+        "  cfr-debug -r 24 -c 80 -f test.script -- mudlark carrionfields.net 4449\n");
 }
 
 int main(int argc, char *argv[])
 {
     int rows = 24, cols = 80;
-    int wait1 = 3, wait2 = 15, wait3 = 15;
-    char *input1 = NULL, *input2 = NULL;
+    double initial_wait = 3.0;
+    const char *script_path = NULL;
     const char *outfile = NULL;
     int show_rows[64];
     int n_show = 0;
@@ -274,15 +945,9 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
             cols = atoi(argv[++i]);
         else if (strcmp(argv[i], "-w") == 0 && i + 1 < argc)
-            wait1 = atoi(argv[++i]);
-        else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc)
-            input1 = argv[++i];
-        else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc)
-            wait2 = atoi(argv[++i]);
-        else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc)
-            input2 = argv[++i];
-        else if (strcmp(argv[i], "-W2") == 0 && i + 1 < argc)
-            wait3 = atoi(argv[++i]);
+            initial_wait = atof(argv[++i]);
+        else if (strcmp(argv[i], "-f") == 0 && i + 1 < argc)
+            script_path = argv[++i];
         else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
             outfile = argv[++i];
         else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc && n_show < 64)
@@ -320,7 +985,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    Pty *pty = pty_spawn(rows, cols, cmd_argv);
+    PtyCtx *pty = pty_spawn(rows, cols, cmd_argv);
     if (!pty) {
         cfr_free(vt);
         return 1;
@@ -330,42 +995,21 @@ int main(int argc, char *argv[])
     CfrCallbacks cb = { .output = cb_output };
     cfr_set_callbacks(vt, &cb, NULL);
 
-    fprintf(stderr, "Waiting %ds for startup...\n", wait1);
-    drain(vt, pty, wait1 * 1000);
+    fprintf(stderr, "Waiting %.1fs for startup...\n", initial_wait);
+    drain(vt, pty, initial_wait);
 
-    if (input1) {
-        char *send = strdup(input1);
-        expand_input(send);
-        fprintf(stderr, "Sending input: %s\n", input1);
-        write(pty->master_fd, send, strlen(send));
-        free(send);
-        fprintf(stderr, "Waiting %ds for response...\n", wait2);
-        drain(vt, pty, wait2 * 1000);
+    int rc = 0;
+    if (script_path) {
+        rc = run_script(vt, pty, rows, cols, script_path, show_rows,
+                        n_show, show_cells, quiet);
     }
 
-    if (input2) {
-        char *send = strdup(input2);
-        expand_input(send);
-        fprintf(stderr, "Sending second input: %s\n", input2);
-        write(pty->master_fd, send, strlen(send));
-        free(send);
-        fprintf(stderr, "Waiting %ds for response...\n", wait3);
-        drain(vt, pty, wait3 * 1000);
-    }
-
-    for (int r = 0; r < rows; r++) {
-        if (quiet && n_show > 0) {
-            int found = 0;
-            for (int i = 0; i < n_show; i++)
-                if (show_rows[i] == r)
-                    found = 1;
-            if (!found)
-                continue;
+    /* Final render if no script or script didn't render */
+    if (!script_path || rc == 0) {
+        if (!quiet || n_show == 0) {
+            render_grid(vt, rows, cols, show_rows, n_show, show_cells,
+                        quiet);
         }
-        printf("%2d|", r);
-        render_row_text(vt, r, cols);
-        if (show_cells)
-            render_row_cells(vt, r, cols);
     }
 
     if (outfile) {
@@ -376,5 +1020,5 @@ int main(int argc, char *argv[])
     g_pty = NULL;
     pty_kill(pty);
     cfr_free(vt);
-    return 0;
+    return rc;
 }

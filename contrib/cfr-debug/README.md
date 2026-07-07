@@ -8,6 +8,7 @@ It is useful for:
 - Capturing raw PTY output for offline replay
 - Inspecting individual grid cells (character, codepoint, width)
 - Validating that TUI applications render correctly through coffer
+- CI assertions: verify that specific text appears on screen
 
 The coffer output callback is wired back to the PTY, so terminal
 queries (DA, DSR, kitty keyboard protocol) receive proper replies.
@@ -22,7 +23,14 @@ From a coffer build tree:
 ./autogen.sh && ./configure && make
 ```
 
-The `cfr-debug` binary is installed alongside the library.
+On Windows (MSYS2 UCRT64), use `scripts/build-ucrt64.sh`. cfr-debug
+uses ConPTY on Windows and `forkpty` on POSIX. On Windows, a
+background reader thread does blocking `ReadFile` on the ConPTY
+output pipe and signals an event when data arrives, because
+anonymous pipes cannot be waited on with `WaitForMultipleObjects`.
+
+The `cfr-debug` binary is installed alongside the library via
+`make install`.
 
 ## Usage
 
@@ -36,23 +44,30 @@ cfr-debug [options] [-- command args...]
 |------|-------------|
 | `-r ROWS` | Terminal rows (default 24) |
 | `-c COLS` | Terminal cols (default 80) |
-| `-w SEC` | Wait before input (default 3) |
-| `-i TEXT` | First input to send (`\n`=CR, `\r`=CR, `\e`=ESC) |
-| `-W SEC` | Wait after first input (default 15) |
-| `-I TEXT` | Second input to send |
-| `-W2 SEC` | Wait after second input (default 15) |
+| `-w SEC` | Initial wait before script (default 3) |
+| `-f FILE` | Script file (one command per line, see below) |
 | `-o FILE` | Save raw PTY output to file |
 | `-s ROW` | Dump specific row (repeatable, default: all) |
 | `-d` | Dump raw cell data alongside text |
 | `-q` | Quiet: only dump specified rows |
 | `-h` | Show help |
 
-### Input escaping
+### Script file
 
-The `-i` and `-I` flags accept escape sequences:
+The `-f FILE` option reads a script with one command per line:
 
-- `\n` or `\r` → carriage return (Enter key)
-- `\e` → ESC (0x1B)
+| Command | Description |
+|---------|-------------|
+| `wait SECONDS` | Drain PTY for N seconds (accepts decimals) |
+| `send TEXT` | Send text to PTY (`\n`=CR, `\r`=CR, `\e`=ESC, `\t`=TAB) |
+| `raw HEX [HEX ...]` | Send literal bytes (e.g. `raw ff fc 01` for IAC WONT ECHO) |
+| `assert-contains TEXT` | Fail (exit 1) if rendered grid does not contain TEXT |
+| `assert-not-contains TEXT` | Fail (exit 1) if rendered grid contains TEXT |
+| `render` | Dump current grid to stdout |
+| `# comment` | Skipped |
+
+If no `-f` is given, cfr-debug waits `-w` seconds, then renders the
+grid once and exits.
 
 ### Examples
 
@@ -61,53 +76,63 @@ The `-i` and `-I` flags accept escape sequences:
 cfr-debug -- bash -l
 ```
 
-**Crush at 68×20 (initial screen only):**
+**Capture initial screen of crush:**
 ```sh
 cfr-debug -c 68 -r 20 -w 5 -- crush
 ```
 
-**Send a prompt and capture raw output:**
+**Capture raw output:**
 ```sh
-cfr-debug -c 68 -r 20 -w 5 -i "hello world\n" -W 20 \
-    -o /tmp/crush.raw -- crush
+cfr-debug -c 68 -r 20 -o /tmp/crush.raw -- crush
 ```
 
-**Inspect just the status bar row with cell data:**
+**Inspect a specific row with cell data:**
 ```sh
-cfr-debug -c 68 -r 20 -w 5 -s 18 -d -q -- crush
+cfr-debug -c 68 -r 20 -s 18 -d -q -- crush
 ```
 
-**Two prompts (wait for each response):**
+**Scripted interaction with assertions (CI):**
 ```sh
-cfr-debug -c 80 -r 24 \
-    -i "hello world\n" -W 20 \
-    -I "what is 2+2?\n" -W2 20 \
-    -- crush
+cfr-debug -r 24 -c 80 -f test.script -- mudlark carrionfields.net 4449
 ```
 
-**Replay a saved raw capture:**
-```sh
-# First capture, then replay with a small C program:
-gcc -o replay replay.c -lcoffer
-./replay /tmp/crush.raw 20 68
+Where `test.script` contains:
 ```
+# Wait for mudlark to connect and render
+wait 3
+
+# Verify the welcome banner appeared
+assert-contains "Carrion Fields"
+
+# Send a name and wait
+send "guest\n"
+wait 2
+
+# Check we got past the banner
+assert-not-contains "mourned"
+
+render
+```
+
+Exit code 0 = all assertions passed, 1 = assertion failed.
 
 ## How it works
 
 1. Creates a PTY with the requested terminal size
+   - POSIX: `forkpty`
+   - Windows: `CreatePseudoConsole` (ConPTY)
 2. Forks and execs the child process
-3. Sets `TERM=xterm-256color`, `COLORTERM=truecolor`,
-   `TERM_PROGRAM=ghostty` in the child environment
+3. Sets `TERM=xterm-256color`, `COLORTERM=truecolor` in the child
+   environment
 4. Drains PTY output into `cfr_input_write()`
+   - POSIX: `poll` on the PTY FD
+   - Windows: background reader thread does blocking `ReadFile` on the
+     ConPTY output pipe and signals an event when data arrives
 5. Wires `CfrCallbacks.output` back to the PTY so the child
    receives DA/DSR/kitty-keyboard responses
-6. After the drain timeout, renders the coffer grid as text
+6. Executes the script file (if any), then renders the coffer grid
 
 ## Limitations
 
-- POSIX only (uses `forkpty` and `poll`)
-- No interactive input — all input is scripted via `-i`/`-I`
+- No interactive input — all input is scripted via `-f` script file
 - No mouse support
-- The child receives no real keypress events; applications that
-  require interactive keyboard input (e.g. vim in insert mode)
-  will not work well
