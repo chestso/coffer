@@ -17,6 +17,31 @@ EXTRA_DIST = \
     .clang-format \
     .gitattributes
 
+# Keep the version file in sync with the current git state (or COFFER_VERSION
+# from configure).  The recipe always runs but only rewrites the file when
+# the version actually changes, so a subsequent autoreconf picks up the right
+# PACKAGE_VERSION without needing to run autogen.sh first.
+.PHONY: version_force
+version: version_force
+	@v=`"$(srcdir)/build-aux/git-version.sh" "$(srcdir)" 2>/dev/null`; \
+	test -n "$$v" || v="$(COFFER_VERSION)"; \
+	test -n "$$v" || v="unknown"; \
+	printf '%s' "$$v" > "$(srcdir)/version.tmp"; \
+	if cmp -s "$(srcdir)/version.tmp" "$(srcdir)/version" 2>/dev/null; then \
+	  rm -f "$(srcdir)/version.tmp"; \
+	else \
+	  mv "$(srcdir)/version.tmp" "$(srcdir)/version"; \
+	  echo "  GEN      $@ ($$v)"; \
+	fi
+version_force:
+
+all-local: version
+
+# Stamp the version file in the dist tarball so tarball builds produce the
+# correct version without .git.
+dist-hook:
+	printf '%s' '$(COFFER_VERSION)' > "$(distdir)/version"
+
 # Format target — runs clang-format on C/C++ and prettier on Markdown.
 # Requires the tools to be installed; logs a warning if they are not.
 .PHONY: format
