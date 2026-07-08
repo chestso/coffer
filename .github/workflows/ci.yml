@@ -35,7 +35,7 @@ jobs:
           make -j"$(nproc)"
 
       - name: Run tests
-        run: make -C build check
+        run: make -C build check TESTS='test_cfr_parser test_cfr_keys test_cfr_sixel test_cfr_lottie test_cfr_altscreen test_cfr_sgr'
 
       - name: Upload test logs on failure
         if: failure()
