@@ -45,10 +45,21 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
         }
 
         /* Swap. The current grid is preserved in vt->altgrid; the
-         * alt grid (which is zeroed by cfr_page_new) becomes active. */
+         * alt grid becomes active. */
         CfrPage *tmp = vt->grid;
         vt->grid = vt->altgrid;
         vt->altgrid = tmp;
+
+        /* Clear the newly-active alt grid so each altscreen entry
+         * starts with a blank slate.  When the altgrid was just
+         * allocated by cfr_page_new it is already zeroed; this handles
+         * the reuse case where the altgrid still holds data from a
+         * previous altscreen session. */
+        if (vt->grid) {
+            memset(vt->grid->cells, 0,
+                   (size_t)vt->grid->row_capacity * vt->grid->cols * sizeof(CfrCell));
+            memset(vt->grid->row_flags, 0, (size_t)vt->grid->row_capacity);
+        }
 
         vt->in_altscreen = true;
         vt->modes[CFR_MODE_ALTSCREEN] = true;

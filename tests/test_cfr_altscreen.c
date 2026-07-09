@@ -339,6 +339,76 @@ static void test_altscreen_resize_rows(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 8. Alt screen content must not accumulate across enter/exit cycles  */
+/*    Each entry must start with a blank alt grid.  Before the fix,    */
+/*    the altgrid was reused without clearing, so content from the     */
+/*    previous alt-screen session persisted into the next one.         */
+/* ------------------------------------------------------------------ */
+
+static void test_altscreen_no_content_accumulation(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Cycle 1: enter alt, write content at the bottom (like less does),
+     * then exit.  less moves cursor to the bottom row and writes upward
+     * via scroll; it does NOT send a clear-screen on entry. */
+    feed(vt, "\x1b[?1049h");
+    feed(vt, "\x1b[24;1H"); /* move to last row */
+    feed(vt, "FIRST\r\n");  /* writes + scroll */
+    feed(vt, "\x1b[?1049l");
+
+    /* Cycle 2: enter alt again.  The altgrid must be blank — if the
+     * previous content persists, old text appears below the new. */
+    feed(vt, "\x1b[?1049h");
+    ASSERT_TRUE(cfr_is_altscreen(vt));
+
+    /* Check that "FIRST" is not lingering in the grid. */
+    bool found_first = false;
+    int rows, cols;
+    cfr_get_dimensions(vt, &rows, &cols);
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            const CfrCell *cell = cfr_get_cell(vt, r, c);
+            if (cell && cell->cp == (uint32_t)'F') {
+                /* Check if this is "FIRST" */
+                const CfrCell *n1 = cfr_get_cell(vt, r, c + 1);
+                const CfrCell *n2 = cfr_get_cell(vt, r, c + 2);
+                if (n1 && n1->cp == (uint32_t)'I' &&
+                    n2 && n2->cp == (uint32_t)'R') {
+                    found_first = true;
+                }
+            }
+        }
+    }
+    ASSERT_FALSE(found_first);
+
+    feed(vt, "\x1b[?1049l");
+
+    /* Cycle 3: same check. */
+    feed(vt, "\x1b[?1049h");
+    found_first = false;
+    cfr_get_dimensions(vt, &rows, &cols);
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            const CfrCell *cell = cfr_get_cell(vt, r, c);
+            if (cell && cell->cp == (uint32_t)'F') {
+                const CfrCell *n1 = cfr_get_cell(vt, r, c + 1);
+                const CfrCell *n2 = cfr_get_cell(vt, r, c + 2);
+                if (n1 && n1->cp == (uint32_t)'I' &&
+                    n2 && n2->cp == (uint32_t)'R') {
+                    found_first = true;
+                }
+            }
+        }
+    }
+    ASSERT_FALSE(found_first);
+
+    feed(vt, "\x1b[?1049l");
+
+    cfr_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -353,6 +423,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_altscreen_no_resize_is_noop);
     RUN_TEST(test_double_resize_on_altscreen);
     RUN_TEST(test_altscreen_resize_rows);
+    RUN_TEST(test_altscreen_no_content_accumulation);
 
     TEST_SUMMARY();
 }
