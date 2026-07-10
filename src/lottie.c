@@ -1866,3 +1866,11 @@ bool cfr_have_lottie(void)
     return false;
 #endif
 }
+
+int cfr_lottie_active_count(CfrTerm *vt)
+{
+    struct CfrLottieState *st = vt->lottie;
+    if (!st)
+        return 0;
+    return st->rec_count;
+}

@@ -501,6 +501,10 @@ void cfr_lottie_note_scroll(CfrTerm *vt, int lines);
  * range [top,bot]. Background placements survive. */
 void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot);
 
+/* Returns the number of registered Lottie animations (playing or not).
+ * Zero-allocation, single field read — safe to call frequently. */
+int cfr_lottie_active_count(CfrTerm *vt);
+
 /* Returns true if coffer was built with ThorVG (Lottie rasterization
  * produces real pixels). Returns false if ThorVG was absent or disabled
  * at build time — APC sequences are accepted but produce blank frames. */
