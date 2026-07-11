@@ -40,63 +40,76 @@ cfr-debug [options] [-- command args...]
 
 ### Options
 
-| Flag | Description |
-|------|-------------|
-| `-r ROWS` | Terminal rows (default 24) |
-| `-c COLS` | Terminal cols (default 80) |
-| `-w SEC` | Initial wait before script (default 3) |
-| `-f FILE` | Script file (one command per line, see below) |
-| `-o FILE` | Save raw PTY output to file |
-| `-s ROW` | Dump specific row (repeatable, default: all) |
-| `-d` | Dump raw cell data alongside text |
-| `-q` | Quiet: only dump specified rows |
-| `-h` | Show help |
+| Flag                   | Description                                   |
+| ---------------------- | --------------------------------------------- |
+| `-r`, `--rows ROWS`    | Terminal rows (default: 24)                   |
+| `-c`, `--cols COLS`    | Terminal columns (default: 80)                |
+| `-w`, `--wait SEC`     | Initial wait before script (default: 3)       |
+| `-f`, `--script FILE`  | Script file (one command per line, see below) |
+| `-o`, `--output FILE`  | Save raw PTY output to file                   |
+| `-s`, `--show-row ROW` | Dump specific row (repeatable, default: all)  |
+| `-d`, `--cell-data`    | Dump raw cell data alongside text             |
+| `-q`, `--quiet`        | Only dump rows specified with `-s`            |
+| `-h`, `--help`         | Show help                                     |
+| `--help-spec`          | Emit machine-readable flag listing            |
 
 ### Script file
 
-The `-f FILE` option reads a script with one command per line:
+The `-f`/`--script FILE` option reads a script with one command per line:
 
-| Command | Description |
-|---------|-------------|
-| `wait SECONDS` | Drain PTY for N seconds (accepts decimals) |
-| `send TEXT` | Send text to PTY (`\n`=CR, `\r`=CR, `\e`=ESC, `\t`=TAB) |
-| `raw HEX [HEX ...]` | Send literal bytes (e.g. `raw ff fc 01` for IAC WONT ECHO) |
-| `assert-contains TEXT` | Fail (exit 1) if rendered grid does not contain TEXT |
-| `assert-not-contains TEXT` | Fail (exit 1) if rendered grid contains TEXT |
-| `render` | Dump current grid to stdout |
-| `# comment` | Skipped |
+| Command                    | Description                                                |
+| -------------------------- | ---------------------------------------------------------- |
+| `wait SECONDS`             | Drain PTY for N seconds (accepts decimals)                 |
+| `send TEXT`                | Send text to PTY (`\n`=CR, `\r`=CR, `\e`=ESC, `\t`=TAB)    |
+| `raw HEX [HEX ...]`        | Send literal bytes (e.g. `raw ff fc 01` for IAC WONT ECHO) |
+| `assert-contains TEXT`     | Fail (exit 1) if rendered grid does not contain TEXT       |
+| `assert-not-contains TEXT` | Fail (exit 1) if rendered grid contains TEXT               |
+| `render`                   | Dump current grid to stdout                                |
+| `# comment`                | Skipped                                                    |
 
-If no `-f` is given, cfr-debug waits `-w` seconds, then renders the
+If no `-f`/`--script` is given, cfr-debug waits `-w`/`--wait` seconds, then renders the
 grid once and exits.
 
 ### Examples
 
 **Interactive shell:**
+
 ```sh
 cfr-debug -- bash -l
 ```
 
-**Capture initial screen of crush:**
+**Capture initial screen of crush (short flags):**
+
 ```sh
 cfr-debug -c 68 -r 20 -w 5 -- crush
 ```
 
+**Capture initial screen of crush (long flags):**
+
+```sh
+cfr-debug --cols 68 --rows 20 --wait 5 -- crush
+```
+
 **Capture raw output:**
+
 ```sh
 cfr-debug -c 68 -r 20 -o /tmp/crush.raw -- crush
 ```
 
 **Inspect a specific row with cell data:**
+
 ```sh
 cfr-debug -c 68 -r 20 -s 18 -d -q -- crush
 ```
 
 **Scripted interaction with assertions (CI):**
+
 ```sh
 cfr-debug -r 24 -c 80 -f test.script -- mudlark carrionfields.net 4449
 ```
 
 Where `test.script` contains:
+
 ```
 # Wait for mudlark to connect and render
 wait 3
@@ -115,6 +128,13 @@ render
 ```
 
 Exit code 0 = all assertions passed, 1 = assertion failed.
+
+`cfr-debug --help` shows all options with descriptions.
+`cfr-debug --help-spec` emits a tab-separated flag listing for downstream tooling.
+
+## Man page
+
+`cfr-debug.1` is installed alongside the binary via `make install`.
 
 ## How it works
 
