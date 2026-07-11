@@ -409,6 +409,90 @@ static void test_altscreen_no_content_accumulation(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 9. DEC modes (?12 blink, ?25 visible) must survive 1049 exit        */
+/*    ncdu sends ?12l inside altscreen and never restores it.          */
+/*    1049 must save/restore the modes array so the host doesn't       */
+/*    get stuck with blink off after the app exits.                    */
+/* ------------------------------------------------------------------ */
+
+static void test_altscreen_restores_blink_mode(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Blink is on by default. */
+    ASSERT_TRUE(cfr_get_cursor(vt).blink);
+
+    /* Enter altscreen, turn blink off (as ncdu does), exit. */
+    feed(vt, "\x1b[?1049h");
+    feed(vt, "\x1b[?12l");
+    ASSERT_FALSE(cfr_get_cursor(vt).blink);
+    feed(vt, "\x1b[?1049l");
+
+    /* Blink must be restored to its pre-altscreen state (on). */
+    ASSERT_TRUE(cfr_get_cursor(vt).blink);
+
+    cfr_free(vt);
+}
+
+static void test_altscreen_restores_visible_mode(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Visible is on by default. */
+    ASSERT_TRUE(cfr_get_cursor(vt).visible);
+
+    /* Enter altscreen, hide cursor, exit altscreen. */
+    feed(vt, "\x1b[?1049h");
+    feed(vt, "\x1b[?25l");
+    ASSERT_FALSE(cfr_get_cursor(vt).visible);
+    feed(vt, "\x1b[?1049l");
+
+    /* Visible must be restored to its pre-altscreen state (on). */
+    ASSERT_TRUE(cfr_get_cursor(vt).visible);
+
+    cfr_free(vt);
+}
+
+static void test_altscreen_restores_modes_array(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Turn blink off before entering altscreen. */
+    feed(vt, "\x1b[?12l");
+    ASSERT_FALSE(cfr_get_cursor(vt).blink);
+
+    /* Enter altscreen, turn blink on, exit. */
+    feed(vt, "\x1b[?1049h");
+    feed(vt, "\x1b[?12h");
+    ASSERT_TRUE(cfr_get_cursor(vt).blink);
+    feed(vt, "\x1b[?1049l");
+
+    /* Blink must be restored to off (the pre-altscreen state). */
+    ASSERT_FALSE(cfr_get_cursor(vt).blink);
+
+    cfr_free(vt);
+}
+
+static void test_altscreen_no_mode_restore_on_47(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Mode 47/1047 is raw altscreen without save/restore. Modes should
+     * NOT be saved/restored — the app is responsible for cleaning up. */
+    ASSERT_TRUE(cfr_get_cursor(vt).blink);
+
+    feed(vt, "\x1b[?1047h");
+    feed(vt, "\x1b[?12l");
+    ASSERT_FALSE(cfr_get_cursor(vt).blink);
+    feed(vt, "\x1b[?1047l");
+
+    /* Blink stays off — 47 doesn't save/restore modes. */
+    ASSERT_FALSE(cfr_get_cursor(vt).blink);
+
+    cfr_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -424,6 +508,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_double_resize_on_altscreen);
     RUN_TEST(test_altscreen_resize_rows);
     RUN_TEST(test_altscreen_no_content_accumulation);
+    RUN_TEST(test_altscreen_restores_blink_mode);
+    RUN_TEST(test_altscreen_restores_visible_mode);
+    RUN_TEST(test_altscreen_restores_modes_array);
+    RUN_TEST(test_altscreen_no_mode_restore_on_47);
 
     TEST_SUMMARY();
 }

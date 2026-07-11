@@ -102,8 +102,33 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
             cfr_resize(vt, saved_rows, saved_cols);
         }
 
-        if (save_restore_cursor)
-            cfr_cursor_restore(vt, &vt->saved_cursor[0]); /* normal-screen register */
+        if (save_restore_cursor) {
+            /* cfr_cursor_restore preserves the live cursor.blink/visible
+             * (see its comment in coffer_internal.h). For DECSC/DECRC
+             * that's correct — ?25 and ?12 are independent modes. But
+             * 1049 is a full screen save/restore: the pre-altscreen
+             * cursor state should be fully restored, including blink and
+             * visible. Apps like ncdu turn off blink (?12l) in the alt
+             * screen and never restore it; without this, the host is
+             * left with blink permanently off after the app exits. */
+            bool saved_blink = vt->saved_cursor[0].blink;
+            bool saved_visible = vt->saved_cursor[0].visible;
+            cfr_cursor_restore(vt, &vt->saved_cursor[0]);
+            if (vt->cursor.blink != saved_blink) {
+                vt->cursor.blink = saved_blink;
+                vt->modes[CFR_MODE_CURSOR_BLINK] = saved_blink;
+                if (vt->callbacks.set_mode)
+                    vt->callbacks.set_mode(CFR_MODE_CURSOR_BLINK, saved_blink,
+                                           vt->callback_user);
+            }
+            if (vt->cursor.visible != saved_visible) {
+                vt->cursor.visible = saved_visible;
+                vt->modes[CFR_MODE_CURSOR_VISIBLE] = saved_visible;
+                if (vt->callbacks.set_mode)
+                    vt->callbacks.set_mode(CFR_MODE_CURSOR_VISIBLE, saved_visible,
+                                           vt->callback_user);
+            }
+        }
     }
 
     cfr_damage_all(vt);
