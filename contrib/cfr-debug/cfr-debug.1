@@ -1,0 +1,127 @@
+.TH Cfr-Debug 1 "2026-07-11" "coffer" "User Commands"
+.SH NAME
+cfr-debug \- headless coffer PTY inspector
+.SH SYNOPSIS
+.B cfr-debug
+[\fI\,options\/\fR] [\fB\-\-\fR \fI\,command args...\/\fR]
+.SH DESCRIPTION
+.B cfr-debug
+spawns a child process on a pseudo-terminal, pipes its output through
+coffer, and renders the resulting grid as plain text.
+The coffer output callback is wired back to the PTY, so terminal
+queries (DA, DSR, kitty keyboard protocol) receive proper replies.
+.SH OPTIONS
+.TP
+\fB\-\-rows\fR, \fB\-r\fR \fIROWS\fR
+Terminal rows (default: 24).
+.TP
+\fB\-\-cols\fR, \fB\-c\fR \fICOLS\fR
+Terminal columns (default: 80).
+.TP
+\fB\-\-wait\fR, \fB\-w\fR \fISEC\fR
+Initial wait in seconds before reading script or rendering (default: 3).
+.TP
+\fB\-\-script\fR, \fB\-f\fR \fIFILE\fR
+Execute commands from a script file. See
+.B SCRIPT FILE
+below.
+.TP
+\fB\-\-output\fR, \fB\-o\fR \fIFILE\fR
+Save raw PTY output to
+.IR FILE .
+.TP
+\fB\-\-show\-row\fR, \fB\-s\fR \fIROW\fR
+Dump a specific row (repeatable). When combined with
+.BR \-\-quiet ,
+only specified rows are shown.
+.TP
+\fB\-\-cell\-data\fR, \fB\-d\fR
+Dump raw cell data (codepoint, width) alongside rendered text.
+.TP
+\fB\-\-quiet\fR, \fB\-q\fR
+Suppress rendering of rows not selected with
+.BR \-\-show\-row .
+.TP
+\fB\-\-help\fR, \fB\-h\fR
+Show help and exit.
+.TP
+\fB\-\-help\-spec\fR
+Emit a machine-readable tab-separated flag listing for downstream tooling.
+.SH SCRIPT FILE
+When run with
+.BR \-\-script ,
+each non-blank, non-comment line is parsed as a command:
+.TP
+.BI "wait " SECONDS
+Drain PTY output for
+.I SECONDS
+seconds (accepts decimals).
+.TP
+.BI "send " TEXT
+Send
+.I TEXT
+to the PTY. Backslash escapes are expanded:
+.B \en
+= CR,
+.B \er
+= CR,
+.B \ee
+= ESC,
+.B \et
+= TAB,
+.B \e\e
+= backslash.
+.TP
+.BI "raw " "HEX [HEX ...]"
+Send literal bytes specified as space-separated hex pairs
+(e.g.\&
+.BR "raw ff fc 01" ).
+.TP
+.BI "assert\-contains " TEXT
+Fail with exit code 1 if the rendered grid does not contain
+.IR TEXT .
+.TP
+.BI "assert\-not\-contains " TEXT
+Fail with exit code 1 if the rendered grid contains
+.IR TEXT .
+.TP
+.B render
+Dump the current grid to stdout.
+.TP
+.BI "# " comment
+Lines starting with
+.B #
+are ignored.
+.SH EXAMPLES
+.TP
+Capture the initial screen of crush:
+.EX
+cfr-debug \-c 68 \-r 20 \-w 5 \-\- crush
+.EE
+.TP
+Scripted CI test with assertions:
+.EX
+cfr-debug \-r 24 \-c 80 \-f test.script \-\- mudlark carrionfields.net 4449
+.EE
+.SH EXIT STATUS
+.TP
+.B 0
+Success; all assertions passed (if any).
+.TP
+.B 1
+An assertion failed, or a runtime error occurred.
+.SH ENVIRONMENT
+.TP
+.B TERM
+The child process sees
+.BR xterm\-256color .
+.TP
+.B COLORTERM
+The child process sees
+.BR truecolor .
+.SH SEE ALSO
+.BR coffer (7)
+.SH BUGS
+No interactive input \(em all input is scripted via
+.BR \-\-script .
+No mouse support.

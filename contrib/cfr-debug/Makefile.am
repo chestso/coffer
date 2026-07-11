@@ -1,6 +1,8 @@
 # contrib/cfr-debug/Makefile.am - cfr-debug: headless coffer PTY inspector
 
 bin_PROGRAMS = cfr-debug
+man1_MANS = cfr-debug.1
+EXTRA_DIST = $(man1_MANS)
 
 cfr_debug_SOURCES = cfr_debug.c
 
