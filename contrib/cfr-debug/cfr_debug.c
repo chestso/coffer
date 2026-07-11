@@ -16,6 +16,7 @@
  */
 
 #define _GNU_SOURCE
+#include "config.h"
 #include <coffer/coffer.h>
 
 #include <ctype.h>
@@ -43,6 +44,100 @@
 #include <pty.h>
 #endif
 #endif
+
+/* ================================================================ */
+/* Flag system                                                      */
+/* ================================================================ */
+
+typedef struct
+{
+    const char *name;  /* e.g. "--rows" or "-r" */
+    const char *alias; /* short alias, may be NULL */
+    int takes_value;   /* 1 if flag takes a value, 0 if boolean */
+    const char *param; /* value placeholder for help (e.g. "ROWS"), NULL if boolean */
+    const char *desc;  /* help description */
+} FlagDef;
+
+static const FlagDef OPTIONS[] = {
+    { "--rows", "-r", 1, "ROWS", "Terminal rows (default: 24)" },
+    { "--cols", "-c", 1, "COLS", "Terminal columns (default: 80)" },
+    { "--wait", "-w", 1, "SEC", "Initial wait before script (default: 3)" },
+    { "--script", "-f", 1, "FILE", "Script file to execute" },
+    { "--output", "-o", 1, "FILE", "Save raw PTY output to file" },
+    { "--show-row", "-s", 1, "ROW", "Dump specific row (repeatable)" },
+    { "--cell-data", "-d", 0, NULL, "Dump raw cell data alongside text" },
+    { "--quiet", "-q", 0, NULL, "Only dump specified rows" },
+    { "--help", "-h", 0, NULL, "Show this help" },
+    { NULL, NULL, 0, NULL, NULL }
+};
+
+static int matches_flag(const char *arg, const FlagDef *def)
+{
+    return (strcmp(arg, def->name) == 0) ||
+           (def->alias && strcmp(arg, def->alias) == 0);
+}
+
+static int find_flag(const char *arg)
+{
+    for (int i = 0; OPTIONS[i].name; i++) {
+        if (matches_flag(arg, &OPTIONS[i]))
+            return i;
+    }
+    return -1;
+}
+
+/* ================================================================ */
+/* Help system                                                      */
+/* ================================================================ */
+
+static void print_help(void)
+{
+    printf("cfr-debug — headless coffer PTY inspector\n\n");
+    printf("Usage: cfr-debug [options] [-- command args...]\n\n");
+    printf("Spawn a child process on a pseudo-terminal, pipe its output\n"
+           "through coffer, and render the resulting grid as plain text.\n\n");
+    printf("Options:\n");
+    for (int i = 0; OPTIONS[i].name; i++) {
+        char label[64];
+        if (OPTIONS[i].alias && OPTIONS[i].param)
+            snprintf(label, sizeof(label), "%s, %s %s",
+                     OPTIONS[i].name, OPTIONS[i].alias, OPTIONS[i].param);
+        else if (OPTIONS[i].alias)
+            snprintf(label, sizeof(label), "%s, %s",
+                     OPTIONS[i].name, OPTIONS[i].alias);
+        else if (OPTIONS[i].param)
+            snprintf(label, sizeof(label), "%s %s",
+                     OPTIONS[i].name, OPTIONS[i].param);
+        else
+            snprintf(label, sizeof(label), "%s",
+                     OPTIONS[i].name);
+        printf("  %-22s  %s\n", label, OPTIONS[i].desc);
+    }
+    printf("\nScript file commands (via --script):\n");
+    printf("  wait SECONDS              Drain PTY for N seconds\n");
+    printf("  send TEXT                 Send text to PTY (\\n=CR \\r=CR \\e=ESC \\t=TAB)\n");
+    printf("  raw HEX [HEX ...]         Send literal bytes (e.g. raw ff fc 01)\n");
+    printf("  assert-contains TEXT      Fail if grid does not contain TEXT\n");
+    printf("  assert-not-contains TEXT  Fail if grid contains TEXT\n");
+    printf("  render                    Dump current grid to stdout\n");
+    printf("  # comment                 Skipped\n");
+    printf("\nExamples:\n");
+    printf("  cfr-debug -- bash -l\n");
+    printf("  cfr-debug -c 68 -r 20 -w 5 -- crush\n");
+    printf("  cfr-debug -r 24 -c 80 -f test.script -- mudlark carrionfields.net 4449\n");
+    printf("\nRun 'cfr-debug --help-spec' for machine-readable flag listing.\n");
+}
+
+static void print_help_spec(void)
+{
+    for (int i = 0; OPTIONS[i].name; i++) {
+        const char *alias = OPTIONS[i].alias ? OPTIONS[i].alias : "-";
+        const char *param = OPTIONS[i].param ? OPTIONS[i].param : "-";
+        printf("FLAG\t%s\t%s\t%d\t%s\t%s\n",
+               OPTIONS[i].name, alias, OPTIONS[i].takes_value,
+               param, OPTIONS[i].desc);
+    }
+}
 
 /* ================================================================ */
 /* PTY abstraction                                                  */
@@ -894,34 +989,7 @@ static int run_script(CfrTerm *vt, PtyCtx *pty, int rows, int cols,
 
 static void usage(void)
 {
-    printf(
-        "cfr-debug -- spawn a child on a PTY and render through coffer\n"
-        "\n"
-        "Usage: cfr-debug [options] [-- command args...]\n"
-        "\n"
-        "  -r ROWS   terminal rows (default 24)\n"
-        "  -c COLS   terminal cols (default 80)\n"
-        "  -w SEC    initial wait before any script (default 3)\n"
-        "  -f FILE   script file (one command per line)\n"
-        "  -o FILE   save raw PTY output\n"
-        "  -s ROW    dump specific row (repeatable)\n"
-        "  -d        dump raw cell data\n"
-        "  -q        quiet: only specified rows\n"
-        "  -h        this help\n"
-        "\n"
-        "Script file commands:\n"
-        "  wait SECONDS              drain PTY for N seconds\n"
-        "  send TEXT                 send text to PTY (\\n=CR \\r=CR \\e=ESC \\t=TAB)\n"
-        "  raw HEX [HEX ...]         send literal bytes (e.g. raw ff fc 01)\n"
-        "  assert-contains TEXT      fail if grid does not contain TEXT\n"
-        "  assert-not-contains TEXT  fail if grid contains TEXT\n"
-        "  render                    dump current grid to stdout\n"
-        "  # comment                 skipped\n"
-        "\n"
-        "Examples:\n"
-        "  cfr-debug -- bash -l\n"
-        "  cfr-debug -c 68 -r 20 -w 5 -- crush\n"
-        "  cfr-debug -r 24 -c 80 -f test.script -- mudlark carrionfields.net 4449\n");
+    print_help();
 }
 
 int main(int argc, char *argv[])
@@ -934,34 +1002,59 @@ int main(int argc, char *argv[])
     int n_show = 0;
     int show_cells = 0, quiet = 0;
 
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help-spec") == 0) {
+            print_help_spec();
+            return 0;
+        }
+    }
+
     int cmd_start = argc;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--") == 0) {
             cmd_start = i + 1;
             break;
         }
-        if (strcmp(argv[i], "-r") == 0 && i + 1 < argc)
-            rows = atoi(argv[++i]);
-        else if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
-            cols = atoi(argv[++i]);
-        else if (strcmp(argv[i], "-w") == 0 && i + 1 < argc)
-            initial_wait = atof(argv[++i]);
-        else if (strcmp(argv[i], "-f") == 0 && i + 1 < argc)
-            script_path = argv[++i];
-        else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
-            outfile = argv[++i];
-        else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc && n_show < 64)
-            show_rows[n_show++] = atoi(argv[++i]);
-        else if (strcmp(argv[i], "-d") == 0)
-            show_cells = 1;
-        else if (strcmp(argv[i], "-q") == 0)
-            quiet = 1;
-        else if (strcmp(argv[i], "-h") == 0) {
-            usage();
-            return 0;
-        } else {
-            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+        const char *arg = argv[i];
+        int fi = find_flag(arg);
+
+        if (fi < 0) {
+            fprintf(stderr, "Unknown option: %s\n", arg);
+            fprintf(stderr, "Try 'cfr-debug --help' for more information.\n");
             return 1;
+        }
+
+        const FlagDef *f = &OPTIONS[fi];
+
+        if (matches_flag(arg, &OPTIONS[8])) { /* --help / -h */
+            print_help();
+            return 0;
+        }
+
+        if (f->takes_value) {
+            if (i + 1 >= cmd_start) {
+                fprintf(stderr, "Error: %s requires a value\n", arg);
+                return 1;
+            }
+            const char *val = argv[++i];
+
+            if (matches_flag(arg, &OPTIONS[0])) /* --rows */
+                rows = atoi(val);
+            else if (matches_flag(arg, &OPTIONS[1])) /* --cols */
+                cols = atoi(val);
+            else if (matches_flag(arg, &OPTIONS[2])) /* --wait */
+                initial_wait = atof(val);
+            else if (matches_flag(arg, &OPTIONS[3])) /* --script */
+                script_path = val;
+            else if (matches_flag(arg, &OPTIONS[4])) /* --output */
+                outfile = val;
+            else if (matches_flag(arg, &OPTIONS[5]) && n_show < 64) /* --show-row */
+                show_rows[n_show++] = atoi(val);
+        } else {
+            if (matches_flag(arg, &OPTIONS[6])) /* --cell-data */
+                show_cells = 1;
+            else if (matches_flag(arg, &OPTIONS[7])) /* --quiet */
+                quiet = 1;
         }
     }
 
