@@ -316,6 +316,7 @@ struct CfrTerm
     struct CfrSixelState *sixel;
     int cell_w_px; /* px per cell, set at creation */
     int cell_h_px;
+    float content_scale; /* DPI scale factor (1.0 = unscaled), set by host */
     long sixel_abs_top;
 
     /* Lottie animations (lottie.c). Lazily allocated on first APC.

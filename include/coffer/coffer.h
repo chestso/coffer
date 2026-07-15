@@ -430,6 +430,11 @@ typedef struct
  * updates it when it changes. */
 void cfr_set_cell_pixels(CfrTerm *vt, int cell_w_px, int cell_h_px);
 
+/* Set the DPI content scale factor (1.0 = unscaled). The host passes its
+ * content_scale so the engine can compute correct sixel cell occupancy when
+ * cell_px already includes the scale but image pixels are unscaled. */
+void cfr_set_content_scale(CfrTerm *vt, float scale);
+
 /* Return the live sixel images. The returned array is owned by the
  * engine and valid until the next mutation; *out_count receives the
  * number of images (0 if none). Returns NULL when there are none. */

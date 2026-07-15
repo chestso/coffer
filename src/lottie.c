@@ -943,9 +943,14 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     if (design_h <= 0)
         design_h = px_h;
 
-    /* Placement cells derived from rasterization size / cell px */
-    int pcols = (px_w + vt->cell_w_px - 1) / vt->cell_w_px;
-    int prows = (px_h + vt->cell_h_px - 1) / vt->cell_h_px;
+    /* Placement cells derived from rasterization size / cell px.
+     * px_w/px_h are in unscaled pixels; cell_w_px/cell_h_px include
+     * content_scale, so we scale the rasterization size to match. */
+    float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
+    int scaled_px_w = (int)((double)px_w * cscale + 0.5);
+    int scaled_px_h = (int)((double)px_h * cscale + 0.5);
+    int pcols = (scaled_px_w + vt->cell_w_px - 1) / vt->cell_w_px;
+    int prows = (scaled_px_h + vt->cell_h_px - 1) / vt->cell_h_px;
     if (pcols < 1)
         pcols = 1;
     if (prows < 1)
@@ -1256,9 +1261,13 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
         rec->version++;
     }
 
-    /* Compute placement cells from current rasterization size */
-    int pcols = (rec->px_w + vt->cell_w_px - 1) / vt->cell_w_px;
-    int prows = (rec->px_h + vt->cell_h_px - 1) / vt->cell_h_px;
+    /* Compute placement cells from current rasterization size.
+     * px_w/px_h are unscaled; cell_w_px/cell_h_px include content_scale. */
+    float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
+    int scaled_px_w = (int)((double)rec->px_w * cscale + 0.5);
+    int scaled_px_h = (int)((double)rec->px_h * cscale + 0.5);
+    int pcols = (scaled_px_w + vt->cell_w_px - 1) / vt->cell_w_px;
+    int prows = (scaled_px_h + vt->cell_h_px - 1) / vt->cell_h_px;
     if (pcols < 1)
         pcols = 1;
     if (prows < 1)

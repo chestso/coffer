@@ -614,8 +614,11 @@ void cfr_sixel_finish(CfrTerm *vt)
 
     int cell_h = vt->cell_h_px;
     int cell_w = vt->cell_w_px;
-    int rows_tall = (h + cell_h - 1) / cell_h;
-    int cols_wide = (w + cell_w - 1) / cell_w;
+    float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
+    int scaled_w = (int)(w * scale);
+    int scaled_h = (int)(h * scale);
+    int rows_tall = (scaled_h + cell_h - 1) / cell_h;
+    int cols_wide = (scaled_w + cell_w - 1) / cell_w;
     if (rows_tall < 1)
         rows_tall = 1;
     if (cols_wide < 1)
@@ -762,6 +765,13 @@ void cfr_set_cell_pixels(CfrTerm *vt, int cell_w_px, int cell_h_px)
         return;
     vt->cell_w_px = cell_w_px;
     vt->cell_h_px = cell_h_px;
+}
+
+void cfr_set_content_scale(CfrTerm *vt, float scale)
+{
+    if (!vt)
+        return;
+    vt->content_scale = scale > 0.0f ? scale : 1.0f;
 }
 
 const CfrSixel *cfr_get_sixels(CfrTerm *vt, int *out_count)
