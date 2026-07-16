@@ -60,15 +60,53 @@ The `-f`/`--script FILE` option reads a script with one command per line:
 | Command                    | Description                                                |
 | -------------------------- | ---------------------------------------------------------- |
 | `wait SECONDS`             | Drain PTY for N seconds (accepts decimals)                 |
-| `send TEXT`                | Send text to PTY (`\n`=CR, `\r`=CR, `\e`=ESC, `\t`=TAB)    |
-| `raw HEX [HEX ...]`        | Send literal bytes (e.g. `raw ff fc 01` for IAC WONT ECHO) |
+| `send TEXT`                | Send text to PTY input (child's stdin). `\n`=CR, `\r`=CR, `\e`=ESC, `\t`=TAB |
+| `raw HEX [HEX ...]`        | Send literal bytes to PTY input (e.g. `raw ff fc 01` for IAC WONT ECHO) |
 | `assert-contains TEXT`     | Fail (exit 1) if rendered grid does not contain TEXT       |
 | `assert-not-contains TEXT` | Fail (exit 1) if rendered grid contains TEXT               |
 | `render`                   | Dump current grid to stdout                                |
+| `cursor`                   | Dump cursor state (row, col, visible, blink)               |
 | `# comment`                | Skipped                                                    |
 
 If no `-f`/`--script` is given, cfr-debug waits `-w`/`--wait` seconds, then renders the
 grid once and exits.
+
+#### `send` vs `raw`
+
+Both `send` and `raw` write to the **PTY input** (the child process's stdin),
+not to coffer's terminal parser. This is the most common source of confusion:
+
+- **`send`** writes text with escape expansion (`\n`→CR, `\e`→ESC, etc.).
+  Use it to type shell commands — append `\n` to execute them.
+- **`raw`** writes literal hex bytes with no expansion.
+  Use it for binary input the child should receive verbatim.
+
+Neither can directly emit escape sequences that coffer will parse, because the
+bytes go to the child's stdin. The child must output them on its stdout for
+coffer to process them. To send escape sequences the terminal will process,
+have the child print them:
+
+```
+# Correct: printf outputs ESC bytes on stdout, coffer parses them
+send printf '\033[?12l'\n
+wait 1
+send printf '\033[?12h'\n
+
+# Wrong: raw writes ESC [ ? 1 2 l to stdin; the shell sees them as input,
+# not as terminal control sequences
+raw 1b 5b 3f 31 32 6c
+```
+
+Key points:
+
+- Always append `\n` to `send` commands that should be executed by the shell —
+  without it, the text sits on the shell's input line unexecuted.
+- Use `\033` (not `\e`) inside `printf` arguments. `\e` is expanded by the
+  script parser before the shell sees it, so the shell's readline intercepts
+  the raw ESC byte. `\\033` passes the literal string `\033` to the shell,
+  which `printf` then interprets.
+- `raw` is useful for sending non-printable input to the child (e.g. `raw 03`
+  for Ctrl-C, `raw 1a` for Ctrl-Z).
 
 ### Examples
 

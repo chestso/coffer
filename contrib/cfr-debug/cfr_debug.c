@@ -115,11 +115,21 @@ static void print_help(void)
     }
     printf("\nScript file commands (via --script):\n");
     printf("  wait SECONDS              Drain PTY for N seconds\n");
-    printf("  send TEXT                 Send text to PTY (\\n=CR \\r=CR \\e=ESC \\t=TAB)\n");
-    printf("  raw HEX [HEX ...]         Send literal bytes (e.g. raw ff fc 01)\n");
+    printf("  send TEXT                 Send text to PTY input (child's stdin).\n");
+    printf("                            Escapes: \\n=CR \\r=CR \\e=ESC \\t=TAB \\\\=backslash.\n");
+    printf("                            Text is written verbatim; the shell must execute it.\n");
+    printf("                            Tip: append \\n to execute a shell command, e.g.\n");
+    printf("                              send printf '\\\\033[?12l'\\n\n");
+    printf("                            To send escape sequences the terminal will process,\n");
+    printf("                            have the child output them (e.g. via printf); raw\n");
+    printf("                            writes to stdin, not the terminal output side.\n");
+    printf("  raw HEX [HEX ...]         Write raw bytes to PTY input (e.g. raw 1b 5b 6d).\n");
+    printf("                            Bytes reach the child's stdin, not coffer's parser.\n");
+    printf("                            Use send with printf to emit sequences coffer parses.\n");
     printf("  assert-contains TEXT      Fail if grid does not contain TEXT\n");
     printf("  assert-not-contains TEXT  Fail if grid contains TEXT\n");
     printf("  render                    Dump current grid to stdout\n");
+    printf("  cursor                    Dump cursor state (row, col, visible, blink)\n");
     printf("  # comment                 Skipped\n");
     printf("\nExamples:\n");
     printf("  cfr-debug -- bash -l\n");
@@ -973,6 +983,10 @@ static int run_script(CfrTerm *vt, PtyCtx *pty, int rows, int cols,
             fprintf(stderr, "[%d] render\n", line_num);
             render_grid(vt, rows, cols, show_rows, n_show, show_cells,
                         quiet);
+        } else if (strcmp(cmd, "cursor") == 0) {
+            CfrCursor c = cfr_get_cursor(vt);
+            fprintf(stderr, "[%d] cursor: row=%d col=%d visible=%d blink=%d\n",
+                    line_num, c.row, c.col, c.visible, c.blink);
         } else {
             fprintf(stderr, "[%d] WARN: unknown command: %s\n", line_num,
                     cmd);
