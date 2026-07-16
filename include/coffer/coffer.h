@@ -71,6 +71,8 @@ enum
     CFR_ATTR_DWL = 1u << 5,        /* double-width line */
     CFR_ATTR_DHL_TOP = 1u << 6,    /* double-height line, top half */
     CFR_ATTR_DHL_BOTTOM = 1u << 7, /* double-height line, bottom half */
+    CFR_ATTR_DIM = 1u << 8,        /* dim/faint (SGR 2) */
+    CFR_ATTR_INVIS = 1u << 9,      /* invisible/concealed (SGR 8) */
 };
 
 /* Underline styles: SGR 4:N */
@@ -170,6 +172,8 @@ typedef enum
     CFR_MODE_SIXEL_SCROLLING,    /* DECSDM, mode 80 — when on, draw sixel in place */
     CFR_MODE_SIXEL_PRIVATE_REGS, /* mode 1070 — private sixel color registers */
     CFR_MODE_SIXEL_CURSOR_RIGHT, /* mode 8452 — cursor to right of graphic */
+    CFR_MODE_META,               /* DECSET 1034 — meta key mode */
+    CFR_MODE_LEFT_RIGHT_MARGINS, /* DECSET 69 — left/right margin support (DECSLRM) */
 } CfrMode;
 
 /* ------------------------------------------------------------------ */
@@ -245,6 +249,17 @@ typedef enum
 } CfrMouseButton;
 
 /* ------------------------------------------------------------------ */
+/* Logging                                                             */
+/* ------------------------------------------------------------------ */
+
+typedef enum
+{
+    CFR_LOG_DEBUG,
+    CFR_LOG_INFO,
+    CFR_LOG_WARN,
+} CfrLogLevel;
+
+/* ------------------------------------------------------------------ */
 /* Callbacks                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -285,6 +300,10 @@ typedef struct
     /* dcs: streamed DCS callback. `final` is true on the final chunk. */
     void (*dcs)(const char *intro, const char *data, size_t len, bool final,
                 void *user);
+
+    /* log: diagnostic message from the engine (e.g. unimplemented
+     * sequence warnings). NULL = silently dropped. */
+    void (*log)(CfrLogLevel level, const char *msg, void *user);
 } CfrCallbacks;
 
 /* ------------------------------------------------------------------ */

@@ -14,6 +14,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
 
 /*
  * CFR_BUG_CHECK — invariant assertion that aborts on violation.
@@ -322,6 +324,12 @@ struct CfrTerm
     /* Lottie animations (lottie.c). Lazily allocated on first APC.
      * Shares sixel_abs_top for absolute-line anchoring. */
     struct CfrLottieState *lottie;
+
+    /* Last printed codepoint for REP (CSI Ps b). 0 = nothing printed yet. */
+    uint32_t last_char;
+
+    /* One-time log guards. See should_log_once() above. */
+    uint32_t logged_once;
 };
 
 /* The saved-cursor register for the currently active screen. DECSC/DECRC and
@@ -343,6 +351,39 @@ static inline void cfr_cursor_restore(CfrTerm *vt, const CfrCursorState *src)
     vt->cursor = *src;
     vt->cursor.visible = visible;
     vt->cursor.blink = blink;
+}
+
+/* ------------------------------------------------------------------ */
+/* Logging                                                             */
+/* ------------------------------------------------------------------ */
+
+/* One-time log guards for unimplemented sequences. Bit set = already
+ * logged; subsequent occurrences are silently dropped. Reset on
+ * cfr_full_reset() so a new session gets fresh warnings. */
+#define CFR_LOGGED_MEDIA_COPY (1u << 0)
+#define CFR_LOGGED_MEML       (1u << 1)
+#define CFR_LOGGED_MEMU       (1u << 2)
+#define CFR_LOGGED_OSC4       (1u << 3)
+#define CFR_LOGGED_OSC104     (1u << 4)
+#define CFR_LOGGED_LR_MARGIN  (1u << 5)
+#define CFR_LOGGED_META       (1u << 6)
+
+/* Format a message and forward it to the log callback if registered.
+ * No-op when the callback is NULL (the default). */
+void cfr_vlog(CfrTerm *vt, CfrLogLevel level, const char *fmt, ...);
+
+#define cfr_log(vt, level, fmt, ...) \
+    cfr_vlog(vt, level, fmt, ##__VA_ARGS__)
+
+/* Returns true the first time `bit` is seen for this CfrTerm, false
+ * thereafter. Sets the bit so subsequent calls with the same bit are
+ * suppressed. */
+static inline bool should_log_once(CfrTerm *vt, uint32_t bit)
+{
+    if (vt->logged_once & bit)
+        return false;
+    vt->logged_once |= bit;
+    return true;
 }
 
 /* ------------------------------------------------------------------ */

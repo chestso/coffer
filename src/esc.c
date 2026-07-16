@@ -67,6 +67,14 @@ void cfr_esc_dispatch(CfrTerm *vt, uint8_t final)
     case 'c': /* RIS — full reset */
         cfr_full_reset(vt);
         break;
+    case 'l': /* meml — locking shift G0 to G1 */
+        if (should_log_once(vt, CFR_LOGGED_MEML))
+            cfr_log(vt, CFR_LOG_WARN, "locking shift meml (ESC l) not implemented yet");
+        break;
+    case 'm': /* memu — locking shift G1 to G0 */
+        if (should_log_once(vt, CFR_LOGGED_MEMU))
+            cfr_log(vt, CFR_LOG_WARN, "locking shift memu (ESC m) not implemented yet");
+        break;
     default:
         /* Many ESC dispatches are silently ignored. */
         break;

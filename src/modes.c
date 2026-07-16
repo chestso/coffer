@@ -213,6 +213,11 @@ void cfr_full_reset(CfrTerm *vt)
         memset(vt->grid->row_flags, 0, (size_t)vt->rows);
     }
 
+    /* Reset log-once guards so a new session gets fresh warnings. */
+    vt->logged_once = 0;
+    /* Reset last-printed char for REP. */
+    vt->last_char = 0;
+
     if (vt->sixel)
         cfr_sixel_clear_all(vt);
 

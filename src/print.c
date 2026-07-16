@@ -284,6 +284,9 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
     cell->flags = 0;
     cell->hyperlink_id = vt->cursor.hyperlink_id;
 
+    /* Track last printed codepoint for REP (CSI Ps b). */
+    vt->last_char = cps[0];
+
     if (width == 2 && vt->cursor.col + 1 < vt->cols) {
         CfrCell *cont = &vt->grid->cells[(size_t)vt->cursor.row * vt->cols + vt->cursor.col + 1];
         cont->cp = 0;

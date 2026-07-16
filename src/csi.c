@@ -162,6 +162,12 @@ static void sgr_dispatch(CfrTerm *vt)
         case 5:
             vt->cursor.pen.attrs |= CFR_ATTR_BLINK;
             break;
+        case 2:
+            vt->cursor.pen.attrs |= CFR_ATTR_DIM;
+            break;
+        case 8:
+            vt->cursor.pen.attrs |= CFR_ATTR_INVIS;
+            break;
         case 7:
             vt->cursor.pen.attrs |= CFR_ATTR_REVERSE;
             break;
@@ -169,7 +175,7 @@ static void sgr_dispatch(CfrTerm *vt)
             vt->cursor.pen.attrs |= CFR_ATTR_STRIKETHROUGH;
             break;
         case 22:
-            vt->cursor.pen.attrs &= (uint16_t)~CFR_ATTR_BOLD;
+            vt->cursor.pen.attrs &= (uint16_t)~(CFR_ATTR_BOLD | CFR_ATTR_DIM);
             break;
         case 23:
             vt->cursor.pen.attrs &= (uint16_t)~CFR_ATTR_ITALIC;
@@ -182,6 +188,9 @@ static void sgr_dispatch(CfrTerm *vt)
             break;
         case 27:
             vt->cursor.pen.attrs &= (uint16_t)~CFR_ATTR_REVERSE;
+            break;
+        case 28:
+            vt->cursor.pen.attrs &= (uint16_t)~(CFR_ATTR_INVIS);
             break;
         case 29:
             vt->cursor.pen.attrs &= (uint16_t)~CFR_ATTR_STRIKETHROUGH;
@@ -290,9 +299,8 @@ static void sgr_dispatch(CfrTerm *vt)
             vt->cursor.pen.color_flags |= CFR_COLOR_DEFAULT_UL;
             break;
         default:
-            /* SGR 2 (faint), 6 (rapid blink), 8 (conceal), 21
-             * (double-underline), 28 (reveal), 53 (overline) etc.
-             * are accepted-but-ignored for now. */
+            /* SGR 6 (rapid blink), 21 (double-underline),
+             * 53 (overline) etc. are accepted-but-ignored for now. */
             break;
         }
     }
@@ -400,6 +408,25 @@ static void mode_set(CfrTerm *vt, bool on)
             vt->modes[CFR_MODE_SIXEL_CURSOR_RIGHT] = on;
             if (vt->callbacks.set_mode)
                 vt->callbacks.set_mode(CFR_MODE_SIXEL_CURSOR_RIGHT, on, vt->callback_user);
+            break;
+        case 5: /* DECSCNM — reverse video screen mode */
+            vt->modes[CFR_MODE_REVERSE_VIDEO] = on;
+            if (vt->callbacks.set_mode)
+                vt->callbacks.set_mode(CFR_MODE_REVERSE_VIDEO, on, vt->callback_user);
+            break;
+        case 1034: /* Meta key mode */
+            vt->modes[CFR_MODE_META] = on;
+            if (vt->callbacks.set_mode)
+                vt->callbacks.set_mode(CFR_MODE_META, on, vt->callback_user);
+            if (on && should_log_once(vt, CFR_LOGGED_META))
+                cfr_log(vt, CFR_LOG_WARN, "meta mode (?1034) accepted but not enforced");
+            break;
+        case 69: /* Left/right margin mode (DECSLRM) */
+            vt->modes[CFR_MODE_LEFT_RIGHT_MARGINS] = on;
+            if (vt->callbacks.set_mode)
+                vt->callbacks.set_mode(CFR_MODE_LEFT_RIGHT_MARGINS, on, vt->callback_user);
+            if (on && should_log_once(vt, CFR_LOGGED_LR_MARGIN))
+                cfr_log(vt, CFR_LOG_WARN, "left/right margins (?69) accepted but not enforced");
             break;
         default:
             break;
@@ -647,8 +674,26 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
         }
         break;
 
+    case 'i':
+    { /* Media copy (mc0/mc4/mc5) — printer control, not implemented. */
+        if (should_log_once(vt, CFR_LOGGED_MEDIA_COPY))
+            cfr_log(vt, CFR_LOG_WARN, "media copy (CSI i) not implemented yet");
+        break;
+    }
+
+    case 'b':
+    { /* REP — Repeat the preceding graphic character Ps times (default 1). */
+        int n = param_or(vt, 0, 1);
+        if (n < 1)
+            n = 1;
+        if (vt->last_char) {
+            for (int k = 0; k < n; k++)
+                cfr_print_codepoint(vt, vt->last_char);
+        }
+        break;
+    }
     default:
-        /* TODO: REP, DA3, DECRQM, DECSCUSR cursor shape, etc. */
+        /* TODO: DA3, DECRQM, DECSCUSR cursor shape, etc. */
         break;
     }
     (void)p;

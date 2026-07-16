@@ -23,6 +23,7 @@ libcoffer_a_SOURCES = \
     lottie.c \
     esc.c \
     hyperlink.c \
+    log.c \
     coffer_internal.h
 
 libcoffer_a_CPPFLAGS = -I$(top_srcdir)/include
