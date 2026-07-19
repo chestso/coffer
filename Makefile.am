@@ -14,8 +14,7 @@ EXTRA_DIST = \
     README.md \
     COPYING \
     FOLLOWUPS.md \
-    .clang-format \
-    .gitattributes
+    .clang-format
 
 # Keep the version file in sync with the current git state (or COFFER_VERSION
 # from configure).  The recipe always runs but only rewrites the file when
