@@ -3,8 +3,13 @@
 A standalone virtual terminal engine in C — parser, grid, scrollback, reflow,
 charsets, kitty keyboard protocol, sixel and Lottie graphics — with no
 external dependencies. Extracted
-from [portty](https://github.com/thomas-christensen/portty),
+from [portty](https://github.com/chestso/portty),
 where it replaces libvterm.
+
+coffer handles terminal emulation (parsing, grid management, scrollback,
+graphics state). The host application (e.g. portty) is responsible for
+rendering — font shaping, glyph rasterization, texture upload, and
+compositing. See the portty README for renderer-side details.
 
 ## What it does
 
@@ -38,7 +43,7 @@ where it replaces libvterm.
   with `cfr_lottie_tick()`. Rasterization is handled by ThorVG (optional
   dependency, auto-detected at configure time); when ThorVG is absent the APC
   sequences are still accepted but RGBA buffers are zeroed. A Python TUI
-  player ([plotty](https://codeberg.org/thomasc/portty/src/branch/master/portty/contrib/plotty))
+  player ([plotty](https://github.com/chestso/portty/tree/master/contrib/plotty))
   provides interactive playback with keyboard controls for pause, seek,
   speed, opacity, and layer toggling.
 - **Windows ConPTY note:** Windows ConPTY intercepts and re-serialises VT output
