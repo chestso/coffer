@@ -22,13 +22,23 @@ void cfr_grid_ensure(CfrTerm *vt)
      * NULL. */
 }
 
-/* Fill a range of cells with a blank template that carries the current
- * pen's style_id (BCE — Back Color Erase).  Erased cells must inherit
- * the active background colour so that \e[K and \e[J extend the
- * background to the end of line/display, matching xterm/VTE/foot. */
+/* Fill a range of cells with a blank template that carries only the
+ * current pen's background colour (BCE — Back Color Erase).  Erased
+ * cells inherit the active background colour so that \e[K and \e[J
+ * extend the background to the end of line/display, matching xterm/
+ * VTE/foot.  Text attributes (underline, bold, italic, etc.) are NOT
+ * applied to erased cells — this is the key difference from the full
+ * pen style.  Without this, a scroll that occurs while the pen has
+ * active underline or other attributes would fill the newly exposed
+ * row with those attributes, causing them to "bleed" across trailing
+ * spaces on wrapped lines. */
 static void erase_cells(CfrTerm *vt, CfrCell *dst, int count)
 {
-    uint32_t style_id = cfr_style_intern(vt, vt->grid, &vt->cursor.pen);
+    CfrStyle erase_style = { 0 };
+    erase_style.bg_rgb = vt->cursor.pen.bg_rgb;
+    erase_style.color_flags = (uint16_t)(CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_UL |
+                                         (vt->cursor.pen.color_flags & (uint16_t)CFR_COLOR_DEFAULT_BG));
+    uint32_t style_id = cfr_style_intern(vt, vt->grid, &erase_style);
     CfrCell blank = { 0 };
     blank.cp = 0x20; /* space */
     blank.style_id = style_id;

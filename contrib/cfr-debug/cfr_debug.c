@@ -66,6 +66,7 @@ static const FlagDef OPTIONS[] = {
     { "--output", "-o", 1, "FILE", "Save raw PTY output to file" },
     { "--show-row", "-s", 1, "ROW", "Dump specific row (repeatable)" },
     { "--cell-data", "-d", 0, NULL, "Dump raw cell data alongside text" },
+    { "--style-data", "-S", 0, NULL, "Dump style info (underline, colors)" },
     { "--quiet", "-q", 0, NULL, "Only dump specified rows" },
     { "--help", "-h", 0, NULL, "Show this help" },
     { NULL, NULL, 0, NULL, NULL }
@@ -787,9 +788,39 @@ static void render_row_cells(CfrTerm *vt, int row, int cols)
     putchar('\n');
 }
 
+static void render_row_styles(CfrTerm *vt, int row, int cols)
+{
+    printf("Row %2d styles:\n", row);
+    for (int c = 0; c < cols; c++) {
+        const CfrCell *cell = cfr_get_cell(vt, row, c);
+        if (!cell)
+            continue;
+        const CfrStyle *st = cfr_cell_style(vt, cell);
+        if (!st)
+            continue;
+        if (st->underline || st->bg_rgb || st->fg_rgb || st->attrs || st->color_flags) {
+            char cp_str[16] = "";
+            if (cell->cp == 0 || cell->cp == 0x20)
+                snprintf(cp_str, sizeof(cp_str), "SP");
+            else if (cell->cp < 0x80)
+                snprintf(cp_str, sizeof(cp_str), "'%c'", (char)cell->cp);
+            else
+                snprintf(cp_str, sizeof(cp_str), "U+%04X", cell->cp);
+            printf("  col %2d: %s ul=%d ul_rgb=%06X%s fg=%06X%s bg=%06X%s attrs=%02X\n",
+                   c, cp_str, st->underline, st->ul_rgb,
+                   (st->color_flags & CFR_COLOR_DEFAULT_UL) ? "(def)" : "",
+                   st->fg_rgb, (st->color_flags & CFR_COLOR_DEFAULT_FG) ? "(def)" : "",
+                   st->bg_rgb, (st->color_flags & CFR_COLOR_DEFAULT_BG) ? "(def)" : "",
+                   st->attrs);
+        }
+        if (cell->width == 2)
+            c++;
+    }
+}
+
 static void render_grid(CfrTerm *vt, int rows, int cols,
                         const int *show_rows, int n_show,
-                        int show_cells, int quiet)
+                        int show_cells, int show_styles, int quiet)
 {
     for (int r = 0; r < rows; r++) {
         if (quiet && n_show > 0) {
@@ -804,6 +835,8 @@ static void render_grid(CfrTerm *vt, int rows, int cols,
         render_row_text(vt, r, cols);
         if (show_cells)
             render_row_cells(vt, r, cols);
+        if (show_styles)
+            render_row_styles(vt, r, cols);
     }
 }
 
@@ -901,7 +934,7 @@ static int parse_hex_bytes(const char *s, unsigned char *out, int max)
 
 static int run_script(CfrTerm *vt, PtyCtx *pty, int rows, int cols,
                       const char *script_path, const int *show_rows,
-                      int n_show, int show_cells, int quiet)
+                      int n_show, int show_cells, int show_styles, int quiet)
 {
     FILE *f = fopen(script_path, "r");
     if (!f) {
@@ -982,7 +1015,7 @@ static int run_script(CfrTerm *vt, PtyCtx *pty, int rows, int cols,
         } else if (strcmp(cmd, "render") == 0) {
             fprintf(stderr, "[%d] render\n", line_num);
             render_grid(vt, rows, cols, show_rows, n_show, show_cells,
-                        quiet);
+                        show_styles, quiet);
         } else if (strcmp(cmd, "cursor") == 0) {
             CfrCursor c = cfr_get_cursor(vt);
             fprintf(stderr, "[%d] cursor: row=%d col=%d visible=%d blink=%d\n",
@@ -1014,7 +1047,7 @@ int main(int argc, char *argv[])
     const char *outfile = NULL;
     int show_rows[64];
     int n_show = 0;
-    int show_cells = 0, quiet = 0;
+    int show_cells = 0, show_styles = 0, quiet = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help-spec") == 0) {
@@ -1040,7 +1073,7 @@ int main(int argc, char *argv[])
 
         const FlagDef *f = &OPTIONS[fi];
 
-        if (matches_flag(arg, &OPTIONS[8])) { /* --help / -h */
+        if (matches_flag(arg, &OPTIONS[9])) { /* --help / -h */
             print_help();
             return 0;
         }
@@ -1067,7 +1100,9 @@ int main(int argc, char *argv[])
         } else {
             if (matches_flag(arg, &OPTIONS[6])) /* --cell-data */
                 show_cells = 1;
-            else if (matches_flag(arg, &OPTIONS[7])) /* --quiet */
+            else if (matches_flag(arg, &OPTIONS[7])) /* --style-data */
+                show_styles = 1;
+            else if (matches_flag(arg, &OPTIONS[8])) /* --quiet */
                 quiet = 1;
         }
     }
@@ -1108,14 +1143,14 @@ int main(int argc, char *argv[])
     int rc = 0;
     if (script_path) {
         rc = run_script(vt, pty, rows, cols, script_path, show_rows,
-                        n_show, show_cells, quiet);
+                        n_show, show_cells, show_styles, quiet);
     }
 
     /* Final render if no script or script didn't render */
     if (!script_path || rc == 0) {
         if (!quiet || n_show == 0) {
             render_grid(vt, rows, cols, show_rows, n_show, show_cells,
-                        quiet);
+                        show_styles, quiet);
         }
     }
 
