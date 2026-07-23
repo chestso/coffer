@@ -111,12 +111,16 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
                 &vt->grid->row_flags[top + lines],
                 (size_t)move_count);
     }
-    /* Clear the new bottom rows. */
+    /* Clear the new bottom rows with DEFAULT background (not BCE).
+     * Scroll-induced erasure should not inherit the current pen's
+     * background colour — that causes wrapped lines with active
+     * background to bleed into the newly exposed row. Only explicit
+     * erase commands (EL/ED) should use BCE. */
     int clear_start = bot - lines + 1;
-    for (int i = 0; i < lines; ++i)
-        erase_cells(vt,
-                    &vt->grid->cells[(size_t)(clear_start + i) * vt->cols],
-                    vt->cols);
+    for (int i = 0; i < lines; ++i) {
+        CfrCell *row_cells = &vt->grid->cells[(size_t)(clear_start + i) * vt->cols];
+        memset(row_cells, 0, (size_t)vt->cols * sizeof(CfrCell));
+    }
     memset(&vt->grid->row_flags[clear_start], 0, (size_t)lines);
 
     cfr_damage_all(vt);
