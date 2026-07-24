@@ -161,6 +161,24 @@ void cfr_scroll_down(CfrTerm *vt, int lines)
 
 static void linefeed(CfrTerm *vt)
 {
+    /* LF breaks wrap continuation chain. When content wraps across multiple
+     * rows (e.g., 200 'm's wrapping across 3+ rows), each row has WRAPLINE
+     * set to indicate it continues on the next row. An explicit LF from the
+     * application (e.g., shell printing CR LF before prompt) should break
+     * this entire chain so reflow doesn't join wrapped content with prompt.
+     *
+     * Walk backwards from current row, clearing all WRAPLINE flags until
+     * we find a row without WRAPLINE (start of the wrapped content) or
+     * reach the top of the screen.
+     */
+    if (vt->cursor.row > 0 && vt->cursor.row <= vt->rows) {
+        int r = vt->cursor.row - 1;
+        while (r >= 0 && (vt->grid->row_flags[r] & CFR_CELL_WRAPLINE)) {
+            vt->grid->row_flags[r] &= ~(uint8_t)CFR_CELL_WRAPLINE;
+            r--;
+        }
+    }
+
     if (vt->cursor.row == vt->scroll_bottom) {
         cfr_scroll_up(vt, 1);
     } else if (vt->cursor.row < vt->rows - 1) {
@@ -170,6 +188,17 @@ static void linefeed(CfrTerm *vt)
 
 static void carriage_return(CfrTerm *vt)
 {
+    /* CR breaks wrap continuation chain, similar to LF. When content wraps
+     * across multiple rows, clearing WRAPLINE flags ensures reflow doesn't
+     * incorrectly join the wrapped content with subsequent content that
+     * starts after a CR (e.g., shell prompt after printf without newline). */
+    if (vt->cursor.row > 0 && vt->cursor.row <= vt->rows) {
+        int r = vt->cursor.row - 1;
+        while (r >= 0 && (vt->grid->row_flags[r] & CFR_CELL_WRAPLINE)) {
+            vt->grid->row_flags[r] &= ~(uint8_t)CFR_CELL_WRAPLINE;
+            r--;
+        }
+    }
     vt->cursor.col = 0;
     vt->cursor.pending_wrap = false;
 }
