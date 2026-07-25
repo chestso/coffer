@@ -237,20 +237,31 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
     if (cursor_line < 0)
         cursor_line = (int32_t)c.lines_count - 1;
 
-    /* Trim trailing empty logical lines that don't host the cursor.
-     * The original grid often has uninitialized rows below content;
-     * propagating them through reflow would push real content into
-     * scrollback unnecessarily. */
+    /* Trim trailing blank logical lines that don't host the cursor.
+     * The original grid often has blank rows (spaces from \e[2J or
+     * uninitialized cells) below content; propagating them through
+     * reflow would push real content into scrollback unnecessarily. */
     while (c.lines_count > 0) {
         uint32_t end = c.line_ends[c.lines_count - 1];
         uint32_t start = (c.lines_count > 1)
                              ? c.line_ends[c.lines_count - 2]
                              : 0u;
-        if (start != end)
+        /* Check if the line has any non-blank content. A blank cell is
+         * one whose codepoint is space (0x20) or NUL (0x00). */
+        bool has_content = false;
+        for (uint32_t k = start; k < end; ++k) {
+            uint32_t cp = c.cells[k].cell.cp;
+            if (cp != 0u && cp != 0x20u) {
+                has_content = true;
+                break;
+            }
+        }
+        if (has_content)
             break;
         if (cursor_line == (int32_t)(c.lines_count - 1))
             break;
         c.lines_count--;
+        c.cells_count = start;
     }
 
     /* ---------- Phase 2: rewrap ---------- */
