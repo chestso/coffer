@@ -117,7 +117,7 @@ static void print_help(void)
     printf("\nScript file commands (via --script):\n");
     printf("  wait SECONDS              Drain PTY for N seconds\n");
     printf("  send TEXT                 Send text to PTY input (child's stdin).\n");
-    printf("                            Escapes: \\n=CR \\r=CR \\e=ESC \\t=TAB \\\\=backslash.\n");
+    printf("                            Escapes: \\n=LF \\r=CR \\e=ESC \\t=TAB \\\\=backslash.\n");
     printf("                            Text is written verbatim; the shell must execute it.\n");
     printf("                            Tip: append \\n to execute a shell command, e.g.\n");
     printf("                              send printf '\\\\033[?12l'\\n\n");
@@ -888,7 +888,7 @@ static void expand_escapes(char *s)
     char *src = s, *dst = s;
     while (*src) {
         if (src[0] == '\\' && src[1] == 'n') {
-            *dst++ = '\r';
+            *dst++ = '\n';
             src += 2;
         } else if (src[0] == '\\' && src[1] == 'r') {
             *dst++ = '\r';

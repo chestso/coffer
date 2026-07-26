@@ -57,16 +57,16 @@ cfr-debug [options] [-- command args...]
 
 The `-f`/`--script FILE` option reads a script with one command per line:
 
-| Command                    | Description                                                |
-| -------------------------- | ---------------------------------------------------------- |
-| `wait SECONDS`             | Drain PTY for N seconds (accepts decimals)                 |
-| `send TEXT`                | Send text to PTY input (child's stdin). `\n`=CR, `\r`=CR, `\e`=ESC, `\t`=TAB |
-| `raw HEX [HEX ...]`        | Send literal bytes to PTY input (e.g. `raw ff fc 01` for IAC WONT ECHO) |
-| `assert-contains TEXT`     | Fail (exit 1) if rendered grid does not contain TEXT       |
-| `assert-not-contains TEXT` | Fail (exit 1) if rendered grid contains TEXT               |
-| `render`                   | Dump current grid to stdout                                |
-| `cursor`                   | Dump cursor state (row, col, visible, blink)               |
-| `# comment`                | Skipped                                                    |
+| Command                    | Description                                                                  |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| `wait SECONDS`             | Drain PTY for N seconds (accepts decimals)                                   |
+| `send TEXT`                | Send text to PTY input (child's stdin). `\n`=LF, `\r`=CR, `\e`=ESC, `\t`=TAB |
+| `raw HEX [HEX ...]`        | Send literal bytes to PTY input (e.g. `raw ff fc 01` for IAC WONT ECHO)      |
+| `assert-contains TEXT`     | Fail (exit 1) if rendered grid does not contain TEXT                         |
+| `assert-not-contains TEXT` | Fail (exit 1) if rendered grid contains TEXT                                 |
+| `render`                   | Dump current grid to stdout                                                  |
+| `cursor`                   | Dump cursor state (row, col, visible, blink)                                 |
+| `# comment`                | Skipped                                                                      |
 
 If no `-f`/`--script` is given, cfr-debug waits `-w`/`--wait` seconds, then renders the
 grid once and exits.
