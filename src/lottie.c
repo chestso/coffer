@@ -924,11 +924,21 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
             frame_fr = lt_json_double(lv, lvlen);
     }
 
-    /* Compute aspect-correct rasterization size from constraints */
+    /* Compute aspect-correct rasterization size from constraints.
+     * Use logical cell sizes (physical / content_scale) because px_w/px_h
+     * are intended to be logical/unscaled pixels. */
+    float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
+    int logical_cell_w = (int)((double)vt->cell_w_px / cscale + 0.5);
+    int logical_cell_h = (int)((double)vt->cell_h_px / cscale + 0.5);
+    if (logical_cell_w < 1)
+        logical_cell_w = 1;
+    if (logical_cell_h < 1)
+        logical_cell_h = 1;
+
     double scale = lt_compute_scale(design_w, design_h,
                                     p_width, p_height,
                                     p_cols, p_rows,
-                                    vt->cell_w_px, vt->cell_h_px,
+                                    logical_cell_w, logical_cell_h,
                                     fit, explicit_scale);
     int px_w = (int)((double)design_w * scale + 0.5);
     int px_h = (int)((double)design_h * scale + 0.5);
@@ -946,7 +956,6 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     /* Placement cells derived from rasterization size / cell px.
      * px_w/px_h are in unscaled pixels; cell_w_px/cell_h_px include
      * content_scale, so we scale the rasterization size to match. */
-    float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
     int scaled_px_w = (int)((double)px_w * cscale + 0.5);
     int scaled_px_h = (int)((double)px_h * cscale + 0.5);
     int pcols = (scaled_px_w + vt->cell_w_px - 1) / vt->cell_w_px;
