@@ -534,6 +534,23 @@ int cfr_lottie_active_count(CfrTerm *vt);
  * at build time — APC sequences are accepted but produce blank frames. */
 bool cfr_have_lottie(void);
 
+/* --- UTF-8 display width ------------------------------------------------*/
+
+/* Compute the display width (terminal columns) of a UTF-8 string.
+ * Returns the number of cells the string would occupy: 1 for ASCII and
+ * Narrow codepoints, 2 for East Asian Wide (CJK, emoji), 0 for zero-width
+ * codepoints (combining marks, variation selectors, ZWJ, etc.).
+ *
+ * This is a per-codepoint width calculation and does NOT handle grapheme
+ * clusters (emoji ZWJ sequences, regional indicator pairs). For cluster-
+ * aware width, decode to codepoints and use cfr_cluster_width().
+ *
+ * @param utf8  UTF-8 string (need not be NUL-terminated)
+ * @param len   Length in bytes
+ * @return Display width in terminal cells, or -1 on invalid UTF-8.
+ */
+int cfr_utf8_display_width(const char *utf8, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

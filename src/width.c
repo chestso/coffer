@@ -609,3 +609,58 @@ bool cfr_grapheme_break_before(uint32_t prev, uint32_t cur, void *state_in)
     /* GB999: any ÷ any. */
     return true;
 }
+
+/* --- Public UTF-8 display width ---------------------------------------- */
+
+#include <stddef.h>
+
+int cfr_utf8_display_width(const char *utf8, size_t len)
+{
+    if (!utf8 || len == 0)
+        return 0;
+
+    int width = 0;
+    const uint8_t *s = (const uint8_t *)utf8;
+    const uint8_t *end = s + len;
+
+    while (s < end && *s) {
+        uint32_t cp;
+        int char_len;
+
+        if (s[0] < 0x80) {
+            cp = s[0];
+            char_len = 1;
+        } else if ((s[0] & 0xE0) == 0xC0) {
+            cp = s[0] & 0x1F;
+            char_len = 2;
+        } else if ((s[0] & 0xF0) == 0xE0) {
+            cp = s[0] & 0x0F;
+            char_len = 3;
+        } else if ((s[0] & 0xF8) == 0xF0) {
+            cp = s[0] & 0x07;
+            char_len = 4;
+        } else {
+            return -1; /* invalid UTF-8 lead byte */
+        }
+
+        if (s + char_len > end)
+            return -1; /* truncated sequence */
+
+        for (int i = 1; i < char_len; i++) {
+            if ((s[i] & 0xC0) != 0x80)
+                return -1; /* invalid continuation */
+            cp = (cp << 6) | (s[i] & 0x3F);
+        }
+
+        /* cfr_codepoint_width needs a CfrTerm for ambiguous-wide support,
+         * but the current implementation ignores the vt pointer (see the
+         * TODO in cfr_codepoint_width). Pass NULL — the result matches. */
+        int w = cfr_codepoint_width(NULL, cp);
+        if (w < 0)
+            w = 0;
+        width += w;
+        s += char_len;
+    }
+
+    return width;
+}
