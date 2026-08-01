@@ -254,16 +254,14 @@ void cfr_send_text(CfrTerm *vt, const char *utf8, size_t len, CfrMods mods)
         return;
     }
 
-    /* Alt-prefix: emit ESC, then the bytes. Standard xterm meta-sends-esc. */
-    if (mods & CFR_MOD_ALT)
-        cfr_emit_bytes(vt, (const uint8_t *)"\x1b", 1);
-
     /* Ctrl+<key>: transform single-byte ASCII to its control code so the
      * PTY's line discipline produces SIGINT for Ctrl+C, NUL for Ctrl+Space
-     * etc. Multi-byte input is passed through unchanged. */
+     * etc. Multi-byte input is passed through unchanged. For keys without
+     * a traditional Ctrl mapping, emit CSI-u to preserve the modifier state. */
     if ((mods & CFR_MOD_CTRL) && len == 1) {
         uint8_t b = (uint8_t)utf8[0];
         uint8_t out = b;
+        bool mapped = true;
         if (b == ' ' || b == '@')
             out = 0x00;
         else if (b == '?')
@@ -274,9 +272,30 @@ void cfr_send_text(CfrTerm *vt, const char *utf8, size_t len, CfrMods mods)
             out = (uint8_t)(b - 0x60);
         else if (b >= '[' && b <= '_')
             out = (uint8_t)(b - 0x40);
-        cfr_emit_bytes(vt, &out, 1);
+        else
+            mapped = false;
+
+        if (mapped) {
+            /* Traditional Ctrl mapping exists - emit Alt prefix first if Alt is held */
+            if (mods & CFR_MOD_ALT)
+                cfr_emit_bytes(vt, (const uint8_t *)"\x1b", 1);
+            cfr_emit_bytes(vt, &out, 1);
+            return;
+        }
+
+        /* No traditional Ctrl mapping - emit CSI-u to preserve modifiers.
+         * The Alt modifier is included in the CSI-u sequence, so we don't
+         * emit a separate ESC prefix. This matches the kitty protocol behavior. */
+        uint32_t cp = (b >= 'A' && b <= 'Z') ? (uint32_t)(b + 0x20) : (uint32_t)b;
+        emit_csi_u(vt, cp, mods);
         return;
     }
+
+    /* Alt-prefix: emit ESC, then the bytes. Standard xterm meta-sends-esc.
+     * Only emit this for non-Ctrl combinations, since Ctrl combos are
+     * handled above. */
+    if (mods & CFR_MOD_ALT)
+        cfr_emit_bytes(vt, (const uint8_t *)"\x1b", 1);
 
     cfr_emit_bytes(vt, (const uint8_t *)utf8, len);
 }
