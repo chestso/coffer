@@ -501,6 +501,36 @@ static void test_vs16_widens_ambiguous(void)
     cfr_free(vt);
 }
 
+static void test_ambiguous_wide(void)
+{
+    /* U+00A1 INVERTED EXCLAMATION MARK is an East Asian Ambiguous codepoint.
+     * With ambiguous_wide off (default): width 1.
+     * With ambiguous_wide on: width 2 + continuation cell. */
+    CfrTerm *vt = make_term(24, 80);
+    cfr_set_ambiguous_wide(vt, true);
+    feed(vt, "\xC2\xA1"
+             "x"); /* ¡ + x */
+    const CfrCell *check = cfr_get_cell(vt, 0, 0);
+    ASSERT_EQ(check->cp, 0x00A1u);
+    ASSERT_EQ(check->width, 2);
+    const CfrCell *cont = cfr_get_cell(vt, 0, 1);
+    ASSERT_EQ(cont->width, 0);
+    const CfrCell *xc = cfr_get_cell(vt, 0, 2);
+    ASSERT_EQ(xc->cp, (uint32_t)'x');
+    cfr_free(vt);
+
+    /* Default: ambiguous chars are width 1. */
+    vt = make_term(24, 80);
+    feed(vt, "\xC2\xA1"
+             "x");
+    const CfrCell *narrow = cfr_get_cell(vt, 0, 0);
+    ASSERT_EQ(narrow->cp, 0x00A1u);
+    ASSERT_EQ(narrow->width, 1);
+    const CfrCell *next = cfr_get_cell(vt, 0, 1);
+    ASSERT_EQ(next->cp, (uint32_t)'x');
+    cfr_free(vt);
+}
+
 static void test_combining_mark(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -1603,6 +1633,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_irm_insert_char);
     RUN_TEST(test_irm_off_restores_replace);
     RUN_TEST(test_irm_crush_pattern);
+    RUN_TEST(test_ambiguous_wide);
     RUN_TEST(test_irm_at_right_margin);
     TEST_SUMMARY();
 }

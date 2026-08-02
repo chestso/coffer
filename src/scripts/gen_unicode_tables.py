@@ -3,17 +3,17 @@
 Regenerate coffer's UAX #11 (East Asian Width) and UAX #29 (Grapheme
 Cluster Boundary) interval tables from the Unicode Character Database.
 
-Inputs (download from https://www.unicode.org/Public/UCD/latest/ucd/):
-    EastAsianWidth.txt
-    auxiliary/GraphemeBreakProperty.txt
-    emoji/emoji-data.txt
-    DerivedCoreProperties.txt   (for Default_Ignorable_Code_Point)
+Downloads the required UCD files from https://www.unicode.org/Public/UCD/latest/ucd/
+into a temporary directory, parses them, and emits C range tables to stdout.
 
 Output:
-    src/coffer/unicode_tables.c — replaces the hand-coded WIDE / ZERO
+    unicode_tables.c — replaces the hand-coded WIDE / ZERO / AMBIGUOUS
     interval lists currently embedded in width.c.
 
 Usage:
+    python3 gen_unicode_tables.py > unicode_tables.c
+
+    # To use a local UCD directory instead of downloading:
     python3 gen_unicode_tables.py /path/to/UCD/dir > unicode_tables.c
 
 The script intentionally has no third-party dependencies. Rerun when the
@@ -24,10 +24,32 @@ from __future__ import annotations
 import os
 import re
 import sys
+import tempfile
+import urllib.request
 from collections import defaultdict
 from typing import Iterable
 
 CP_RANGE = re.compile(r"^([0-9A-Fa-f]+)(?:\.\.([0-9A-Fa-f]+))?\s*;\s*([^#\s]+)")
+
+UCD_BASE = "https://www.unicode.org/Public/UCD/latest/ucd/"
+
+UCD_FILES = [
+    "EastAsianWidth.txt",
+    "auxiliary/GraphemeBreakProperty.txt",
+    "emoji/emoji-data.txt",
+    "DerivedCoreProperties.txt",
+]
+
+
+def download_ucd(dest: str) -> str:
+    """Download UCD files into dest, return dest."""
+    for relpath in UCD_FILES:
+        url = UCD_BASE + relpath
+        local = os.path.join(dest, relpath)
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        print(f"Downloading {url} ...", file=sys.stderr)
+        urllib.request.urlretrieve(url, local)
+    return dest
 
 
 def parse_props(path: str) -> dict[str, list[tuple[int, int]]]:
@@ -69,10 +91,18 @@ def emit_table(name: str, ranges: list[tuple[int, int]]) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+    if len(argv) == 2:
+        ucd = argv[1]
+        if not os.path.isfile(os.path.join(ucd, "EastAsianWidth.txt")):
+            print(f"Error: {ucd} does not contain EastAsianWidth.txt", file=sys.stderr)
+            return 2
+    elif len(argv) == 1:
+        ucd = tempfile.mkdtemp(prefix="coffer-ucd-")
+        download_ucd(ucd)
+    else:
         print(__doc__, file=sys.stderr)
         return 2
-    ucd = argv[1]
+
     eaw = parse_props(os.path.join(ucd, "EastAsianWidth.txt"))
     gbp = parse_props(os.path.join(ucd, "auxiliary", "GraphemeBreakProperty.txt"))
     emo = parse_props(os.path.join(ucd, "emoji", "emoji-data.txt"))

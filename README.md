@@ -1,8 +1,8 @@
 # coffer
 
 A standalone virtual terminal engine in C — parser, grid, scrollback, reflow,
-charsets, kitty keyboard protocol, sixel and Lottie graphics — with no
-external dependencies. Extracted
+charsets, kitty keyboard protocol, sixel and Lottie graphics, ambiguous-width
+rendering — with no external dependencies. Extracted
 from [portty](https://github.com/chestso/portty),
 where it replaces libvterm.
 
@@ -20,7 +20,9 @@ compositing. See the portty README for renderer-side details.
   cluster widths computed at insertion time and stored on each cell.
   ZWJ sequences, regional indicators, skin-tone modifiers, and VS16
   emoji presentation all carry the right cell width without
-  per-renderer peek-ahead.
+  per-renderer peek-ahead. An optional `ambiguous_wide` flag renders
+  East Asian Ambiguous codepoints (Greek, Cyrillic, box-drawing, etc.)
+  as 2 cells for CJK-locale compatibility.
 - **Grapheme arena** — full clusters are interned; cells reference them
   by id, so there is no hardcoded codepoint cap (libvterm caps at 6).
 - **Scrollback** — paged ring buffer; default 1000 lines, configurable.
@@ -32,7 +34,8 @@ compositing. See the portty README for renderer-side details.
   capability is advertised via DA1 (`4`), DECSET 80/1070/8452, and
   XTSMGRAPHICS. The host declares cell pixel size with
   `cfr_set_cell_pixels()` and fetches images to draw with
-  `cfr_get_sixels()`.
+  `cfr_get_sixels()`. `cfr_set_content_scale()` corrects sixel cell
+  occupancy on HiDPI displays.
 - **Lottie graphics** — APC sequences (`ESC _ … ST`) with base64-encoded JSON
   payloads load, place, and control Lottie animations on the grid. Eight
   commands (load, load-chunk, place, play, pause, stop, seek, delete) manage
@@ -40,7 +43,10 @@ compositing. See the portty README for renderer-side details.
   scroll with the text, enter scrollback, and are culled on clear — the same
   ownership model as sixel. The host fetches animations via
   `cfr_get_lotties()` / `cfr_get_lottie_placements()` and advances frames
-  with `cfr_lottie_tick()`. Rasterization is handled by ThorVG (optional
+  with `cfr_lottie_tick()`. `cfr_lottie_active_count()` provides a
+  zero-allocation count for adaptive timer scheduling, and
+  `cfr_have_lottie()` checks build-time ThorVG availability.
+  Rasterization is handled by ThorVG (optional
   dependency, auto-detected at configure time); when ThorVG is absent the APC
   sequences are still accepted but RGBA buffers are zeroed. A Python TUI
   player ([plotty](https://github.com/chestso/portty/tree/master/contrib/plotty))
@@ -59,6 +65,12 @@ compositing. See the portty README for renderer-side details.
   payload is processed identically regardless of carrier. This mirrors how
   iTerm2's image protocol works on Windows (OSC 1337) — encode image data in
   OSC instead of APC.
+- **Ambiguous-width rendering** — `CfrConfig.ambiguous_wide` (or
+  `cfr_set_ambiguous_wide()` at runtime) treats UAX #11 East Asian
+  Ambiguous codepoints as 2 cells wide. The full Ambiguous range table
+  is generated from official UCD data via
+  `src/scripts/gen_unicode_tables.py`. Default is off; existing
+  behavior is unchanged.
 - **Damage tracking** — the changed region is accumulated as input is
   parsed; the consumer calls `cfr_damage_flush()` at a controlled time
   (typically once per frame, before rendering) to receive it via the
@@ -73,9 +85,22 @@ compositing. See the portty README for renderer-side details.
   the URI via `cfr_cell_get_hyperlink()`.
 - **Zero external dependencies** — libc only (ThorVG is optional and
   auto-detected).
+- **Diagnostic logging** — the engine emits warnings for unimplemented
+  or malformed sequences via an optional `log` callback at three levels
+  (`CFR_LOG_DEBUG`, `CFR_LOG_INFO`, `CFR_LOG_WARN`). Pass `NULL` to
+  silence.
+- **UTF-8 display width** — `cfr_utf8_display_width()` computes the
+  cell width of a UTF-8 string without a `CfrTerm*`, useful for
+  pre-measuring output before writing to the terminal.
 
 For the project status — what is byte-identical to libvterm, accepted
 divergences, and the deferred items — see [`FOLLOWUPS.md`](FOLLOWUPS.md).
+Design notes for specific features are in [`docs/`](docs/):
+
+- [`docs/lottie-spec.md`](docs/lottie-spec.md) — Lottie APC wire format,
+  command vocabulary, state machine, and memory model
+- [`docs/ambiguous-width-design.md`](docs/ambiguous-width-design.md) —
+  ambiguous-width rendering design
 
 ## Memory model
 
@@ -142,6 +167,31 @@ make install
 ```
 
 On Windows, use MSYS2 UCRT64 with MinGW-w64 GCC.
+
+### Test suite
+
+`make check` runs a custom test framework (no external test library). Tests
+live in `tests/` and link against `libcoffer.a`. Individual tests can be run
+selectively:
+
+```sh
+make check TESTS='test_cfr_parser test_cfr_keys test_cfr_sixel'
+```
+
+| Binary               | Scope                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `test_cfr_parser`    | CSI/OSC/ESC/DCS dispatch, cursor, scroll, charsets, DEC modes, DECSC/DECRC, tabs (TBC), OSC 8 hyperlinks, ambiguous-width |
+| `test_cfr_keys`      | Kitty keyboard protocol (flags 0x1, 0x8), push/pop/set/query                                                              |
+| `test_cfr_pty`       | Integration: spawns child on real PTY, pipes output through engine                                                        |
+| `test_cfr_sixel`     | Sixel decode, color registers, RLE, placement, scrolling                                                                  |
+| `test_cfr_lottie`    | Lottie APC command parsing (load/place/play/pause/stop/seek/delete)                                                       |
+| `test_cfr_altscreen` | Altscreen enter/exit, cursor save/restore, content isolation                                                              |
+| `test_cfr_sgr`       | SGR styling: bold, italic, underline variants, truecolor, indexed                                                         |
+
+`test_cfr_pty` is skipped on CI (GitHub runners lack a real PTY). All other
+tests run on every push via GitHub Actions. Tags matching `v*` trigger a
+release job that builds a dist tarball and publishes it via
+`softprops/action-gh-release`.
 
 ### Prerequisites
 
@@ -234,6 +284,48 @@ make format       # clang-format on src/, include/, tests/; prettier on *.md
 make bear         # produce compile_commands.json for clangd
 make distcheck    # build, test, and verify the dist tarball is self-contained
 ```
+
+### Regenerating Unicode tables
+
+The width and grapheme-break tables in `src/width.c` are derived from the
+Unicode Character Database. To regenerate them when upgrading the target
+Unicode version, use the generator script:
+
+```sh
+python3 src/scripts/gen_unicode_tables.py > /tmp/unicode_tables.c
+```
+
+The script downloads the required UCD files (EastAsianWidth.txt,
+GraphemeBreakProperty.txt, emoji-data.txt, DerivedCoreProperties.txt)
+automatically from `www.unicode.org` into a temporary directory. To use a
+local UCD directory instead:
+
+```sh
+python3 src/scripts/gen_unicode_tables.py /path/to/UCD > /tmp/unicode_tables.c
+```
+
+The generated file is not committed wholesale; the relevant tables
+(`CFR_WIDE`, `CFR_AMBIGUOUS`, `CFR_ZERO`) are adapted into `width.c` with
+the project's formatting (bare names, spaces inside braces, `ARRAY_LEN()`
+macro instead of `_LEN` defines).
+
+## cfr-debug
+
+A headless PTY inspector tool (`contrib/cfr-debug/`) that spawns a child
+process on a real PTY, pipes its output through the coffer engine, and
+renders the resulting grid as text. Useful for testing how coffer
+interprets real-world terminal output without a renderer.
+
+Features include script-driven testing (`-f`/`--script FILE` with `wait`,
+`send`, `raw`, `assert-contains`, `assert-not-contains`, `render`, `cursor`
+commands), raw PTY capture (`-o`/`--output FILE`), cell data inspection
+(`-d`/`--cell-data`), specific row dumping (`-s`/`--show-row`), and a
+machine-readable flag listing (`--help-spec`). A man page (`cfr-debug.1`)
+is installed with `make install`. Cross-platform: ConPTY on Windows,
+`forkpty` on POSIX.
+
+See [`contrib/cfr-debug/README.md`](contrib/cfr-debug/README.md) for full
+usage details.
 
 ## Linking
 
