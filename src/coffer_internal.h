@@ -130,13 +130,16 @@ typedef struct CfrPage
     CfrCell *cells;     /* row_capacity * cols */
     uint8_t *row_flags; /* per-row flags (currently: WRAPLINE on last cell of row) */
 
+    /* `cells` and `row_flags` are a trailing flexible array off the
+     * `CfrPage` header, allocated in one block by cfr_page_new and
+     * freed with the header in cfr_page_free. The tables below are
+     * kept as separate sub-allocations because they grow across the
+     * page's lifetime; folding them into the trailing region would
+     * force over-allocation up-front or relocate the whole page on
+     * growth, invalidating every holding `CfrCell *`. */
     CfrStyleTable styles;
     CfrGraphemeArena graphemes;
     CfrHyperlinkTable hyperlinks;
-
-    /* No flexible array yet — initial scaffold uses sub-allocations.
-     * The plan calls for a single backing buffer; we'll consolidate
-     * once the grid is implemented. */
 } CfrPage;
 
 /* ------------------------------------------------------------------ */
