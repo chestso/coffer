@@ -1138,8 +1138,8 @@ static void test_sgr_indexed(void)
     const CfrCell *y = cfr_get_cell(vt, 0, 0);
     const CfrStyle *s = cfr_cell_style(vt, y);
     ASSERT_NOT_NULL(s);
-    /* CharmTone red (Coral) is 0xff577d per palette.c. */
-    ASSERT_EQ(s->fg_rgb, 0xFF577Du);
+    /* Dracula red (SGR 31) is 0xFF5555 per palette.c. */
+    ASSERT_EQ(s->fg_rgb, 0xFF5555u);
     cfr_free(vt);
 }
 
@@ -1210,7 +1210,7 @@ static void test_reflow_preserves_styles(void)
     const CfrStyle *bs = cfr_cell_style(vt, b);
     ASSERT_NOT_NULL(as);
     ASSERT_NOT_NULL(bs);
-    ASSERT_EQ(as->fg_rgb, 0xFF577Du); /* red */
+    ASSERT_EQ(as->fg_rgb, 0xFF5555u); /* red */
     ASSERT_TRUE((bs->color_flags & CFR_COLOR_DEFAULT_FG) != 0);
     cfr_free(vt);
 }

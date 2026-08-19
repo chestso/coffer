@@ -2,37 +2,38 @@
  * coffer — 256-color palette resolution.
  *
  * Layout:
- *   0-15:   ANSI base colors (Charmbracelet CharmTone, per charm.land)
+ *   0-15:   ANSI base colors (Dracula, per draculatheme.com/spec)
  *   16-231: 6×6×6 cube
  *   232-255: greyscale ramp
  *
- * The 0-15 colors are the canonical CharmTone hexes
- * (github.com/charmbracelet/x/exp/charmtone), named in the comments below.
- * Bright white (15) stays #fffdf5 to match charm.land's body text and the
- * default foreground, rather than CharmTone's Butter (#fffaf1).
+ * The 0-15 colors are the canonical Dracula ANSI palette from the
+ * official specification at draculatheme.com/spec.
  *
- * Homage to Charmbracelet (charm.land) — thanks for the gorgeous palette. 🌸
+ * The default terminal background is pitch-black (#000000), separate
+ * from palette index 0 (AnsiBlack #21222C). The default foreground is
+ * Dracula's foreground (#F8F8F2), which coincides with AnsiWhite
+ * (palette index 7). Neither is user-configurable.
  */
 
 #include "coffer_internal.h"
 
 static const uint8_t base16[16][3] = {
-    { 0x20, 0x1f, 0x26 }, /* 0  black          Pepper  */
-    { 0xff, 0x57, 0x7d }, /* 1  red            Coral   */
-    { 0x12, 0xc7, 0x8f }, /* 2  green          Guac    */
-    { 0xf5, 0xef, 0x34 }, /* 3  yellow         Mustard */
-    { 0x6b, 0x50, 0xff }, /* 4  blue           Charple */
-    { 0xff, 0x60, 0xff }, /* 5  magenta        Dolly   */
-    { 0x0a, 0xdc, 0xd9 }, /* 6  cyan           Turtle  */
-    { 0xbf, 0xbc, 0xc8 }, /* 7  white          Smoke   */
-    { 0x60, 0x5f, 0x6b }, /* 8  bright black   Oyster  */
-    { 0xff, 0x7f, 0x90 }, /* 9  bright red     Salmon  */
-    { 0x00, 0xff, 0xb2 }, /* 10 bright green   Julep   */
-    { 0xe8, 0xfe, 0x96 }, /* 11 bright yellow  Zest    */
-    { 0x8b, 0x75, 0xff }, /* 12 bright blue    Hazy    */
-    { 0xff, 0x84, 0xff }, /* 13 bright magenta Blush   */
-    { 0x68, 0xff, 0xd6 }, /* 14 bright cyan    Bok     */
-    { 0xff, 0xfd, 0xf5 }, /* 15 bright white   (cream) */
+    { 0x21, 0x22, 0x2c }, /* 0  black          */
+    { 0xff, 0x55, 0x55 }, /* 1  red            */
+    { 0x50, 0xfa, 0x7b }, /* 2  green          */
+    { 0xf1, 0xfa, 0x8c }, /* 3  yellow         */
+    { 0xbd, 0x93, 0xf9 }, /* 4  blue           */
+    { 0xff, 0x79, 0xc6 }, /* 5  magenta        */
+    { 0x8b, 0xe9, 0xfd }, /* 6  cyan           */
+    { 0xf8, 0xf8, 0xf2 }, /* 7  white          */
+    { 0x62, 0x72, 0xa4 }, /* 8  bright black   */
+    { 0xff, 0x6e, 0x6e }, /* 9  bright red     */
+    { 0x69, 0xff, 0x94 }, /* 10 bright green   */
+    { 0xff, 0xff, 0xa5 }, /* 11 bright yellow  */
+    { 0xd6, 0xac, 0xff }, /* 12 bright blue    */
+    { 0xff, 0x92, 0xdf }, /* 13 bright magenta */
+    { 0xa4, 0xff, 0xff }, /* 14 bright cyan    */
+    { 0xff, 0xff, 0xff }, /* 15 bright white   */
 };
 
 uint32_t cfr_palette_lookup(CfrTerm *vt, uint8_t idx)
@@ -54,4 +55,19 @@ uint32_t cfr_palette_lookup(CfrTerm *vt, uint8_t idx)
     /* 24-step grey: 8 + 10*(idx-232). */
     uint8_t v = (uint8_t)(8 + 10 * (idx - 232));
     return ((uint32_t)v << 16) | ((uint32_t)v << 8) | v;
+}
+
+uint32_t cfr_default_bg_rgb(void)
+{
+    return 0x000000u; /* pitch-black */
+}
+
+uint32_t cfr_default_fg_rgb(void)
+{
+    return 0xF8F8F2u; /* Dracula foreground */
+}
+
+uint32_t cfr_default_palette_rgb(uint8_t index)
+{
+    return cfr_palette_lookup(NULL, index);
 }

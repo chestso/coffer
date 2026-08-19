@@ -413,6 +413,22 @@ bool cfr_get_mode(const CfrTerm *vt, CfrMode mode);
 bool cfr_get_line_continuation(const CfrTerm *vt, int row);
 
 /* ------------------------------------------------------------------ */
+/* Palette and default colors                                          */
+/* ------------------------------------------------------------------ */
+
+/* Default terminal background color as 0x00RRGGBB.
+ * Pitch-black. Not user-configurable. */
+uint32_t cfr_default_bg_rgb(void);
+
+/* Default terminal foreground color as 0x00RRGGBB.
+ * Dracula foreground (#F8F8F2). Not user-configurable. */
+uint32_t cfr_default_fg_rgb(void);
+
+/* Lookup a color from the built-in 256-color palette (index 0–255).
+ * Returns 0x00RRGGBB. The palette is not user-configurable (hardcoded). */
+uint32_t cfr_default_palette_rgb(uint8_t index);
+
+/* ------------------------------------------------------------------ */
 /* Sixel graphics                                                      */
 /* ------------------------------------------------------------------ */
 

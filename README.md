@@ -371,7 +371,7 @@ The full API is in [`include/coffer/coffer.h`](include/coffer/coffer.h).
 
 ## Acknowledgments
 
-The default 16-color ANSI palette is [CharmTone](https://github.com/charmbracelet/x/tree/main/exp/charmtone) from [Charmbracelet](https://charm.land) — thanks for making the terminal a more colorful place. 🌸
+The default 16-color ANSI palette is [Dracula](https://draculatheme.com) (per the [official spec](https://draculatheme.com/spec)). The default terminal background is pitch-black (`#000000`), separate from the palette's AnsiBlack.
 
 ## License
 
