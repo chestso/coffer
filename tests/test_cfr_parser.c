@@ -600,6 +600,38 @@ static void test_zwj_family(void)
     cfr_free(vt);
 }
 
+static void test_zwj_does_not_overmerge(void)
+{
+    /* Regression: mutt fills blank lines with NBSP+SPACE+ZWJ triples.
+     * The old GB11 approximation (prev == ZWJ → no break) caused the
+     * NBSP after ZWJ to be absorbed into the cluster, making each
+     * triple consume only 1 cell instead of 2. This left old content
+     * on the row, producing visible artifacts when switching messages. */
+    CfrTerm *vt = make_term(1, 80);
+    /* NBSP U+00A0, SPACE U+0020, ZWJ U+200D, repeated 3 times, then 'Q' */
+    feed(vt, "\xC2\xA0\x20\xE2\x80\x8D"
+             "\xC2\xA0\x20\xE2\x80\x8D"
+             "\xC2\xA0\x20\xE2\x80\x8D"
+             "Q");
+    /* Each triple = 2 cells (NBSP=1, SPACE+ZWJ=1). 3 triples = 6 cells.
+     * Q lands at col 6. */
+    const CfrCell *c0 = cfr_get_cell(vt, 0, 0);
+    ASSERT_EQ(c0->cp, 0x00A0u);
+    const CfrCell *c1 = cfr_get_cell(vt, 0, 1);
+    ASSERT_EQ(c1->cp, 0x20u);
+    const CfrCell *c2 = cfr_get_cell(vt, 0, 2);
+    ASSERT_EQ(c2->cp, 0x00A0u);
+    const CfrCell *c3 = cfr_get_cell(vt, 0, 3);
+    ASSERT_EQ(c3->cp, 0x20u);
+    const CfrCell *c4 = cfr_get_cell(vt, 0, 4);
+    ASSERT_EQ(c4->cp, 0x00A0u);
+    const CfrCell *c5 = cfr_get_cell(vt, 0, 5);
+    ASSERT_EQ(c5->cp, 0x20u);
+    const CfrCell *q = cfr_get_cell(vt, 0, 6);
+    ASSERT_EQ(q->cp, (uint32_t)'Q');
+    cfr_free(vt);
+}
+
 static void test_skin_tone(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -1586,6 +1618,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_combining_mark);
     RUN_TEST(test_regional_indicator_pair);
     RUN_TEST(test_zwj_family);
+    RUN_TEST(test_zwj_does_not_overmerge);
     RUN_TEST(test_skin_tone);
     RUN_TEST(test_scrollback_push_read);
     RUN_TEST(test_scrollback_grapheme_reintern);
