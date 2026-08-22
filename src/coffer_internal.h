@@ -11,6 +11,7 @@
 #define COFFER_INTERNAL_H
 
 #include <coffer/coffer.h>
+#include "image_store.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -318,6 +319,11 @@ struct CfrTerm
      * row 0 — it advances by one each time a line scrolls off the top
      * into history, so an image stored with an absolute anchor line
      * tracks the text it sits on with no per-image bookkeeping. */
+    /* Shared image store — owns all image records (sixel, iTerm2, kitty).
+     * Lazily initialized alongside the sixel state (which owns the
+     * DCS decode canvas + palette). */
+    CfrImgStore *images;
+
     struct CfrSixelState *sixel;
     int cell_w_px; /* px per cell, set at creation */
     int cell_h_px;
@@ -446,6 +452,12 @@ uint32_t cfr_palette_lookup(CfrTerm *vt, uint8_t idx);
 
 /* Output emit (keys.c). */
 void cfr_emit_bytes(CfrTerm *vt, const uint8_t *bytes, size_t len);
+
+/* Image decoding (image_decode.c). Decodes PNG/JPEG/etc. to RGBA. */
+uint8_t *cfr_image_decode(const uint8_t *data, size_t len, int *w, int *h);
+
+/* OSC 1337 (iTerm2 inline images, osc_1337.c). */
+void cfr_osc_1337_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len);
 
 /* Altscreen (modes.c). */
 void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor);

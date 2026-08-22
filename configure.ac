@@ -121,6 +121,15 @@ AS_IF([test "x$HAVE_THORVG" = xyes], [
 AC_SUBST([THORVG_REQUIRES])
 AC_SUBST([THORVG_LIBS])
 
+# stb_image is a single-file header library used by image_decode.c for
+# PNG/JPEG decoding (iTerm2 inline images, kitty graphics). It lives in
+# third_party/stb/stb_image.h. Fetched by scripts/fetch-stb.sh if missing.
+AS_IF([test ! -f "$srcdir/third_party/stb/stb_image.h"],
+  [AC_MSG_NOTICE([stb_image.h not found, fetching via scripts/fetch-stb.sh])
+   AS_IF([sh "$srcdir/scripts/fetch-stb.sh" "$srcdir/third_party/stb"],
+     [AC_MSG_NOTICE([stb_image.h fetched successfully])],
+     [AC_MSG_ERROR([Failed to fetch stb_image.h. Run scripts/fetch-stb.sh manually or check network access.])])])
+
 AC_CONFIG_FILES([
     Makefile
     src/Makefile

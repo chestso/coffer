@@ -132,6 +132,9 @@ void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
         if (should_log_once(vt, CFR_LOGGED_OSC4))
             cfr_log(vt, CFR_LOG_WARN, "palette override (OSC 4) not implemented yet");
         break;
+    case 1337:
+        cfr_osc_1337_dispatch(vt, body, body_len);
+        break;
     case 104:
         if (should_log_once(vt, CFR_LOGGED_OSC104))
             cfr_log(vt, CFR_LOG_WARN, "palette reset (OSC 104) not implemented yet");

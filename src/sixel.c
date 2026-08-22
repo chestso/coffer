@@ -43,11 +43,7 @@ typedef struct CfrSixelState CfrSixelState;
 #define SX_BAND       6   /* pixels per sixel band */
 #define SX_INIT_W     512 /* initial decode canvas */
 #define SX_INIT_H     128
-#define SX_MAX_DIM    10000                  /* per-dimension clamp */
-#define SX_MAX_IMAGES 256                    /* live record cap */
-#define SX_LIVE_MAX   (128u * 1024u * 1024u) /* live pixel-byte budget */
-#define SX_SPARE_MAX  16                     /* retained free buffers */
-#define SX_RETAIN_MAX (32u * 1024u * 1024u)  /* retained free bytes */
+/* Storage budgets (IMG_MAX_DIM, IMG_LIVE_MAX, etc.) are in image_store.h. */
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -66,26 +62,7 @@ typedef enum
     SX_RASTER, /* after '"' */
 } SxSubState;
 
-/* One stored image. */
-typedef struct
-{
-    uint64_t id;
-    uint32_t version;
-    uint8_t layer; /* 0 = foreground */
-    long abs_line; /* absolute line index of the image's top row */
-    int col;       /* anchor column */
-    int w, h;      /* pixels */
-    int rows_tall; /* cells tall (cached for cull/clear) */
-    uint8_t *rgba; /* pixel buffer */
-    size_t cap;    /* allocated bytes of `rgba` */
-} SxRec;
-
-/* A retained free buffer. */
-typedef struct
-{
-    uint8_t *ptr;
-    size_t cap;
-} SxSpare;
+/* SxRec and SxSpare moved to image_store.h as CfrImg and ImgSpare. */
 
 struct CfrSixelState
 {
@@ -117,20 +94,10 @@ struct CfrSixelState
     bool active;  /* between begin and finish */
     bool dropped; /* image rejected (OOM / oversize) — finish is a no-op */
 
-    /* Store (tier 1). */
-    SxRec *recs;
-    int rec_count, rec_cap;
-    uint64_t next_id;
-    size_t live_bytes;
-
-    /* Query scratch — reused, grown, never freed between calls. */
-    CfrSixel *scratch;
-    int scratch_cap;
-
-    /* Pixel-buffer pool (tier 2). */
-    SxSpare spares[SX_SPARE_MAX];
-    int spare_count;
-    size_t retain_bytes;
+    /* Shared image store — owns all image records, buffer pool, and
+     * query scratch. Separated from the DCS decode state so that iTerm2
+     * and kitty graphics can share the same store. */
+    CfrImgStore *store;
 };
 
 /* VT340 default 16-color palette, RGB (DEC percentages → 0-255). Applies
@@ -145,84 +112,9 @@ static const SxColor sx_default_palette[16] = {
 };
 /* clang-format on */
 
-/* ------------------------------------------------------------------ */
-/* Pixel-buffer pool (tier 2)                                          */
-/* ------------------------------------------------------------------ */
-
-/* Best-fit pop a retained buffer with cap >= need, else malloc exactly. */
-static uint8_t *sx_buf_alloc(CfrTerm *vt, CfrSixelState *st, size_t need,
-                             size_t *out_cap)
-{
-    int best = -1;
-    for (int i = 0; i < st->spare_count; ++i) {
-        if (st->spares[i].cap >= need &&
-            (best < 0 || st->spares[i].cap < st->spares[best].cap))
-            best = i;
-    }
-    if (best >= 0) {
-        uint8_t *p = st->spares[best].ptr;
-        size_t cap = st->spares[best].cap;
-        st->retain_bytes -= cap;
-        st->spares[best] = st->spares[--st->spare_count];
-        *out_cap = cap;
-        return p;
-    }
-    uint8_t *p = cfr_alloc(vt, need);
-    *out_cap = p ? need : 0;
-    return p;
-}
-
-/* Retain a freed buffer for reuse, or free it if the pool is full. */
-static void sx_buf_release(CfrTerm *vt, CfrSixelState *st, uint8_t *ptr,
-                           size_t cap)
-{
-    if (!ptr)
-        return;
-    if (st->spare_count < SX_SPARE_MAX &&
-        st->retain_bytes + cap <= SX_RETAIN_MAX) {
-        st->spares[st->spare_count].ptr = ptr;
-        st->spares[st->spare_count].cap = cap;
-        st->spare_count++;
-        st->retain_bytes += cap;
-        return;
-    }
-    cfr_dealloc(vt, ptr);
-}
-
-/* ------------------------------------------------------------------ */
-/* Store (tier 1)                                                      */
-/* ------------------------------------------------------------------ */
-
-static void sx_rec_release(CfrTerm *vt, CfrSixelState *st, int idx)
-{
-    SxRec *r = &st->recs[idx];
-    st->live_bytes -= r->cap;
-    sx_buf_release(vt, st, r->rgba, r->cap);
-    st->recs[idx] = st->recs[--st->rec_count]; /* swap-remove */
-}
-
-/* Evict oldest (lowest abs_line) images until `incoming` more bytes fit. */
-static void sx_evict_to_budget(CfrTerm *vt, CfrSixelState *st, size_t incoming)
-{
-    while (st->rec_count > 0 && st->live_bytes + incoming > SX_LIVE_MAX) {
-        int m = 0;
-        for (int i = 1; i < st->rec_count; ++i)
-            if (st->recs[i].abs_line < st->recs[m].abs_line)
-                m = i;
-        sx_rec_release(vt, st, m);
-    }
-}
-
-/* Find an existing record at the same anchor + layer (for animation /
- * in-place frame replacement). Returns index or -1. */
-static int sx_find_at(CfrSixelState *st, long abs_line, int col, uint8_t layer)
-{
-    for (int i = 0; i < st->rec_count; ++i)
-        if (st->recs[i].abs_line == abs_line && st->recs[i].col == col &&
-            st->recs[i].layer == layer)
-            return i;
-    return -1;
-}
+/* Buffer pool, record lifecycle, eviction, and find_at moved to
+ * image_store.c (img_buf_alloc, img_buf_release, img_rec_release,
+ * img_evict_to_budget, cfr_img_find_at). */
 
 /* ------------------------------------------------------------------ */
 /* Decode canvas                                                       */
@@ -237,10 +129,10 @@ static bool sx_canvas_ensure(CfrTerm *vt, CfrSixelState *st, int need_x,
         nw *= 2;
     while (nh <= need_y)
         nh += SX_INIT_H;
-    if (nw > SX_MAX_DIM)
-        nw = SX_MAX_DIM;
-    if (nh > SX_MAX_DIM)
-        nh = SX_MAX_DIM;
+    if (nw > IMG_MAX_DIM)
+        nw = IMG_MAX_DIM;
+    if (nh > IMG_MAX_DIM)
+        nh = IMG_MAX_DIM;
     if (nw == st->canvas_w && nh == st->canvas_h)
         return need_x < st->canvas_w && need_y < st->canvas_h;
 
@@ -371,7 +263,7 @@ static void sx_finish_raster(CfrTerm *vt, CfrSixelState *st)
      * a canvas pre-allocation hint. */
     if (st->param_count >= 4) {
         int hw = st->params[2], hh = st->params[3];
-        if (hw > 0 && hw < SX_MAX_DIM && hh > 0 && hh < SX_MAX_DIM)
+        if (hw > 0 && hw < IMG_MAX_DIM && hh > 0 && hh < IMG_MAX_DIM)
             sx_canvas_ensure(vt, st, hw - 1, hh - 1);
     }
 }
@@ -388,7 +280,18 @@ static CfrSixelState *sx_state(CfrTerm *vt)
     if (!st)
         return NULL;
     memset(st, 0, sizeof(*st));
-    st->next_id = 1;
+    /* Adopt the shared store if it was already created by OSC 1337,
+     * otherwise create a new one. */
+    if (vt->images) {
+        st->store = vt->images;
+    } else {
+        st->store = cfr_img_store_new(vt);
+        if (!st->store) {
+            cfr_dealloc(vt, st);
+            return NULL;
+        }
+        vt->images = st->store;
+    }
     vt->sixel = st;
     return st;
 }
@@ -545,46 +448,8 @@ void cfr_sixel_put(CfrTerm *vt, const uint8_t *data, size_t len)
     }
 }
 
-/* Damage the visible rows an image at display row `top` spanning
- * `rows_tall` rows occupies, so the host redraws and re-queries. */
-static void sx_damage_image(CfrTerm *vt, int top, int rows_tall)
-{
-    int a = top < 0 ? 0 : top;
-    int b = top + rows_tall - 1;
-    if (b >= vt->rows)
-        b = vt->rows - 1;
-    for (int r = a; r <= b; ++r)
-        cfr_damage_row(vt, r);
-}
-
-/* Move the cursor below a placed image and scroll the grid as needed,
- * mirroring linefeed semantics so abs_top + scrollback stay consistent. */
-static void sx_advance_cursor(CfrTerm *vt, int rows_tall, int cols_wide)
-{
-    if (vt->modes[CFR_MODE_SIXEL_SCROLLING]) {
-        /* DECSDM on: draw in place, leave the cursor put (animation). */
-        return;
-    }
-    if (vt->modes[CFR_MODE_SIXEL_CURSOR_RIGHT]) {
-        /* Mode 8452: cursor to the upper-right of the graphic. */
-        int c = vt->cursor.col + cols_wide;
-        if (c > vt->cols - 1)
-            c = vt->cols - 1;
-        vt->cursor.col = c;
-        vt->cursor.pending_wrap = false;
-        return;
-    }
-    /* Default: drop to the line below the image, same starting column. */
-    int col = vt->cursor.col;
-    for (int i = 0; i < rows_tall; ++i) {
-        if (vt->cursor.row == vt->scroll_bottom)
-            cfr_scroll_up(vt, 1);
-        else if (vt->cursor.row < vt->rows - 1)
-            vt->cursor.row++;
-    }
-    vt->cursor.col = col;
-    vt->cursor.pending_wrap = false;
-}
+/* sx_damage_image and sx_advance_cursor moved to image_store.c
+ * (img_damage, img_advance_cursor). cfr_img_add handles both. */
 
 void cfr_sixel_finish(CfrTerm *vt)
 {
@@ -599,93 +464,27 @@ void cfr_sixel_finish(CfrTerm *vt)
     int h = st->max_y + 1;
     if (w <= 0 || h <= 0 || !st->canvas)
         return;
-    if (w > SX_MAX_DIM)
-        w = SX_MAX_DIM;
-    if (h > SX_MAX_DIM)
-        h = SX_MAX_DIM;
+    if (w > IMG_MAX_DIM)
+        w = IMG_MAX_DIM;
+    if (h > IMG_MAX_DIM)
+        h = IMG_MAX_DIM;
 
     size_t need = (size_t)w * (size_t)h * 4u;
-    if (need == 0 || need > SX_LIVE_MAX)
-        return; /* single image larger than the whole budget → drop */
+    if (need == 0 || need > IMG_LIVE_MAX)
+        return;
 
-    long abs_line = st->anchor_abs_line;
-    int col = st->anchor_col;
-    uint8_t layer = 0;
-
-    int cell_h = vt->cell_h_px;
-    int cell_w = vt->cell_w_px;
-    float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
-    int scaled_w = (int)(w * scale);
-    int scaled_h = (int)(h * scale);
-    int rows_tall = (scaled_h + cell_h - 1) / cell_h;
-    int cols_wide = (scaled_w + cell_w - 1) / cell_w;
-    if (rows_tall < 1)
-        rows_tall = 1;
-    if (cols_wide < 1)
-        cols_wide = 1;
-
-    /* Animation / in-place replacement: a new image at the same anchor
-     * replaces the old one, reusing its buffer when it fits. */
-    int existing = sx_find_at(st, abs_line, col, layer);
-    SxRec *r;
-    if (existing >= 0) {
-        r = &st->recs[existing];
-        if (r->cap < need) {
-            st->live_bytes -= r->cap;
-            sx_buf_release(vt, st, r->rgba, r->cap);
-            size_t cap = 0;
-            uint8_t *buf = sx_buf_alloc(vt, st, need, &cap);
-            if (!buf) {
-                /* lost the old buffer; drop the record */
-                st->recs[existing] = st->recs[--st->rec_count];
-                return;
-            }
-            r->rgba = buf;
-            r->cap = cap;
-            st->live_bytes += cap;
-        }
-        r->version++;
-    } else {
-        if (st->rec_count >= SX_MAX_IMAGES)
-            sx_rec_release(vt, st, 0); /* drop one to make room */
-        sx_evict_to_budget(vt, st, need);
-        if (st->rec_count >= st->rec_cap) {
-            int ncap = st->rec_cap ? st->rec_cap * 2 : 8;
-            if (ncap > SX_MAX_IMAGES)
-                ncap = SX_MAX_IMAGES;
-            SxRec *nr = cfr_realloc(vt, st->recs, (size_t)ncap * sizeof(SxRec));
-            if (!nr)
-                return;
-            st->recs = nr;
-            st->rec_cap = ncap;
-        }
-        size_t cap = 0;
-        uint8_t *buf = sx_buf_alloc(vt, st, need, &cap);
-        if (!buf)
-            return;
-        r = &st->recs[st->rec_count++];
-        r->id = st->next_id++;
-        r->version = 1;
-        r->rgba = buf;
-        r->cap = cap;
-        st->live_bytes += cap;
-    }
-
-    r->layer = layer;
-    r->abs_line = abs_line;
-    r->col = col;
-    r->w = w;
-    r->h = h;
-    r->rows_tall = rows_tall;
-
-    /* Copy the cropped image out of the (wider) canvas. */
+    /* Crop the image out of the (wider) canvas into a contiguous buffer. */
+    uint8_t *rgba = cfr_alloc(vt, need);
+    if (!rgba)
+        return;
     for (int row = 0; row < h; ++row)
-        memcpy(r->rgba + (size_t)row * w * 4,
+        memcpy(rgba + (size_t)row * w * 4,
                st->canvas + (size_t)row * st->canvas_w * 4, (size_t)w * 4);
 
-    int disp_row = (int)(abs_line - vt->sixel_abs_top);
-    sx_advance_cursor(vt, rows_tall, cols_wide);
-    sx_damage_image(vt, disp_row, rows_tall);
+    /* Delegate to the shared store: handles buffer pool, eviction,
+     * cursor advancement, and damage. */
+    cfr_img_add(vt, st->store, rgba, w, h, 0, IMG_SRC_SIXEL);
+    cfr_dealloc(vt, rgba);
 }
 
 /* ------------------------------------------------------------------ */
@@ -694,49 +493,23 @@ void cfr_sixel_finish(CfrTerm *vt)
 
 void cfr_sixel_note_scroll(CfrTerm *vt, int lines)
 {
-    CfrSixelState *st = vt->sixel;
-    if (!st || st->rec_count == 0)
+    if (!vt || !vt->images)
         return;
-    (void)lines;
-    /* Cull images whose bottom row has scrolled past the oldest retained
-     * scrollback line. depth = lines of `abs_line` above grid row 0. */
-    int cap = vt->sb_capacity;
-    for (int i = 0; i < st->rec_count;) {
-        long depth = vt->sixel_abs_top - st->recs[i].abs_line;
-        long bottom_depth = depth - st->recs[i].rows_tall + 1;
-        if (bottom_depth > cap)
-            sx_rec_release(vt, st, i); /* swap-remove: re-test index i */
-        else
-            ++i;
-    }
+    cfr_img_note_scroll(vt, vt->images, lines);
 }
 
 void cfr_sixel_clear_display_rows(CfrTerm *vt, int top, int bot)
 {
-    CfrSixelState *st = vt->sixel;
-    if (!st || st->rec_count == 0)
+    if (!vt || !vt->images)
         return;
-    for (int i = 0; i < st->rec_count;) {
-        if (st->recs[i].layer != 0) {
-            ++i;
-            continue;
-        }
-        int rtop = (int)(st->recs[i].abs_line - vt->sixel_abs_top);
-        int rbot = rtop + st->recs[i].rows_tall - 1;
-        if (rtop <= bot && rbot >= top)
-            sx_rec_release(vt, st, i);
-        else
-            ++i;
-    }
+    cfr_img_clear_display_rows(vt, vt->images, top, bot);
 }
 
 void cfr_sixel_clear_all(CfrTerm *vt)
 {
-    CfrSixelState *st = vt->sixel;
-    if (!st)
+    if (!vt || !vt->images)
         return;
-    while (st->rec_count > 0)
-        sx_rec_release(vt, st, st->rec_count - 1);
+    cfr_img_clear_all(vt, vt->images);
 }
 
 void cfr_sixel_state_free(CfrTerm *vt)
@@ -744,12 +517,8 @@ void cfr_sixel_state_free(CfrTerm *vt)
     CfrSixelState *st = vt->sixel;
     if (!st)
         return;
-    for (int i = 0; i < st->rec_count; ++i)
-        cfr_dealloc(vt, st->recs[i].rgba);
-    for (int i = 0; i < st->spare_count; ++i)
-        cfr_dealloc(vt, st->spares[i].ptr);
-    cfr_dealloc(vt, st->recs);
-    cfr_dealloc(vt, st->scratch);
+    /* The store (vt->images) is freed separately in cfr_free() since it
+     * may have been created by OSC 1337 before the sixel state existed. */
     cfr_dealloc(vt, st->canvas);
     cfr_dealloc(vt, st);
     vt->sixel = NULL;
@@ -776,36 +545,7 @@ void cfr_set_content_scale(CfrTerm *vt, float scale)
 
 const CfrSixel *cfr_get_sixels(CfrTerm *vt, int *out_count)
 {
-    if (out_count)
-        *out_count = 0;
-    if (!vt || !vt->sixel || vt->sixel->rec_count == 0)
+    if (!vt || !vt->images)
         return NULL;
-    CfrSixelState *st = vt->sixel;
-
-    if (st->scratch_cap < st->rec_count) {
-        int ncap = st->scratch_cap ? st->scratch_cap * 2 : 8;
-        while (ncap < st->rec_count)
-            ncap *= 2;
-        CfrSixel *ns = cfr_realloc(vt, st->scratch, (size_t)ncap * sizeof(CfrSixel));
-        if (!ns)
-            return NULL;
-        st->scratch = ns;
-        st->scratch_cap = ncap;
-    }
-
-    for (int i = 0; i < st->rec_count; ++i) {
-        SxRec *r = &st->recs[i];
-        CfrSixel *v = &st->scratch[i];
-        v->id = r->id;
-        v->version = r->version;
-        v->layer = r->layer;
-        v->row = (int)(r->abs_line - vt->sixel_abs_top);
-        v->col = r->col;
-        v->width_px = r->w;
-        v->height_px = r->h;
-        v->rgba = r->rgba;
-    }
-    if (out_count)
-        *out_count = st->rec_count;
-    return st->scratch;
+    return (const CfrSixel *)cfr_img_get(vt, vt->images, out_count);
 }

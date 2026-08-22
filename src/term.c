@@ -132,6 +132,8 @@ void cfr_free(CfrTerm *vt)
 
     cfr_sixel_state_free(vt);
     cfr_lottie_state_free(vt);
+    if (vt->images)
+        cfr_img_store_free(vt, vt->images);
 
     cfr_dealloc(vt, vt->tabstops);
     cfr_dealloc(vt, vt->title);

@@ -21,12 +21,16 @@ libcoffer_a_SOURCES = \
     dcs.c \
     sixel.c \
     lottie.c \
+    image_store.c \
+    image_decode.c \
+    osc_1337.c \
     esc.c \
     hyperlink.c \
     log.c \
-    coffer_internal.h
+    coffer_internal.h \
+    image_store.h
 
-libcoffer_a_CPPFLAGS = -I$(top_srcdir)/include
+libcoffer_a_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src -I$(top_srcdir)/third_party/stb
 
 if HAVE_THORVG
 libcoffer_a_CPPFLAGS += $(THORVG_CFLAGS)

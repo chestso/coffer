@@ -76,3 +76,6 @@ crush.json
 *.tmp
 *.bak
 .env
+
+# --- Auto-fetched third-party headers ---
+/third_party/stb/stb_image.h

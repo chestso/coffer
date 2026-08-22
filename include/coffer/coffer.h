@@ -453,6 +453,7 @@ typedef struct
     uint64_t id;
     uint32_t version;
     uint8_t layer;
+    uint8_t source; /* IMG_SRC_SIXEL, IMG_SRC_LOTTIE, IMG_SRC_ITERM, IMG_SRC_KITTY */
     int row;
     int col;
     int width_px;
