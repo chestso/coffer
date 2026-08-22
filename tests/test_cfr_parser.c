@@ -140,6 +140,46 @@ static void test_osc_title_st(void)
     cfr_free(vt);
 }
 
+static void test_osc11_bg_query(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    g_output_len = 0;
+    feed(vt, "\x1b]11;?\x1b\\");
+    /* Default bg is pitch-black (#000000) */
+    ASSERT_STR_EQ(g_output_buf, "\x1b]11;rgb:0000/0000/0000\x1b\\");
+    cfr_free(vt);
+}
+
+static void test_osc10_fg_query(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    g_output_len = 0;
+    feed(vt, "\x1b]10;?\x1b\\");
+    /* Default fg is Dracula #F8F8F2 */
+    ASSERT_STR_EQ(g_output_buf, "\x1b]10;rgb:f8f8/f8f8/f2f2\x1b\\");
+    cfr_free(vt);
+}
+
+static void test_osc11_query_bel(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    g_output_len = 0;
+    feed(vt, "\x1b]11;?\x07");
+    ASSERT_STR_EQ(g_output_buf, "\x1b]11;rgb:0000/0000/0000\x1b\\");
+    cfr_free(vt);
+}
+
+static void test_osc_color_set_ignored(void)
+{
+    /* OSC 10/11 with a payload (not "?") should be silently ignored
+     * — we don't implement color overrides yet. */
+    CfrTerm *vt = make_term(24, 80);
+    g_output_len = 0;
+    feed(vt, "\x1b]11;rgb:ff/00/00\x1b\\");
+    ASSERT_EQ(g_output_len, (size_t)0);
+    cfr_free(vt);
+}
+
 static void test_osc8_marks_cell(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -1596,6 +1636,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_csi_erase_line);
     RUN_TEST(test_osc_title_bel);
     RUN_TEST(test_osc_title_st);
+    RUN_TEST(test_osc11_bg_query);
+    RUN_TEST(test_osc10_fg_query);
+    RUN_TEST(test_osc11_query_bel);
+    RUN_TEST(test_osc_color_set_ignored);
     RUN_TEST(test_utf8_basic);
     RUN_TEST(test_utf8_replacement);
     RUN_TEST(test_osc8_marks_cell);

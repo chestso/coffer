@@ -78,6 +78,35 @@ static void set_title(CfrTerm *vt, const uint8_t *data, size_t len)
         vt->callbacks.set_title(vt->title, vt->callback_user);
 }
 
+/*
+ * OSC 10 / 11 — foreground / background color query.
+ *
+ * Query form: OSC 10 ; ? ST  (or OSC 11 ; ? ST for background).
+ * Response:   OSC 10 ; rgb:RRRR/GGGG/BBBB ST
+ *
+ * Many image viewers (chafa, viu, etc.) send OSC 11 ? to detect the
+ * terminal background color so they can alpha-composite semi-transparent
+ * pixels against it before encoding to sixel. Without a response, the
+ * query hangs or falls back to a default, and partial transparency is
+ * lost.
+ */
+static void osc_color_query(CfrTerm *vt, int code, const uint8_t *body, size_t body_len)
+{
+    /* Only respond to the query form (payload is "?"). */
+    if (!body || body_len != 1 || body[0] != '?')
+        return;
+
+    uint32_t rgb = (code == 11) ? cfr_default_bg_rgb() : cfr_default_fg_rgb();
+    char buf[48];
+    int n = snprintf(buf, sizeof(buf), "\x1b]%d;rgb:%02x%02x/%02x%02x/%02x%02x\x1b\\",
+                     code,
+                     (rgb >> 16) & 0xff, (rgb >> 16) & 0xff,
+                     (rgb >> 8) & 0xff, (rgb >> 8) & 0xff,
+                     rgb & 0xff, rgb & 0xff);
+    if (n > 0)
+        cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+}
+
 void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
 {
     size_t off = 0;
@@ -94,6 +123,10 @@ void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
         break;
     case 8:
         osc8_dispatch(vt, body, body_len);
+        break;
+    case 10:
+    case 11:
+        osc_color_query(vt, code, body, body_len);
         break;
     case 4:
         if (should_log_once(vt, CFR_LOGGED_OSC4))
