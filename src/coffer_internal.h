@@ -459,6 +459,12 @@ uint8_t *cfr_image_decode(const uint8_t *data, size_t len, int *w, int *h);
 /* OSC 1337 (iTerm2 inline images, osc_1337.c). */
 void cfr_osc_1337_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len);
 
+/* APC router (apc.c). Routes by first byte: G → graphics, else → lottie. */
+void cfr_apc_dispatch(CfrTerm *vt, const uint8_t *buf, size_t len);
+
+/* Kitty graphics protocol (graphics.c). Called by the APC router. */
+void cfr_graphics_apc_dispatch(CfrTerm *vt, const uint8_t *buf, size_t len);
+
 /* Altscreen (modes.c). */
 void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor);
 

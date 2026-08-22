@@ -872,7 +872,7 @@ static void state_apc_string(CfrTerm *vt, uint8_t b)
      * by anywhere_transition / state_escape. */
     if (b == 0x07) {
         if (!p->apc_truncated)
-            cfr_lottie_apc_dispatch(vt, p->apc_buf, p->apc_len);
+            cfr_apc_dispatch(vt, p->apc_buf, p->apc_len);
         p->state = CFR_STATE_GROUND;
         return;
     }
@@ -948,7 +948,7 @@ void cfr_parser_feed(CfrTerm *vt, const uint8_t *bytes, size_t len)
             if (b == 0x1b) {
                 /* ESC \ pending — finish APC, then go to ESCAPE. */
                 if (!p->apc_truncated)
-                    cfr_lottie_apc_dispatch(vt, p->apc_buf, p->apc_len);
+                    cfr_apc_dispatch(vt, p->apc_buf, p->apc_len);
                 p->state = CFR_STATE_ESCAPE;
                 clear_seq(p);
                 p->utf8_state = UTF8_ACCEPT;

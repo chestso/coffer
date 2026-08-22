@@ -24,6 +24,8 @@ libcoffer_a_SOURCES = \
     image_store.c \
     image_decode.c \
     osc_1337.c \
+    apc.c \
+    graphics.c \
     esc.c \
     hyperlink.c \
     log.c \

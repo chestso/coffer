@@ -1,6 +1,6 @@
 # tests/Makefile.am - coffer unit and integration tests
 
-check_PROGRAMS = test_cfr_parser test_cfr_keys test_cfr_pty test_cfr_sixel test_cfr_lottie test_cfr_altscreen test_cfr_sgr test_cfr_log test_cfr_rep test_cfr_stubs test_cfr_width test_cfr_image_store test_cfr_osc_1337
+check_PROGRAMS = test_cfr_parser test_cfr_keys test_cfr_pty test_cfr_sixel test_cfr_lottie test_cfr_altscreen test_cfr_sgr test_cfr_log test_cfr_rep test_cfr_stubs test_cfr_width test_cfr_image_store test_cfr_osc_1337 test_cfr_graphics
 TESTS = $(check_PROGRAMS)
 
 AM_TESTS_ENVIRONMENT = srcdir='$(srcdir)'; export srcdir;
@@ -36,5 +36,6 @@ test_cfr_stubs_SOURCES    = test_cfr_stubs.c test_common.c
 test_cfr_width_SOURCES    = test_cfr_width.c test_common.c
 test_cfr_image_store_SOURCES = test_cfr_image_store.c test_common.c
 test_cfr_osc_1337_SOURCES = test_cfr_osc_1337.c test_common.c
+test_cfr_graphics_SOURCES = test_cfr_graphics.c test_common.c
 
 EXTRA_DIST = test_helpers.h common.h coffer_pty.h pty_w32.c

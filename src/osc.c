@@ -147,9 +147,12 @@ void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
          * Lottie commands through, the client encodes the APC
          * payload (base64 of the JSON command) inside OSC 5555,
          * which ConPTY does pass through.  The body after the
-         * semicolon is identical to what would have been the APC
-         * string body. */
-        cfr_lottie_apc_dispatch(vt, body, body_len);
+         * semicolon is the raw APC payload — NOT base64-encoded for
+         * the kitty graphics path (starts with G). For the Lottie
+         * path, the body IS base64-encoded JSON, and the Lottie
+         * handler decodes it internally. The APC router checks the
+         * first byte: G → graphics, else → lottie. */
+        cfr_apc_dispatch(vt, body, body_len);
         break;
     default:
         if (vt->callbacks.osc) {
