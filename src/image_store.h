@@ -24,14 +24,7 @@
 #define IMG_SPARE_MAX  16                     /* retained free buffers */
 #define IMG_RETAIN_MAX (32u * 1024u * 1024u)  /* retained free bytes */
 
-/* Image source identifiers */
-enum
-{
-    IMG_SRC_SIXEL = 0,
-    IMG_SRC_LOTTIE = 1,
-    IMG_SRC_ITERM = 2,
-    IMG_SRC_KITTY = 3,
-};
+/* Image source identifiers (IMG_SRC_*) are defined in coffer.h */
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */

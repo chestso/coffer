@@ -3,7 +3,8 @@
  *
  * Parses OSC 1337 ; File = params : base64-payload and decodes the
  * image to RGBA, storing it via the shared image_store. Supports
- * capability queries and cell-size reporting.
+ * capability queries, cell-size reporting, multipart (chunked)
+ * transfer, and width/height scaling.
  *
  * The protocol is OSC-based, so it passes through ConPTY without
  * any carrier workaround (unlike APC-based kitty graphics or
@@ -86,12 +87,12 @@ static uint8_t *b64_decode(const char *in, size_t in_len, size_t *out_len)
 
 typedef struct
 {
-    int inline_display;  /* inline=1 → display; inline=0 → download */
-    int width;           /* display width (cells, px, or %); 0 = auto */
-    int height;          /* display height; 0 = auto */
-    int width_is_px;     /* width was in pixels (Npx) */
-    int height_is_px;    /* height was in pixels */
-    int preserve_aspect; /* preserveAspectRatio=1 (default) */
+    int inline_display;
+    int width;  /* display width; 0 = auto */
+    int height; /* display height; 0 = auto */
+    int width_is_px;
+    int height_is_px;
+    int preserve_aspect;
     int has_width;
     int has_height;
 } ItermParams;
@@ -122,7 +123,6 @@ static void parse_params(const char *params, size_t len, ItermParams *p)
                 p->inline_display = (val_len >= 1 && val[0] == '1');
             } else if (key_len == 5 && memcmp(start, "width", 5) == 0) {
                 p->has_width = 1;
-                /* Check for "px" suffix */
                 if (val_len >= 2 && val[val_len - 1] == 'x' &&
                     val[val_len - 2] == 'p') {
                     p->width_is_px = 1;
@@ -150,12 +150,24 @@ static void parse_params(const char *params, size_t len, ItermParams *p)
 }
 
 /* ------------------------------------------------------------------ */
-/* Get the image store from the sixel state (lazy init)              */
+/* Multipart accumulator (single-threaded, static)                    */
 /* ------------------------------------------------------------------ */
 
-/* Lazy-init the image store if needed (same pattern as sixel's sx_state).
- * When the sixel state exists, it owns the store. If it doesn't, we
- * create it directly. The sixel state will adopt it when first created. */
+typedef struct
+{
+    ItermParams params;
+    uint8_t *b64_buf;
+    size_t b64_len;
+    size_t b64_cap;
+    int active;
+} MultipartState;
+
+static MultipartState g_multipart = { 0 };
+
+/* ------------------------------------------------------------------ */
+/* Image store lazy init                                              */
+/* ------------------------------------------------------------------ */
+
 static CfrImgStore *get_store(CfrTerm *vt)
 {
     if (vt->images)
@@ -164,6 +176,66 @@ static CfrImgStore *get_store(CfrTerm *vt)
     if (st)
         vt->images = st;
     return st;
+}
+
+/* ------------------------------------------------------------------ */
+/* Process decoded image (shared by single and multipart paths)      */
+/* ------------------------------------------------------------------ */
+
+static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
+                          const ItermParams *params)
+{
+    if (!params->inline_display)
+        return;
+
+    /* Decode image (PNG, JPEG, etc.) to RGBA */
+    int w = 0, h = 0;
+    uint8_t *rgba = cfr_image_decode(raw, raw_len, &w, &h);
+    if (!rgba)
+        return;
+
+    /* Apply width/height scaling */
+    int disp_w = w;
+    int disp_h = h;
+
+    if (params->has_width) {
+        if (params->width_is_px) {
+            disp_w = params->width;
+        } else {
+            /* width in cells → convert to pixels */
+            disp_w = params->width * vt->cell_w_px;
+        }
+        if (params->preserve_aspect && disp_w > 0 && w > 0) {
+            disp_h = (int)((long)disp_w * h / w);
+        }
+    }
+    if (params->has_height) {
+        if (params->height_is_px) {
+            disp_h = params->height;
+        } else {
+            disp_h = params->height * vt->cell_h_px;
+        }
+        if (params->preserve_aspect && disp_h > 0 && h > 0) {
+            if (!params->has_width)
+                disp_w = (int)((long)disp_h * w / h);
+        }
+    }
+
+    /* Clamp */
+    if (disp_w < 1)
+        disp_w = 1;
+    if (disp_h < 1)
+        disp_h = 1;
+    if (disp_w > IMG_MAX_DIM)
+        disp_w = IMG_MAX_DIM;
+    if (disp_h > IMG_MAX_DIM)
+        disp_h = IMG_MAX_DIM;
+
+    /* Store the image */
+    CfrImgStore *store = get_store(vt);
+    if (store)
+        cfr_img_add(vt, store, rgba, disp_w, disp_h, 0, IMG_SRC_ITERM);
+    free(rgba);
 }
 
 /* ------------------------------------------------------------------ */
@@ -181,38 +253,70 @@ static void handle_file(CfrTerm *vt, const uint8_t *body, size_t body_len)
     size_t b64_len = body_len - params_len - 1;
     const char *b64 = (const char *)(colon + 1);
 
-    /* Parse params */
     ItermParams params;
     parse_params((const char *)body, params_len, &params);
 
-    /* Only handle inline images (download mode = inline=0 is not supported) */
-    if (!params.inline_display)
-        return;
-
-    /* Decode base64 to raw image bytes */
     size_t raw_len = 0;
     uint8_t *raw = b64_decode(b64, b64_len, &raw_len);
     if (!raw)
         return;
 
-    /* Decode image (PNG, JPEG, etc.) to RGBA */
-    int w = 0, h = 0;
-    uint8_t *rgba = cfr_image_decode(raw, raw_len, &w, &h);
+    process_image(vt, raw, raw_len, &params);
     free(raw);
-    if (!rgba)
+}
+
+static void handle_multipart_start(CfrTerm *vt, const uint8_t *body, size_t body_len)
+{
+    (void)vt;
+    /* Reset accumulator and parse params */
+    free(g_multipart.b64_buf);
+    memset(&g_multipart, 0, sizeof(g_multipart));
+    parse_params((const char *)body, body_len, &g_multipart.params);
+    g_multipart.active = 1;
+}
+
+static void handle_multipart_part(CfrTerm *vt, const uint8_t *body, size_t body_len)
+{
+    (void)vt;
+    if (!g_multipart.active)
         return;
 
-    /* Store the image */
-    CfrImgStore *store = get_store(vt);
-    if (store) {
-        cfr_img_add(vt, store, rgba, w, h, 0, IMG_SRC_ITERM);
+    /* Append base64 chunk to the accumulator */
+    if (g_multipart.b64_len + body_len > g_multipart.b64_cap) {
+        size_t ncap = g_multipart.b64_cap ? g_multipart.b64_cap * 2 : 256;
+        while (ncap < g_multipart.b64_len + body_len)
+            ncap *= 2;
+        uint8_t *nb = realloc(g_multipart.b64_buf, ncap);
+        if (!nb)
+            return;
+        g_multipart.b64_buf = nb;
+        g_multipart.b64_cap = ncap;
     }
-    free(rgba);
+    memcpy(g_multipart.b64_buf + g_multipart.b64_len, body, body_len);
+    g_multipart.b64_len += body_len;
+}
+
+static void handle_multipart_end(CfrTerm *vt)
+{
+    if (!g_multipart.active || !g_multipart.b64_buf)
+        goto cleanup;
+
+    /* Decode accumulated base64 to raw image bytes */
+    size_t raw_len = 0;
+    uint8_t *raw = b64_decode((const char *)g_multipart.b64_buf,
+                              g_multipart.b64_len, &raw_len);
+    if (raw) {
+        process_image(vt, raw, raw_len, &g_multipart.params);
+        free(raw);
+    }
+
+cleanup:
+    free(g_multipart.b64_buf);
+    memset(&g_multipart, 0, sizeof(g_multipart));
 }
 
 static void handle_capabilities(CfrTerm *vt)
 {
-    /* Respond with "F" (inline file support) */
     const char *resp = "\x1b]1337;Capabilities=F\x07";
     cfr_emit_bytes(vt, (const uint8_t *)resp, strlen(resp));
 }
@@ -236,12 +340,16 @@ void cfr_osc_1337_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
     if (!body || body_len == 0)
         return;
 
-    /* Match sub-command prefix */
     if (body_len >= 5 && memcmp(body, "File=", 5) == 0)
         handle_file(vt, body + 5, body_len - 5);
+    else if (body_len >= 14 && memcmp(body, "MultipartFile=", 14) == 0)
+        handle_multipart_start(vt, body + 14, body_len - 14);
+    else if (body_len >= 9 && memcmp(body, "FilePart=", 9) == 0)
+        handle_multipart_part(vt, body + 9, body_len - 9);
+    else if (body_len >= 7 && memcmp(body, "FileEnd", 7) == 0)
+        handle_multipart_end(vt);
     else if (body_len >= 12 && memcmp(body, "Capabilities", 12) == 0)
         handle_capabilities(vt);
     else if (body_len >= 14 && memcmp(body, "ReportCellSize", 14) == 0)
         handle_report_cell_size(vt);
-    /* MultipartFile, FilePart, FileEnd — TODO */
 }

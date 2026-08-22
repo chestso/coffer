@@ -448,6 +448,15 @@ uint32_t cfr_default_palette_rgb(uint8_t index);
  * when it must. `layer` is 0 for foreground (drawn over text); layer 1
  * (background, drawn behind text) is reserved for a future extension.
  */
+/* Image source identifiers for the `source` field on CfrSixel. */
+enum
+{
+    IMG_SRC_SIXEL = 0,
+    IMG_SRC_LOTTIE = 1,
+    IMG_SRC_ITERM = 2,
+    IMG_SRC_KITTY = 3,
+};
+
 typedef struct
 {
     uint64_t id;
