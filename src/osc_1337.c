@@ -18,70 +18,6 @@
 #include <stdlib.h>
 
 /* ------------------------------------------------------------------ */
-/* Base64 decoder (RFC 4648)                                          */
-/* ------------------------------------------------------------------ */
-
-static int b64_val(char c)
-{
-    if (c >= 'A' && c <= 'Z')
-        return c - 'A';
-    if (c >= 'a' && c <= 'z')
-        return c - 'a' + 26;
-    if (c >= '0' && c <= '9')
-        return c - '0' + 52;
-    if (c == '+')
-        return 62;
-    if (c == '/')
-        return 63;
-    return -1;
-}
-
-static uint8_t *b64_decode(const char *in, size_t in_len, size_t *out_len)
-{
-    /* Strip whitespace */
-    size_t clean_len = 0;
-    char *clean = malloc(in_len + 1);
-    if (!clean)
-        return NULL;
-    for (size_t i = 0; i < in_len; i++) {
-        char c = in[i];
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
-            continue;
-        clean[clean_len++] = c;
-    }
-    clean[clean_len] = '\0';
-
-    size_t cap = (clean_len / 4) * 3 + 3;
-    uint8_t *out = malloc(cap);
-    if (!out) {
-        free(clean);
-        return NULL;
-    }
-
-    size_t pos = 0;
-    for (size_t i = 0; i + 3 < clean_len; i += 4) {
-        int a = b64_val(clean[i]);
-        int b = b64_val(clean[i + 1]);
-        int c = (clean[i + 2] == '=') ? 0 : b64_val(clean[i + 2]);
-        int d = (clean[i + 3] == '=') ? 0 : b64_val(clean[i + 3]);
-        if (a < 0 || b < 0 || c < 0 || d < 0) {
-            free(out);
-            free(clean);
-            return NULL;
-        }
-        out[pos++] = (uint8_t)((a << 2) | (b >> 4));
-        if (clean[i + 2] != '=')
-            out[pos++] = (uint8_t)(((b & 0xf) << 4) | (c >> 2));
-        if (clean[i + 3] != '=')
-            out[pos++] = (uint8_t)(((c & 0x3) << 6) | d);
-    }
-
-    free(clean);
-    *out_len = pos;
-    return out;
-}
-
-/* ------------------------------------------------------------------ */
 /* Parameter parsing                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -165,20 +101,6 @@ typedef struct
 static MultipartState g_multipart = { 0 };
 
 /* ------------------------------------------------------------------ */
-/* Image store lazy init                                              */
-/* ------------------------------------------------------------------ */
-
-static CfrImgStore *get_store(CfrTerm *vt)
-{
-    if (vt->images)
-        return vt->images;
-    CfrImgStore *st = cfr_img_store_new(vt);
-    if (st)
-        vt->images = st;
-    return st;
-}
-
-/* ------------------------------------------------------------------ */
 /* Process decoded image (shared by single and multipart paths)      */
 /* ------------------------------------------------------------------ */
 
@@ -243,7 +165,7 @@ static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
         disp_h = IMG_MAX_DIM;
 
     /* Store: pixel buffer at native w×h, display at disp_w×disp_h (both logical) */
-    CfrImgStore *store = get_store(vt);
+    CfrImgStore *store = cfr_img_get_store(vt);
     if (store)
         cfr_img_add(vt, store, rgba, w, h, disp_w, disp_h, 0, IMG_SRC_ITERM);
     free(rgba);
@@ -268,7 +190,7 @@ static void handle_file(CfrTerm *vt, const uint8_t *body, size_t body_len)
     parse_params((const char *)body, params_len, &params);
 
     size_t raw_len = 0;
-    uint8_t *raw = b64_decode(b64, b64_len, &raw_len);
+    uint8_t *raw = cfr_base64_decode(b64, b64_len, &raw_len);
     if (!raw)
         return;
 
@@ -293,18 +215,9 @@ static void handle_multipart_part(CfrTerm *vt, const uint8_t *body, size_t body_
         return;
 
     /* Append base64 chunk to the accumulator */
-    if (g_multipart.b64_len + body_len > g_multipart.b64_cap) {
-        size_t ncap = g_multipart.b64_cap ? g_multipart.b64_cap * 2 : 256;
-        while (ncap < g_multipart.b64_len + body_len)
-            ncap *= 2;
-        uint8_t *nb = realloc(g_multipart.b64_buf, ncap);
-        if (!nb)
-            return;
-        g_multipart.b64_buf = nb;
-        g_multipart.b64_cap = ncap;
-    }
-    memcpy(g_multipart.b64_buf + g_multipart.b64_len, body, body_len);
-    g_multipart.b64_len += body_len;
+    if (cfr_buf_append(&g_multipart.b64_buf, &g_multipart.b64_len,
+                       &g_multipart.b64_cap, body, body_len) != 0)
+        return;
 }
 
 static void handle_multipart_end(CfrTerm *vt)
@@ -314,8 +227,8 @@ static void handle_multipart_end(CfrTerm *vt)
 
     /* Decode accumulated base64 to raw image bytes */
     size_t raw_len = 0;
-    uint8_t *raw = b64_decode((const char *)g_multipart.b64_buf,
-                              g_multipart.b64_len, &raw_len);
+    uint8_t *raw = cfr_base64_decode((const char *)g_multipart.b64_buf,
+                                     g_multipart.b64_len, &raw_len);
     if (raw) {
         process_image(vt, raw, raw_len, &g_multipart.params);
         free(raw);

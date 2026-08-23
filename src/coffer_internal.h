@@ -462,6 +462,15 @@ uint8_t *cfr_image_decode(const uint8_t *data, size_t len, int *w, int *h);
 /* Zlib decompression (image_decode.c). Inflates a RFC1950 stream. */
 uint8_t *cfr_zlib_decompress(const uint8_t *data, size_t len, size_t *out_len);
 
+/* Base64 decode (base64.c). RFC 4648; strips whitespace. Returns a
+ * malloc'd buffer (caller frees) and sets *out_len, or NULL on error. */
+uint8_t *cfr_base64_decode(const char *in, size_t in_len, size_t *out_len);
+
+/* Append n bytes to a growing buffer (base64.c). Doubles capacity as
+ * needed; not NUL-terminated. Returns 0 on success, -1 on OOM. */
+int cfr_buf_append(uint8_t **buf, size_t *len, size_t *cap,
+                   const void *data, size_t n);
+
 /* OSC 1337 (iTerm2 inline images, osc_1337.c). */
 void cfr_osc_1337_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len);
 

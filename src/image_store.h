@@ -110,6 +110,9 @@ typedef struct CfrImgStore
 CfrImgStore *cfr_img_store_new(void *vt);
 void cfr_img_store_free(void *vt, CfrImgStore *st);
 
+/* Lazy-initialize the terminal's image store (vt->images). */
+CfrImgStore *cfr_img_get_store(void *vt);
+
 /* ------------------------------------------------------------------ */
 /* Buffer pool (tier 2)                                               */
 /* ------------------------------------------------------------------ */

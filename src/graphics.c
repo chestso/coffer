@@ -21,69 +21,6 @@
 #include <stdlib.h>
 
 /* ------------------------------------------------------------------ */
-/* Base64 decoder (shared with osc_1337.c, but duplicated for now)     */
-/* ------------------------------------------------------------------ */
-
-static int k_b64_val(char c)
-{
-    if (c >= 'A' && c <= 'Z')
-        return c - 'A';
-    if (c >= 'a' && c <= 'z')
-        return c - 'a' + 26;
-    if (c >= '0' && c <= '9')
-        return c - '0' + 52;
-    if (c == '+')
-        return 62;
-    if (c == '/')
-        return 63;
-    return -1;
-}
-
-static uint8_t *k_b64_decode(const char *in, size_t in_len, size_t *out_len)
-{
-    size_t clean_len = 0;
-    char *clean = malloc(in_len + 1);
-    if (!clean)
-        return NULL;
-    for (size_t i = 0; i < in_len; i++) {
-        char c = in[i];
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
-            continue;
-        clean[clean_len++] = c;
-    }
-    clean[clean_len] = '\0';
-
-    size_t cap = (clean_len / 4) * 3 + 3;
-    uint8_t *out = malloc(cap);
-    if (!out) {
-        free(clean);
-        return NULL;
-    }
-
-    size_t pos = 0;
-    for (size_t i = 0; i + 3 < clean_len; i += 4) {
-        int a = k_b64_val(clean[i]);
-        int b = k_b64_val(clean[i + 1]);
-        int c = (clean[i + 2] == '=') ? 0 : k_b64_val(clean[i + 2]);
-        int d = (clean[i + 3] == '=') ? 0 : k_b64_val(clean[i + 3]);
-        if (a < 0 || b < 0 || c < 0 || d < 0) {
-            free(out);
-            free(clean);
-            return NULL;
-        }
-        out[pos++] = (uint8_t)((a << 2) | (b >> 4));
-        if (clean[i + 2] != '=')
-            out[pos++] = (uint8_t)(((b & 0xf) << 4) | (c >> 2));
-        if (clean[i + 3] != '=')
-            out[pos++] = (uint8_t)(((c & 0x3) << 6) | d);
-    }
-
-    free(clean);
-    *out_len = pos;
-    return out;
-}
-
-/* ------------------------------------------------------------------ */
 /* Parameter parsing                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -290,17 +227,39 @@ static void k_emit_error(CfrTerm *vt, int image_id, const char *err)
 }
 
 /* ------------------------------------------------------------------ */
-/* Image store helper                                                 */
+/* Cursor advance                                                      */
 /* ------------------------------------------------------------------ */
 
-static CfrImgStore *k_get_store(CfrTerm *vt)
+/* Move the cursor after a placement. When adv_cols/adv_rows are given
+ * (c=/r=) they override the default, which is to move below the placement
+ * box (like sixel). The column is clamped to the last column and row
+ * advances scroll at the scroll margin. */
+static void k_advance_cursor(CfrTerm *vt, int start_col, int cols, int rows,
+                             int adv_cols, int adv_rows)
 {
-    if (vt->images)
-        return vt->images;
-    CfrImgStore *st = cfr_img_store_new(vt);
-    if (st)
-        vt->images = st;
-    return st;
+    if (adv_cols > 0 || adv_rows > 0) {
+        int nc = vt->cursor.col + adv_cols;
+        if (nc > vt->cols - 1)
+            nc = vt->cols - 1;
+        vt->cursor.col = nc;
+        for (int i = 0; i < adv_rows; i++) {
+            if (vt->cursor.row == vt->scroll_bottom)
+                cfr_scroll_up(vt, 1);
+            else if (vt->cursor.row < vt->rows - 1)
+                vt->cursor.row++;
+        }
+    } else {
+        int nc = start_col + cols;
+        if (nc > vt->cols - 1)
+            nc = vt->cols - 1;
+        vt->cursor.col = nc;
+        for (int i = 0; i < rows; i++) {
+            if (vt->cursor.row == vt->scroll_bottom)
+                cfr_scroll_up(vt, 1);
+            else if (vt->cursor.row < vt->rows - 1)
+                vt->cursor.row++;
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -336,7 +295,7 @@ static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
                               int format, int *w, int *h, bool decompress)
 {
     size_t raw_len = 0;
-    uint8_t *raw = k_b64_decode((const char *)payload, payload_len, &raw_len);
+    uint8_t *raw = cfr_base64_decode((const char *)payload, payload_len, &raw_len);
     if (!raw)
         return NULL;
 
@@ -396,7 +355,7 @@ static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
 static void k_store_image(CfrTerm *vt, const KittyParams *p,
                           uint8_t *rgba, int w, int h)
 {
-    CfrImgStore *store = k_get_store(vt);
+    CfrImgStore *store = cfr_img_get_store(vt);
     if (!store)
         return;
 
@@ -436,19 +395,9 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
             g_chunk.quiet = p->quiet;
             g_chunk.action = p->action;
         }
-        size_t need = g_chunk.len + payload_len + 1;
-        if (need > g_chunk.cap) {
-            size_t ncap = g_chunk.cap ? g_chunk.cap : 256;
-            while (ncap < need)
-                ncap *= 2;
-            char *nb = realloc(g_chunk.b64, ncap);
-            if (!nb)
-                return;
-            g_chunk.b64 = nb;
-            g_chunk.cap = ncap;
-        }
-        memcpy(g_chunk.b64 + g_chunk.len, payload, payload_len);
-        g_chunk.len += payload_len;
+        if (cfr_buf_append((uint8_t **)&g_chunk.b64, &g_chunk.len,
+                           &g_chunk.cap, payload, payload_len) != 0)
+            return;
         g_chunk.b64[g_chunk.len] = '\0';
         g_chunk.active = 1;
         return;
@@ -523,7 +472,7 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
 
     /* a=T also places at the cursor. */
     if (place_at_cursor) {
-        CfrImgStore *store = k_get_store(vt);
+        CfrImgStore *store = cfr_img_get_store(vt);
         uint64_t id = (uint64_t)(p->has_image_id ? p->image_id : 0);
         int cell_h = vt->cell_h_px > 0 ? vt->cell_h_px : 1;
         int cell_w = vt->cell_w_px > 0 ? vt->cell_w_px : 1;
@@ -544,30 +493,7 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
          * below the placement (like sixel and a=p). */
         int adv_cols = p->has_adv_cols ? p->adv_cols : 0;
         int adv_rows = p->has_adv_rows ? p->adv_rows : 0;
-        if (adv_cols > 0 || adv_rows > 0) {
-            int nc = vt->cursor.col + adv_cols;
-            if (nc > vt->cols - 1)
-                nc = vt->cols - 1;
-            vt->cursor.col = nc;
-            for (int i = 0; i < adv_rows; i++) {
-                if (vt->cursor.row == vt->scroll_bottom)
-                    cfr_scroll_up(vt, 1);
-                else if (vt->cursor.row < vt->rows - 1)
-                    vt->cursor.row++;
-            }
-        } else {
-            int nc = place_col + cols;
-            int nr = place_row + rows;
-            if (nc > vt->cols - 1)
-                nc = vt->cols - 1;
-            vt->cursor.col = nc;
-            for (int i = 0; i < rows; i++) {
-                if (vt->cursor.row == vt->scroll_bottom)
-                    cfr_scroll_up(vt, 1);
-                else if (vt->cursor.row < vt->rows - 1)
-                    vt->cursor.row++;
-            }
-        }
+        k_advance_cursor(vt, place_col, cols, rows, adv_cols, adv_rows);
     }
     free(rgba);
 }
@@ -604,7 +530,7 @@ static void k_handle_query(CfrTerm *vt, const KittyParams *p)
 
 static void k_handle_place(CfrTerm *vt, const KittyParams *p)
 {
-    CfrImgStore *store = k_get_store(vt);
+    CfrImgStore *store = cfr_img_get_store(vt);
     if (!store)
         return;
 
@@ -624,29 +550,24 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
      * is given, x=/y= are offsets relative to the parent's top-left,
      * not absolute cell coordinates. */
     uint64_t rel_place = 0, rel_img = 0;
-    if (p->has_parent_place) {
-        rel_place = (uint64_t)p->parent_place;
-        /* Find the parent placement to anchor against. */
+    if (p->has_parent_place || p->has_parent_img) {
+        uint64_t want = (uint64_t)(p->has_parent_place ? p->parent_place
+                                                       : p->parent_img);
+        /* Find the parent placement (by placement id, or the image's
+         * first placement) to anchor against. */
         for (int i = 0; i < store->place_count; i++) {
-            if (store->places[i].id == rel_place) {
+            bool match = p->has_parent_place
+                             ? store->places[i].id == want
+                             : store->places[i].image_id == want;
+            if (match) {
                 int pcol = store->places[i].col;
                 int prow = (int)(store->places[i].abs_line - vt->sixel_abs_top);
                 col = pcol + (p->has_col ? p->col : 0);
                 row = prow + (p->has_row ? p->row : 0);
-                rel_img = store->places[i].image_id;
-                break;
-            }
-        }
-    } else if (p->has_parent_img) {
-        rel_img = (uint64_t)p->parent_img;
-        /* Anchor to the image's first placement, if any. */
-        for (int i = 0; i < store->place_count; i++) {
-            if (store->places[i].image_id == rel_img) {
-                int pcol = store->places[i].col;
-                int prow = (int)(store->places[i].abs_line - vt->sixel_abs_top);
-                col = pcol + (p->has_col ? p->col : 0);
-                row = prow + (p->has_row ? p->row : 0);
-                rel_place = store->places[i].id;
+                if (p->has_parent_place)
+                    rel_img = store->places[i].image_id;
+                else
+                    rel_place = store->places[i].id;
                 break;
             }
         }
@@ -686,32 +607,8 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
         store->places[pi].parent_img = rel_img;
 
     /* Move the cursor: virtual (U=1) leaves it; otherwise advance. */
-    if (!p->has_virtual || !p->virtual) {
-        if (adv_cols > 0 || adv_rows > 0) {
-            int nc = vt->cursor.col + adv_cols;
-            if (nc > vt->cols - 1)
-                nc = vt->cols - 1;
-            vt->cursor.col = nc;
-            for (int i = 0; i < adv_rows; i++) {
-                if (vt->cursor.row == vt->scroll_bottom)
-                    cfr_scroll_up(vt, 1);
-                else if (vt->cursor.row < vt->rows - 1)
-                    vt->cursor.row++;
-            }
-        } else {
-            /* Default: cursor moves below the placement (like sixel). */
-            int nc = col + cols;
-            if (nc > vt->cols - 1)
-                nc = vt->cols - 1;
-            vt->cursor.col = nc;
-            for (int i = 0; i < rows; i++) {
-                if (vt->cursor.row == vt->scroll_bottom)
-                    cfr_scroll_up(vt, 1);
-                else if (vt->cursor.row < vt->rows - 1)
-                    vt->cursor.row++;
-            }
-        }
-    }
+    if (!p->has_virtual || !p->virtual)
+        k_advance_cursor(vt, col, cols, rows, adv_cols, adv_rows);
 
     if (!p->quiet)
         k_emit_ok(vt, p->image_id);
@@ -723,7 +620,7 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
 
 static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
 {
-    CfrImgStore *store = k_get_store(vt);
+    CfrImgStore *store = cfr_img_get_store(vt);
     if (!store) {
         if (!p->quiet)
             k_emit_ok(vt, p->image_id);

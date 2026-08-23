@@ -30,6 +30,19 @@ CfrImgStore *cfr_img_store_new(void *vt)
     return st;
 }
 
+/* Lazy-initialize the terminal's image store. Shared by the kitty
+ * graphics, iTerm2 inline image, sixel and Lottie handlers. */
+CfrImgStore *cfr_img_get_store(void *vt)
+{
+    CfrTerm *cvt = vt;
+    if (cvt->images)
+        return cvt->images;
+    CfrImgStore *st = cfr_img_store_new(cvt);
+    if (st)
+        cvt->images = st;
+    return st;
+}
+
 void cfr_img_store_free(void *vt, CfrImgStore *st)
 {
     CfrTerm *cvt = vt;

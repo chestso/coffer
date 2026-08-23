@@ -23,6 +23,7 @@ libcoffer_a_SOURCES = \
     lottie.c \
     image_store.c \
     image_decode.c \
+    base64.c \
     osc_1337.c \
     apc.c \
     graphics.c \
