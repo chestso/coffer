@@ -38,10 +38,12 @@ set -eu
 cd "$(dirname "$0")/.."
 
 DO_INSTALL=0
+SKIP_CHECK=0
 CONFIGURE_ARGS=()
 for arg in "$@"; do
 	case "$arg" in
 	--install) DO_INSTALL=1 ;;
+	--no-check) SKIP_CHECK=1 ;;
 	*) CONFIGURE_ARGS+=("$arg") ;;
 	esac
 done
@@ -131,8 +133,12 @@ mkdir build
 echo "==> make -j$(nproc)"
 make -C build -j"$(nproc)"
 
-echo "==> make check"
-make -C build check
+if [ "$SKIP_CHECK" -eq 1 ]; then
+	echo "==> make check (skipped)"
+else
+	echo "==> make check"
+	make -C build check
+fi
 
 if [ "$DO_INSTALL" -eq 1 ]; then
 	echo "==> make install"

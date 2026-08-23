@@ -662,6 +662,33 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
         }
         break;
 
+    case 't': /* XTWINOPS — terminal window operations */
+    {
+        int mode = param_or(vt, 0, 0);
+        if (mode == 18) {
+            /* Report text area size in character cells. */
+            char buf[32];
+            int n = snprintf(buf, sizeof(buf), "\x1b[8;%d;%dt",
+                             vt->rows, vt->cols);
+            cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+        } else if (mode == 14) {
+            /* Report text area size in pixels. */
+            char buf[32];
+            int px_h = vt->rows * vt->cell_h_px;
+            int px_w = vt->cols * vt->cell_w_px;
+            int n = snprintf(buf, sizeof(buf), "\x1b[4;%d;%dt",
+                             px_h, px_w);
+            cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+        } else if (mode == 16) {
+            /* Report cell size in pixels. */
+            char buf[32];
+            int n = snprintf(buf, sizeof(buf), "\x1b[6;%d;%dt",
+                             vt->cell_h_px, vt->cell_w_px);
+            cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+        }
+        break;
+    }
+
     case 'c': /* Primary Device Attributes. */
         if (!has_intermediate(vt, '>')) {
             /* VT220, with ANSI colors (22) and sixel graphics (4). The
