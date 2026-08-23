@@ -546,22 +546,27 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         int adv_rows = p->has_adv_rows ? p->adv_rows : 0;
         if (adv_cols > 0 || adv_rows > 0) {
             int nc = vt->cursor.col + adv_cols;
-            int nr = vt->cursor.row + adv_rows;
             if (nc > vt->cols - 1)
                 nc = vt->cols - 1;
-            if (nr > vt->rows - 1)
-                nr = vt->rows - 1;
             vt->cursor.col = nc;
-            vt->cursor.row = nr;
+            for (int i = 0; i < adv_rows; i++) {
+                if (vt->cursor.row == vt->scroll_bottom)
+                    cfr_scroll_up(vt, 1);
+                else if (vt->cursor.row < vt->rows - 1)
+                    vt->cursor.row++;
+            }
         } else {
             int nc = place_col + cols;
             int nr = place_row + rows;
             if (nc > vt->cols - 1)
                 nc = vt->cols - 1;
-            if (nr > vt->rows - 1)
-                nr = vt->rows - 1;
             vt->cursor.col = nc;
-            vt->cursor.row = nr;
+            for (int i = 0; i < rows; i++) {
+                if (vt->cursor.row == vt->scroll_bottom)
+                    cfr_scroll_up(vt, 1);
+                else if (vt->cursor.row < vt->rows - 1)
+                    vt->cursor.row++;
+            }
         }
     }
     free(rgba);
@@ -684,23 +689,27 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
     if (!p->has_virtual || !p->virtual) {
         if (adv_cols > 0 || adv_rows > 0) {
             int nc = vt->cursor.col + adv_cols;
-            int nr = vt->cursor.row + adv_rows;
             if (nc > vt->cols - 1)
                 nc = vt->cols - 1;
-            if (nr > vt->rows - 1)
-                nr = vt->rows - 1;
             vt->cursor.col = nc;
-            vt->cursor.row = nr;
+            for (int i = 0; i < adv_rows; i++) {
+                if (vt->cursor.row == vt->scroll_bottom)
+                    cfr_scroll_up(vt, 1);
+                else if (vt->cursor.row < vt->rows - 1)
+                    vt->cursor.row++;
+            }
         } else {
             /* Default: cursor moves below the placement (like sixel). */
             int nc = col + cols;
             if (nc > vt->cols - 1)
                 nc = vt->cols - 1;
             vt->cursor.col = nc;
-            int nr = row + rows;
-            if (nr > vt->rows - 1)
-                nr = vt->rows - 1;
-            vt->cursor.row = nr;
+            for (int i = 0; i < rows; i++) {
+                if (vt->cursor.row == vt->scroll_bottom)
+                    cfr_scroll_up(vt, 1);
+                else if (vt->cursor.row < vt->rows - 1)
+                    vt->cursor.row++;
+            }
         }
     }
 
