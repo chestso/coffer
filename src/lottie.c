@@ -1170,8 +1170,16 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
             return;
         int ii = cfr_img_find_by_id(store, rec->id);
         if (ii >= 0) {
-            cfr_img_replace(vt, store, ii, store->imgs[ii].rgba,
-                            new_px_w, new_px_h);
+            /* cfr_img_replace may realloc the backing buffer to grow it, so
+             * we must not pass the image's own buffer as the source (it
+             * would be freed before the memcpy reads it). Use a zeroed
+             * scratch buffer instead; the next rasterize fills it. */
+            uint8_t *scratch = cfr_alloc(vt, need);
+            if (scratch) {
+                memset(scratch, 0, need);
+                cfr_img_replace(vt, store, ii, scratch, new_px_w, new_px_h);
+                cfr_dealloc(vt, scratch);
+            }
         }
 
         rec->px_w = new_px_w;
