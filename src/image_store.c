@@ -421,6 +421,8 @@ int cfr_img_add_named(void *vt, CfrImgStore *st,
     r->col = 0;
     r->w = w;
     r->h = h;
+    r->buf_w = w;
+    r->buf_h = h;
     r->rows_tall = 1;
     r->cols_wide = 1;
     r->rgba = buf;
@@ -492,6 +494,8 @@ int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
     r->col = 0;
     r->w = w;
     r->h = h;
+    r->buf_w = w;
+    r->buf_h = h;
     r->rows_tall = 1;
     r->cols_wide = 1;
     r->rgba = buf;
@@ -530,6 +534,8 @@ void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
     memcpy(r->rgba, rgba, need);
     r->w = w;
     r->h = h;
+    r->buf_w = w;
+    r->buf_h = h;
     r->version++;
 
     int cell_h = ((CfrTerm *)vt)->cell_h_px;

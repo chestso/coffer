@@ -530,6 +530,58 @@ static void test_chunked_transmit(void)
     cfr_free(vt);
 }
 
+/* Chunked transmit where continuation chunks omit the action key
+ * (the form chafa emits: "Gm=1;..." with no a=). These must be routed
+ * to transmit, not rejected as unknown actions. The final m=0 chunk
+ * must also inherit the original action (a=T) so placement happens. */
+static void test_chunked_transmit_no_action(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[16] = { 255, 0, 0, 255, 255, 0, 0, 255,
+                         255, 0, 0, 255, 255, 0, 0, 255 };
+    char full[64];
+    b64_encode(rgba, sizeof(rgba), full);
+    size_t half = strlen(full) / 2;
+    char first[64], second[64];
+    memcpy(first, full, half);
+    first[half] = '\0';
+    strcpy(second, full + half);
+
+    char seq[512];
+    g_output_len = 0;
+    g_output[0] = '\0';
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=2,v=2,i=1,m=1;%s\x1b\\", first);
+    feed(vt, seq);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Gm=1;%s\x1b\\", second);
+    feed(vt, seq);
+    snprintf(seq, sizeof(seq), "\x1b_Gm=0\x1b\\");
+    feed(vt, seq);
+
+    /* No unknown-action errors should have been emitted. */
+    ASSERT_TRUE(strstr(g_output, "EINVAL") == NULL);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].source, IMG_SRC_KITTY);
+    ASSERT_EQ(imgs[0].width_px, 2);
+    ASSERT_EQ(imgs[0].rgba[0], 255);
+    ASSERT_EQ(imgs[0].rgba[3], 255);
+
+    /* Placement created at cursor (a=T places at cursor). */
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ((long long)pls[0].image_id, 1);
+
+    cfr_free(vt);
+}
+
 /* --------------------------------------------------------------- */
 /* 11. Animation: a=a control (sets current frame) + a=f frame data */
 /* --------------------------------------------------------------- */
@@ -642,6 +694,30 @@ static void test_transmit_and_place(void)
     ASSERT_EQ(pls[0].col, 0);
     ASSERT_EQ(pls[0].row, 0);
 
+    /* Cursor advanced below the placement (1x1 image → 1 row, 1 col). */
+    ASSERT_EQ(vt->cursor.row, 1);
+    ASSERT_EQ(vt->cursor.col, 1);
+
+    cfr_free(vt);
+}
+
+/* 14b. a=T with explicit c=/r= cursor advance */
+static void test_transmit_and_place_cursor_advance(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7,c=3,r=2;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Cursor moved by c=3 cols, r=2 rows from (0,0). */
+    ASSERT_EQ(vt->cursor.col, 3);
+    ASSERT_EQ(vt->cursor.row, 2);
+
     cfr_free(vt);
 }
 
@@ -671,10 +747,12 @@ int main(int argc, char *argv[])
     RUN_TEST(test_delete_by_id);
     RUN_TEST(test_outbound_carrier);
     RUN_TEST(test_chunked_transmit);
+    RUN_TEST(test_chunked_transmit_no_action);
     RUN_TEST(test_animate_put_frame);
     RUN_TEST(test_zlib_transmit);
     RUN_TEST(test_compose_accepted);
     RUN_TEST(test_transmit_and_place);
+    RUN_TEST(test_transmit_and_place_cursor_advance);
 
     TEST_SUMMARY();
 }

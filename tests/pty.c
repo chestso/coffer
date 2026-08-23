@@ -169,24 +169,19 @@ PtyContext *pty_create(int rows, int cols, char *const argv[])
         // with 24-bit setaf/setab/Setulc can set TERM=portty-256color.
         setenv("TERM", "portty-vty-256color", 1);
 
-        // Point to our installed terminfo database
-#ifdef COFFER_DATADIR
+        // Clear any inherited TERMINFO (e.g. kitty's) so it doesn't
+        // shadow our installed entry. Add our terminfo paths to
+        // TERMINFO_DIRS so the child shell can find portty's entry.
+        unsetenv("TERMINFO");
         {
             char buf[4096];
             const char *home = getenv("HOME");
             const char *existing = getenv("TERMINFO_DIRS");
-            if (existing) {
-                snprintf(buf, sizeof(buf),
-                         COFFER_DATADIR "/terminfo:%s/.terminfo:%s",
-                         home ? home : "", existing);
-            } else {
-                snprintf(buf, sizeof(buf),
-                         COFFER_DATADIR "/terminfo:%s/.terminfo:",
-                         home ? home : "");
-            }
+            const char *sep = existing ? ":" : "";
+            snprintf(buf, sizeof(buf), "%s/.local/share/terminfo:%s%s",
+                     home ? home : "", sep, existing ? existing : "");
             setenv("TERMINFO_DIRS", buf, 1);
         }
-#endif
 
         // Help emacs find our term/*.el file
 #ifdef COFFER_DATADIR
@@ -230,7 +225,6 @@ PtyContext *pty_create(int rows, int cols, char *const argv[])
 
         if (argv && argv[0]) {
             // Command provided - execute directly
-            vlog("PTY child: execing '%s'\n", argv[0]);
             execvp(argv[0], argv);
 
             // If exec fails
@@ -243,8 +237,6 @@ PtyContext *pty_create(int rows, int cols, char *const argv[])
         if (!shell_to_exec) {
             shell_to_exec = "/bin/sh";
         }
-
-        vlog("PTY child: execing shell '%s'\n", shell_to_exec);
 
         // Execute the shell as a login shell
         const char *shell_basename = strrchr(shell_to_exec, '/');

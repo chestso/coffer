@@ -307,13 +307,24 @@ static CfrImgStore *k_get_store(CfrTerm *vt)
 /* Action: transmit (a=t, a=T, a=f frame)                            */
 /* ------------------------------------------------------------------ */
 
-/* Chunked-upload accumulator for kitty transmit (m=1 ... m=0). */
+/* Chunked-upload accumulator for kitty transmit (m=1 ... m=0).
+ * The first chunk carries the full control data (action, format,
+ * dimensions, id); continuation chunks repeat only m= and payload, so
+ * the accumulated header is stashed here for the final decode. */
 typedef struct
 {
     char *b64;
     size_t len;
     size_t cap;
     int active;
+    int format;      /* f= from the first chunk */
+    int width;       /* s= from the first chunk */
+    int height;      /* v= from the first chunk */
+    int compression; /* o= from the first chunk */
+    int image_id;    /* i= from the first chunk */
+    int has_image_id;
+    int quiet;
+    int action; /* a= from the first chunk (t/T/f) */
 } KChunk;
 
 static KChunk g_chunk = { 0 };
@@ -400,19 +411,31 @@ static void k_store_image(CfrTerm *vt, const KittyParams *p,
         k_emit_ok(vt, p->image_id);
 }
 
-static void k_handle_transmit(CfrTerm *vt, const KittyParams *p,
+static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
                               const uint8_t *payload, size_t payload_len,
                               bool is_frame, bool place_at_cursor)
 {
-    if (!p->has_format || !p->has_width || !p->has_height) {
-        if (!p->quiet)
-            k_emit_error(vt, p->image_id, "EINVAL:missing format/dimensions");
-        return;
-    }
-
     /* Chunked transfer: m=1 accumulates base64 into a static buffer;
-     * m=0 (or no m flag) finalizes and stores. */
+     * m=0 (or no m flag) finalizes and stores. Continuation chunks
+     * carry no action/format/dimensions, so stash the first chunk's
+     * control data for the final decode. */
     if (p->has_more && p->more == 1) {
+        if (!g_chunk.active) {
+            /* First chunk must carry the metadata for the decode. */
+            if (!p->has_format || !p->has_width || !p->has_height) {
+                if (!p->quiet)
+                    k_emit_error(vt, p->image_id, "EINVAL:missing format/dimensions");
+                return;
+            }
+            g_chunk.format = p->format;
+            g_chunk.width = p->width;
+            g_chunk.height = p->height;
+            g_chunk.compression = p->compression;
+            g_chunk.image_id = p->image_id;
+            g_chunk.has_image_id = p->has_image_id;
+            g_chunk.quiet = p->quiet;
+            g_chunk.action = p->action;
+        }
         size_t need = g_chunk.len + payload_len + 1;
         if (need > g_chunk.cap) {
             size_t ncap = g_chunk.cap ? g_chunk.cap : 256;
@@ -436,7 +459,32 @@ static void k_handle_transmit(CfrTerm *vt, const KittyParams *p,
     size_t data_len = payload_len;
     char *tmp_b64 = NULL;
 
+    /* Continuation chunks carry no action/format/dimensions; recover
+     * them from the first chunk of the transfer. */
     if (g_chunk.active) {
+        if (!p->has_format) {
+            p->format = g_chunk.format;
+            p->has_format = 1;
+        }
+        if (!p->has_width) {
+            p->width = g_chunk.width;
+            p->has_width = 1;
+        }
+        if (!p->has_height) {
+            p->height = g_chunk.height;
+            p->has_height = 1;
+        }
+        if (!p->has_compression) {
+            p->compression = g_chunk.compression;
+            p->has_compression = 1;
+        }
+        if (!p->has_image_id) {
+            p->image_id = g_chunk.image_id;
+            p->has_image_id = g_chunk.has_image_id;
+        }
+        if (!p->quiet)
+            p->quiet = g_chunk.quiet;
+
         size_t need = g_chunk.len + payload_len + 1;
         tmp_b64 = malloc(need);
         if (!tmp_b64)
@@ -449,6 +497,13 @@ static void k_handle_transmit(CfrTerm *vt, const KittyParams *p,
 
         free(g_chunk.b64);
         memset(&g_chunk, 0, sizeof(g_chunk));
+    }
+
+    /* Single-shot transmit must carry the metadata itself. */
+    if (!p->has_format || !p->has_width || !p->has_height) {
+        if (!p->quiet)
+            k_emit_error(vt, p->image_id, "EINVAL:missing format/dimensions");
+        return;
     }
 
     int w = p->width, h = p->height;
@@ -479,9 +534,35 @@ static void k_handle_transmit(CfrTerm *vt, const KittyParams *p,
             cols = 1;
         if (rows < 1)
             rows = 1;
-        cfr_img_add_placement(vt, store, id, vt->sixel_abs_top + vt->cursor.row,
-                              vt->cursor.col, rows, cols, 0, 255,
+        int place_row = vt->cursor.row;
+        int place_col = vt->cursor.col;
+        cfr_img_add_placement(vt, store, id, vt->sixel_abs_top + place_row,
+                              place_col, rows, cols, 0, 255,
                               p->has_z_index ? p->z_index : 0);
+
+        /* Cursor advance: explicit c=/r= override, else default to
+         * below the placement (like sixel and a=p). */
+        int adv_cols = p->has_adv_cols ? p->adv_cols : 0;
+        int adv_rows = p->has_adv_rows ? p->adv_rows : 0;
+        if (adv_cols > 0 || adv_rows > 0) {
+            int nc = vt->cursor.col + adv_cols;
+            int nr = vt->cursor.row + adv_rows;
+            if (nc > vt->cols - 1)
+                nc = vt->cols - 1;
+            if (nr > vt->rows - 1)
+                nr = vt->rows - 1;
+            vt->cursor.col = nc;
+            vt->cursor.row = nr;
+        } else {
+            int nc = place_col + cols;
+            int nr = place_row + rows;
+            if (nc > vt->cols - 1)
+                nc = vt->cols - 1;
+            if (nr > vt->rows - 1)
+                nr = vt->rows - 1;
+            vt->cursor.col = nc;
+            vt->cursor.row = nr;
+        }
     }
     free(rgba);
 }
@@ -703,6 +784,19 @@ void cfr_graphics_apc_dispatch(CfrTerm *vt, const uint8_t *buf, size_t len)
 
     KittyParams p;
     k_parse_params((const char *)buf, ctrl_len, &p);
+
+    /* Continuation chunks (m=1/m=0) carry no action key; they inherit
+     * the action from the first chunk of the transfer. Without this
+     * the dispatcher would fall through to the unknown-action error for
+     * every chunk (chafa sends exactly this form). The final m=0 chunk
+     * also needs the stashed action so a=T (transmit-and-place) still
+     * places after the chunked upload completes. */
+    if (p.action == 0 && p.has_more) {
+        if (g_chunk.active)
+            p.action = g_chunk.action ? g_chunk.action : 't';
+        else
+            p.action = 't';
+    }
 
     switch (p.action) {
     case 't':
