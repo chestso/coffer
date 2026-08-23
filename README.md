@@ -1,9 +1,9 @@
 # coffer
 
 A standalone virtual terminal engine in C — parser, grid, scrollback, reflow,
-charsets, kitty keyboard protocol, sixel and Lottie graphics, ambiguous-width
-rendering — with no external dependencies. Extracted
-from [portty](https://github.com/chestso/portty),
+charsets, kitty keyboard protocol, sixel, iTerm2 inline, kitty graphics, and
+Lottie graphics, ambiguous-width rendering — with no external libraries.
+Extracted from [portty](https://github.com/chestso/portty),
 where it replaces libvterm.
 
 coffer handles terminal emulation (parsing, grid management, scrollback,
@@ -25,6 +25,10 @@ compositing. See the portty README for renderer-side details.
   as 2 cells for CJK-locale compatibility.
 - **Grapheme arena** — full clusters are interned; cells reference them
   by id, so there is no hardcoded codepoint cap (libvterm caps at 6).
+  Grapheme breaks follow UAX #29 with UCD-generated tables (EXTEND,
+  SPACING_MARK, PREPEND, EXT_PICT); the GB11 ZWJ rule only merges when
+  the following codepoint is Extended_Pictographic, so ZWJ sequences no
+  longer over-merge and corrupt screens (e.g. mutt's fill pattern).
 - **Scrollback** — paged ring buffer; default 1000 lines, configurable.
 - **Reflow** — recomputes wrap on resize; preserves cursor row.
 - **Sixel graphics** — DCS sixel images (`DCS q … ST`) are decoded and
@@ -34,14 +38,41 @@ compositing. See the portty README for renderer-side details.
   capability is advertised via DA1 (`4`), DECSET 80/1070/8452, and
   XTSMGRAPHICS. The host declares cell pixel size with
   `cfr_set_cell_pixels()` and fetches images to draw with
-  `cfr_get_sixels()`. `cfr_set_content_scale()` corrects sixel cell
+  `cfr_get_images()`. `cfr_set_content_scale()` corrects image cell
   occupancy on HiDPI displays.
+- **iTerm2 inline images (OSC 1337)** — `OSC 1337 ; File=… ST` sequences
+  are parsed and decoded (base64 PNG via stb_image, auto-fetched at
+  configure time) and stored through the shared image store with full 8-bit
+  alpha. `MultipartFile=` / `FilePart=` / `FileEnd=` chunked transfer
+  handles large images through tmux; `width=`/`height=` scaling supports
+  cells, pixels, and auto with aspect-ratio preservation. The
+  `Capabilities` and `ReportCellSize` queries are answered. An uncompressed
+  TIFF fallback decode handles chafa's `-f iterm2` output, which packs
+  pixels as TIFF rather than PNG.
+- **Kitty graphics protocol** — APC sequences (`ESC _ G … ST`) are routed
+  by first byte: `G` → kitty graphics, anything else → Lottie. The core
+  actions are implemented: query (`a=q`), transmit (`a=t`/`a=T` in RGBA,
+  RGB, and PNG formats), place (`a=p`), and delete (`a=d`). Chunked and
+  zlib-compressed transfers, animation frames, and relative/virtual
+  placements are supported. Placements are exposed to the host via
+  `cfr_get_image_placements()` / `cfr_get_image_placements_for()`.
+- **Shared image store** — sixel, iTerm2, kitty, and Lottie all delegate
+  storage to one `image_store.c`: dense record array with swap-remove
+  deletion, a spare-buffer pool that recycles same-size frames, and a
+  global live-byte budget that evicts the oldest image first. Each
+  `CfrImage` carries a `source` field (`IMG_SRC_SIXEL`, `IMG_SRC_LOTTIE`,
+  `IMG_SRC_ITERM`, `IMG_SRC_KITTY`) so the renderer can distinguish image
+  origins without changing the render path. Pixel buffer dimensions
+  (`buf_w`/`buf_h`) are separated from display dimensions, and
+  logical-to-physical conversion is centralized in one place, so the
+  renderer receives physical pixels with zero per-protocol conversions.
 - **Lottie graphics** — APC sequences (`ESC _ … ST`) with base64-encoded JSON
   payloads load, place, and control Lottie animations on the grid. Eight
   commands (load, load-chunk, place, play, pause, stop, seek, delete) manage
   animation state, per-frame RGBA buffers, and placement tracking. Animations
   scroll with the text, enter scrollback, and are culled on clear — the same
-  ownership model as sixel. The host fetches animations via
+  ownership model as the shared image store, which now backs Lottie too. The
+  host fetches animations via
   `cfr_get_lotties()` / `cfr_get_lottie_placements()` and advances frames
   with `cfr_lottie_tick()`. `cfr_lottie_active_count()` provides a
   zero-allocation count for adaptive timer scheduling, and
@@ -52,6 +83,15 @@ compositing. See the portty README for renderer-side details.
   player ([plotty](https://github.com/chestso/portty/tree/master/contrib/plotty))
   provides interactive playback with keyboard controls for pause, seek,
   speed, opacity, and layer toggling.
+- **Background/foreground color queries (OSC 10/11)** — `OSC 11 ; ? ST`
+  (and `OSC 10 ; ? ST`) responds with the terminal background/foreground
+  color as `rgb:RRRR/GGGG/BBBB`. Image viewers such as chafa and viu query
+  the background color before encoding to sixel so they can alpha-composite
+  semi-transparent pixels against it; without a response, partial
+  transparency was lost.
+- **Window-size queries (XTWINOPS)** — `CSI 14 t`, `CSI 16 t`, and
+  `CSI 18 t` report the text area in pixels, cell size in pixels, and text
+  area in character cells respectively, matching xterm responses.
 - **Windows ConPTY note:** Windows ConPTY intercepts and re-serialises VT output
   through conhost's VtEngine, which recognises CSI, OSC, and DCS but _not_ APC
   (`ESC _`). APC sequences are silently dropped — the same limitation that
@@ -59,12 +99,14 @@ compositing. See the portty README for renderer-side details.
   issue #8389, open since 2020). `PSEUDOCONSOLE_PASSTHROUGH_MODE` (flag 0x8,
   Windows 11 22H2+) is intended to relay the raw VT stream unmodified, but on
   some builds the flag is accepted by `CreatePseudoConsole` yet unknown
-  sequences are still stripped. As a workaround, the Lottie client on Windows
-  carries the same base64-encoded JSON payload inside **OSC 5555** (`ESC ] 5555 ; \<base64\> BEL`), which ConPTY does pass through because OSC is a recognised VT
-  family. coffer routes OSC code 5555 to `cfr_lottie_apc_dispatch()`, so the
-  payload is processed identically regardless of carrier. This mirrors how
-  iTerm2's image protocol works on Windows (OSC 1337) — encode image data in
-  OSC instead of APC.
+  sequences are still stripped. As a workaround, the Lottie and kitty
+  graphics clients on Windows carry the same payload inside **OSC 5555**
+  (`ESC ] 5555 ; \<payload\> BEL`), which ConPTY does pass through because OSC
+  is a recognised VT family. coffer routes OSC code 5555 to
+  `cfr_apc_dispatch()`, which dispatches by first byte (`G` → kitty graphics,
+  else → Lottie), so the payload is processed identically regardless of
+  carrier. This mirrors how iTerm2's image protocol works on Windows
+  (OSC 1337) — encode image data in OSC instead of APC.
 - **Ambiguous-width rendering** — `CfrConfig.ambiguous_wide` (or
   `cfr_set_ambiguous_wide()` at runtime) treats UAX #11 East Asian
   Ambiguous codepoints as 2 cells wide. The full Ambiguous range table
@@ -84,7 +126,8 @@ compositing. See the portty README for renderer-side details.
 - **Hyperlinks (OSC 8)** — cells carry a hyperlink id; the host retrieves
   the URI via `cfr_cell_get_hyperlink()`.
 - **Zero external dependencies** — libc only (ThorVG is optional and
-  auto-detected).
+  auto-detected; stb_image is a single-file header auto-fetched at
+  configure time).
 - **Diagnostic logging** — the engine emits warnings for unimplemented
   or malformed sequences via an optional `log` callback at three levels
   (`CFR_LOG_DEBUG`, `CFR_LOG_INFO`, `CFR_LOG_WARN`). Pass `NULL` to
@@ -130,26 +173,22 @@ design goals. Concretely:
 - **Hot path.** `cfr_input_write` does no allocation in steady state —
   all hot-path structures (parser scratch, OSC accumulator up to 4 KiB,
   cursor cluster buffer up to 16 codepoints) are inline in `CfrTerm`.
-  The intern tables grow geometrically and amortize to zero; the grapheme
+  The OSC/APC accumulators grow on demand (up to a 256 MB sanity cap)
+  when a payload exceeds the inline buffer, so large iTerm2 inline image
+  sequences (~1 MB from chafa) are no longer silently truncated. The
+  intern tables grow geometrically and amortize to zero; the grapheme
   arena reuses existing entries on hash hit.
-- **Sixel store.** Decoded images live in a dense record array
-  (swap-remove deletion, no fragmentation) with their pixel buffers drawn
-  from a small best-fit free-list pool, so animation that streams
-  same-size frames recycles one buffer instead of churning the heap. A
-  global live-byte budget evicts the oldest image first (the same order
-  they scroll off), and a per-dimension clamp bounds any single image.
-  The store is allocated lazily on the first sixel and freed by
-  `cfr_free`.
-- **Lottie store.** Mirrors the sixel architecture: dense record array with
-  swap-remove deletion, a spare buffer pool that recycles same-size RGBA
-  frames, and a global live-byte budget (128 MiB live, 64 MiB retained) that
-  evicts the oldest animation first. ThorVG rasterizes each frame to
-  ARGB8888, which is then un-premultiplied and converted to linear-light
-  RGBA32 for the host compositor. The store is allocated lazily on the first
-  Lottie APC and freed by `cfr_free`.
+- **Shared image store.** Decoded images (sixel, iTerm2, kitty, Lottie)
+  live in a dense record array (swap-remove deletion, no fragmentation)
+  with their pixel buffers drawn from a small best-fit free-list pool, so
+  animation that streams same-size frames recycles one buffer instead of
+  churning the heap. A global live-byte budget evicts the oldest image
+  first (the same order they scroll off), and a per-dimension clamp
+  bounds any single image. The store is allocated lazily on the first
+  image and freed by `cfr_free`.
 - **Lifecycle.** `cfr_new` / `cfr_free` is the only ownership pair the
   consumer manages. `cfr_free` releases every page, intern table, arena,
-  tab-stop bitmap, sixel store, and lottie store through the same allocator
+  tab-stop bitmap, and the shared image store through the same allocator
   that produced them.
 
 `CfrTerm` itself is not internally synchronized; callers own all locking.
@@ -166,6 +205,12 @@ make check
 make install
 ```
 
+`configure` auto-fetches the single-file `stb_image.h` header (pinned
+commit) into `third_party/stb/` when missing, via `scripts/fetch-stb.sh` —
+needed for PNG/JPEG decoding of iTerm2 inline images and kitty graphics.
+Requires network access on first configure; the fetched header is
+gitignored.
+
 On Windows, use MSYS2 UCRT64 with MinGW-w64 GCC.
 
 ### Test suite
@@ -175,18 +220,21 @@ live in `tests/` and link against `libcoffer.a`. Individual tests can be run
 selectively:
 
 ```sh
-make check TESTS='test_cfr_parser test_cfr_keys test_cfr_sixel'
+make check TESTS='test_cfr_parser test_cfr_keys test_cfr_sixel test_cfr_osc_1337'
 ```
 
-| Binary               | Scope                                                                                                                     |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `test_cfr_parser`    | CSI/OSC/ESC/DCS dispatch, cursor, scroll, charsets, DEC modes, DECSC/DECRC, tabs (TBC), OSC 8 hyperlinks, ambiguous-width |
-| `test_cfr_keys`      | Kitty keyboard protocol (flags 0x1, 0x8), push/pop/set/query                                                              |
-| `test_cfr_pty`       | Integration: spawns child on real PTY, pipes output through engine                                                        |
-| `test_cfr_sixel`     | Sixel decode, color registers, RLE, placement, scrolling                                                                  |
-| `test_cfr_lottie`    | Lottie APC command parsing (load/place/play/pause/stop/seek/delete)                                                       |
-| `test_cfr_altscreen` | Altscreen enter/exit, cursor save/restore, content isolation                                                              |
-| `test_cfr_sgr`       | SGR styling: bold, italic, underline variants, truecolor, indexed                                                         |
+| Binary                 | Scope                                                                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `test_cfr_parser`      | CSI/OSC/ESC/DCS dispatch, cursor, scroll, charsets, DEC modes, DECSC/DECRC, tabs (TBC), OSC 8 hyperlinks, ambiguous-width |
+| `test_cfr_keys`        | Kitty keyboard protocol (flags 0x1, 0x8), push/pop/set/query                                                              |
+| `test_cfr_pty`         | Integration: spawns child on real PTY, pipes output through engine                                                        |
+| `test_cfr_sixel`       | Sixel decode, color registers, RLE, placement, scrolling                                                                  |
+| `test_cfr_lottie`      | Lottie APC command parsing (load/place/play/pause/stop/seek/delete)                                                       |
+| `test_cfr_osc_1337`    | iTerm2 inline images: File= parsing, base64 PNG decode, multipart, scaling, TIFF fallback, Capabilities/ReportCellSize    |
+| `test_cfr_image_store` | Shared image store: record lifecycle, buffer pool, eviction, scroll/clear, source enum                                    |
+| `test_cfr_graphics`    | Kitty graphics protocol: APC routing, query, transmit (RGBA/RGB/PNG), place, delete, zlib/chunked, animation              |
+| `test_cfr_altscreen`   | Altscreen enter/exit, cursor save/restore, content isolation                                                              |
+| `test_cfr_sgr`         | SGR styling: bold, italic, underline variants, truecolor, indexed                                                         |
 
 `test_cfr_pty` is skipped on CI (GitHub runners lack a real PTY). All other
 tests run on every push via GitHub Actions. Tags matching `v*` trigger a
@@ -215,6 +263,7 @@ the script never runs `pacman` itself:
 ```sh
 ./scripts/build-ucrt64.sh            # autogen + configure + make + check
 ./scripts/build-ucrt64.sh --install  # build, then make install
+./scripts/build-ucrt64.sh --no-check # build only, skip make check (faster iteration)
 ```
 
 Extra args are forwarded to `configure`:
