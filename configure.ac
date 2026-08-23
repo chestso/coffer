@@ -105,7 +105,7 @@ AS_IF([test "x$enable_thorvg" != xno], [
         AS_IF([test "x$enable_thorvg" = xyes], [
             AC_MSG_ERROR([ThorVG was explicitly requested but thorvg-1 was not found])
         ])
-        AC_MSG_WARN([thorvg-1 not found — Lottie rasterization will be disabled])
+        AC_MSG_NOTICE([thorvg-1 not found — Lottie rasterization will be disabled])
     ])
 ])
 AM_CONDITIONAL([HAVE_THORVG], [test "x$HAVE_THORVG" = xyes])

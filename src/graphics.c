@@ -319,7 +319,7 @@ typedef struct
 static KChunk g_chunk = { 0 };
 
 /* Decode a base64 payload to RGBA (f=32/24/100). Returns malloc'd RGBA
- * and sets *w/*h. On failure returns NULL. If decompress is true, the
+ * and sets *w and *h. On failure returns NULL. If decompress is true, the
  * base64-decoded bytes are first inflated as a zlib stream (o=z). */
 static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
                               int format, int *w, int *h, bool decompress)
