@@ -60,6 +60,12 @@ static const char *PNG_4X4_GREEN_B64 =
 static const char *PNG_2X2_SEMI_ALPHA_B64 =
     "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGNocFBoAGEGGAMAMdIFgRA3teIAAAAASUVORK5CYII=";
 
+/* chafa emits `-f iterm2` pixels as a minimal uncompressed TIFF, not PNG.
+ * This 2x2 RGBA chunky TIFF (top-down: red/green over blue/white) matches
+ * that byte layout so the fallback decoder is exercised end-to-end. */
+static const char *TIFF_2X2_RGBA_B64 =
+    "SUkqABgAAAD/AAD/AP8A/wAA////////DAAAAQQAAQAAAAIAAAABAQQAAQAAAAIAAAACAQMABAAAAKoAAAADAQMAAQAAAAEAAAAGAQMAAQAAAAIAAAARAQQAAQAAAAgAAAASAQMAAQAAAAEAAAAVAQMAAQAAAAQAAAAWAQQAAQAAAAIAAAAXAQQAAQAAABAAAAAcAQMAAQAAAAEAAABSAQMAAQAAAAIAAAAIAAgACAAIAA==";
+
 /* --------------------------------------------------------------- */
 /* 1. Capabilities query                                           */
 /* --------------------------------------------------------------- */
@@ -296,6 +302,41 @@ static void test_intermediate_alpha(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 10. TIFF payload fallback (chafa -f iterm2)                     */
+/* --------------------------------------------------------------- */
+
+static void test_tiff_payload(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    char seq[512];
+    snprintf(seq, sizeof(seq),
+             "\x1b]1337;File=inline=1:%s\x07",
+             TIFF_2X2_RGBA_B64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].source, IMG_SRC_ITERM);
+    ASSERT_EQ(imgs[0].width_px, 2);
+    ASSERT_EQ(imgs[0].height_px, 2);
+    /* Top-left must be red (TIFF rows are top-down, orientation 1). */
+    ASSERT_EQ(imgs[0].rgba[0], 255);
+    ASSERT_EQ(imgs[0].rgba[1], 0);
+    ASSERT_EQ(imgs[0].rgba[2], 0);
+    ASSERT_EQ(imgs[0].rgba[3], 255);
+    /* Bottom-right must be white. */
+    const uint8_t *last = imgs[0].rgba + (4 - 1) * 4;
+    ASSERT_EQ(last[0], 255);
+    ASSERT_EQ(last[1], 255);
+    ASSERT_EQ(last[2], 255);
+    ASSERT_EQ(last[3], 255);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* main                                                           */
 /* --------------------------------------------------------------- */
 
@@ -313,6 +354,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_width_cells);
     RUN_TEST(test_width_pixels);
     RUN_TEST(test_intermediate_alpha);
+    RUN_TEST(test_tiff_payload);
 
     TEST_SUMMARY();
 }
