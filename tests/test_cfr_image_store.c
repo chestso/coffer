@@ -147,7 +147,7 @@ static void test_img_add_basic(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 10, 255, 0, 0, 255);
-    int idx = cfr_img_add(vt, st, rgba, 10, 10, 0, IMG_SRC_SIXEL);
+    int idx = cfr_img_add(vt, st, rgba, 10, 10, 0, 0, 0, IMG_SRC_SIXEL);
     free(rgba);
 
     ASSERT_TRUE(idx >= 0);
@@ -176,7 +176,7 @@ static void test_img_add_advances_cursor(void)
 
     /* Image is 10px wide, 10px tall, cell is 10x6 → 1 col, 2 rows */
     uint8_t *rgba = make_rgba(10, 10, 0, 255, 0, 255);
-    cfr_img_add(vt, st, rgba, 10, 10, 0, IMG_SRC_SIXEL);
+    cfr_img_add(vt, st, rgba, 10, 10, 0, 0, 0, IMG_SRC_SIXEL);
     free(rgba);
 
     /* Cursor should have advanced 2 rows down */
@@ -193,7 +193,7 @@ static void test_img_find_at(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 0, 0, 255, 255);
-    int idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_SIXEL);
+    int idx = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
     free(rgba);
 
     long abs_line = st->imgs[idx].abs_line;
@@ -217,7 +217,7 @@ static void test_img_replace(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba1 = make_rgba(10, 6, 255, 0, 0, 255);
-    int idx = cfr_img_add(vt, st, rgba1, 10, 6, 0, IMG_SRC_SIXEL);
+    int idx = cfr_img_add(vt, st, rgba1, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
     free(rgba1);
 
     uint32_t v1 = st->imgs[idx].version;
@@ -255,7 +255,7 @@ static void test_img_evict_oldest_first(void)
     /* Fill to capacity */
     for (int i = 0; i < IMG_MAX_IMAGES + 5; i++) {
         uint8_t *rgba = make_rgba(10, 6, (uint8_t)(i & 0xff), 0, 0, 255);
-        cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_SIXEL);
+        cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
         free(rgba);
         /* Move cursor down so each image gets a different abs_line */
     }
@@ -287,7 +287,7 @@ static void test_img_scroll_cull(void)
 
     /* Add an image at row 0 (abs_line = 0) */
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_SIXEL);
+    cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
     free(rgba);
     ASSERT_EQ(st->img_count, 1);
 
@@ -312,7 +312,7 @@ static void test_img_clear_display_rows(void)
 
     /* Add an image at row 0 */
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_SIXEL);
+    cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
     free(rgba);
     ASSERT_EQ(st->img_count, 1);
 
@@ -331,7 +331,7 @@ static void test_img_clear_all(void)
 
     for (int i = 0; i < 3; i++) {
         uint8_t *rgba = make_rgba(10, 6, 0, 0, 255, 255);
-        cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_SIXEL);
+        cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
         free(rgba);
     }
     ASSERT_EQ(st->img_count, 3);
@@ -350,13 +350,13 @@ static void test_img_clear_preserves_background_layer(void)
 
     /* Add a foreground image at row 0 */
     uint8_t *rgba_fg = make_rgba(10, 6, 255, 0, 0, 255);
-    cfr_img_add(vt, st, rgba_fg, 10, 6, 0, IMG_SRC_SIXEL);
+    cfr_img_add(vt, st, rgba_fg, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
     free(rgba_fg);
 
     /* Add a background image at row 0 (layer 1) */
     vt->cursor.row = 0;
     uint8_t *rgba_bg = make_rgba(10, 6, 0, 255, 0, 255);
-    cfr_img_add(vt, st, rgba_bg, 10, 6, 1, IMG_SRC_SIXEL);
+    cfr_img_add(vt, st, rgba_bg, 10, 6, 0, 0, 1, IMG_SRC_SIXEL);
     free(rgba_bg);
 
     ASSERT_EQ(st->img_count, 2);
@@ -381,7 +381,7 @@ static void test_img_get_returns_images(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 128, 0, 200);
-    cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_SIXEL);
+    cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
     free(rgba);
 
     int count = -1;
@@ -423,7 +423,7 @@ static void test_img_add_placement_basic(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_KITTY);
     free(rgba);
     ASSERT_TRUE(img_idx >= 0);
     uint64_t img_id = st->imgs[img_idx].id;
@@ -453,7 +453,7 @@ static void test_img_add_placement_dedup(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_KITTY);
     free(rgba);
     uint64_t img_id = st->imgs[img_idx].id;
 
@@ -490,7 +490,7 @@ static void test_img_get_placements(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_KITTY);
     free(rgba);
     uint64_t img_id = st->imgs[img_idx].id;
 
@@ -519,7 +519,7 @@ static void test_img_clear_removes_placements(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_KITTY);
     free(rgba);
     uint64_t img_id = st->imgs[img_idx].id;
 
@@ -541,7 +541,7 @@ static void test_img_scroll_cull_removes_placements(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_KITTY);
     free(rgba);
     uint64_t img_id = st->imgs[img_idx].id;
 

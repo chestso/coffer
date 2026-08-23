@@ -35,15 +35,16 @@ typedef struct
 {
     uint64_t id;
     uint32_t version;
-    uint8_t layer;  /* 0 = foreground, 1 = background */
-    uint8_t source; /* IMG_SRC_* */
-    long abs_line;  /* absolute line index of the image's top row */
-    int col;        /* anchor column */
-    int w, h;       /* display pixel dimensions */
-    int rows_tall;  /* cells tall (cached for cull/clear) */
-    int cols_wide;  /* cells wide (cached) */
-    uint8_t *rgba;  /* pixel buffer */
-    size_t cap;     /* allocated bytes of rgba */
+    uint8_t layer;    /* 0 = foreground, 1 = background */
+    uint8_t source;   /* IMG_SRC_* */
+    long abs_line;    /* absolute line index of the image's top row */
+    int col;          /* anchor column */
+    int w, h;         /* logical display pixel dimensions */
+    int buf_w, buf_h; /* logical pixel buffer stride (native decoded size) */
+    int rows_tall;    /* cells tall (cached for cull/clear) */
+    int cols_wide;    /* cells wide (cached) */
+    uint8_t *rgba;    /* pixel buffer */
+    size_t cap;       /* allocated bytes of rgba */
 } CfrImg;
 
 /* A retained free buffer (was SxSpare / LtSpare). */
@@ -124,10 +125,15 @@ void img_buf_release(void *vt, CfrImgStore *st, uint8_t *ptr, size_t cap);
 /* ------------------------------------------------------------------ */
 
 /* Store pre-decoded RGBA data as a new image at the cursor position.
- * Handles buffer alloc, eviction, cursor advance, and damage.
- * Returns image index >= 0, or -1 on failure. */
+ * `w`/`h` are the pixel buffer dimensions (logical, stride for the copy).
+ * `disp_w`/`disp_h` are the display dimensions (logical); pass 0 for
+ * either to use w/h (the sixel case where they're identical).  Grid
+ * occupancy and the public CfrImage.width_px/height_px use the display
+ * dimensions.  Handles buffer alloc, eviction, cursor advance, and
+ * damage.  Returns image index >= 0, or -1 on failure. */
 int cfr_img_add(void *vt, CfrImgStore *st,
                 const uint8_t *rgba, int w, int h,
+                int disp_w, int disp_h,
                 uint8_t layer, uint8_t source);
 
 /* Store RGBA data keyed by explicit id (lottie animation). Creates or

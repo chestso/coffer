@@ -48,7 +48,8 @@
 /* ------------------------------------------------------------------ */
 
 #define CFR_PAGE_BYTES         (64u * 1024u)
-#define CFR_OSC_BUF_BYTES      65536u
+#define CFR_OSC_BUF_INIT       65536u                 /* initial OSC/APC buffer; grows on demand */
+#define CFR_OSC_BUF_MAX        (256u * 1024u * 1024u) /* hard cap (sanity) */
 #define CFR_CSI_PARAM_MAX      32u
 #define CFR_INTERMEDIATE_MAX   4u
 #define CFR_DEFAULT_SCROLLBACK 1000
@@ -182,13 +183,15 @@ typedef struct
     /* UTF-8 decoder state (Bjoern Hoehrmann) */
     uint32_t utf8_state;
     uint32_t utf8_codepoint;
-    /* OSC accumulator */
-    uint8_t osc_buf[CFR_OSC_BUF_BYTES];
-    uint16_t osc_len;
+    /* OSC accumulator (grows for large inline-image payloads) */
+    uint8_t *osc_buf;
+    uint32_t osc_len;
+    uint32_t osc_cap;
     bool osc_truncated;
-    /* APC accumulator */
-    uint8_t apc_buf[CFR_OSC_BUF_BYTES];
-    uint16_t apc_len;
+    /* APC accumulator (kitty graphics / lottie — grows similarly) */
+    uint8_t *apc_buf;
+    uint32_t apc_len;
+    uint32_t apc_cap;
     bool apc_truncated;
     /* DCS streaming state — passthrough emits chunks via callback */
     bool dcs_initial_sent;

@@ -465,9 +465,11 @@ typedef struct
     uint8_t source; /* IMG_SRC_SIXEL, IMG_SRC_LOTTIE, IMG_SRC_ITERM, IMG_SRC_KITTY */
     int row;
     int col;
-    int width_px;
-    int height_px;
-    const uint8_t *rgba; /* width_px * height_px * 4, RGBA, engine-owned */
+    int width_px;        /* physical display pixels (coffer pre-converts) */
+    int height_px;       /* physical display pixels */
+    int buf_w;           /* physical pixel buffer width (for texture upload) */
+    int buf_h;           /* physical pixel buffer height */
+    const uint8_t *rgba; /* buf_w * buf_h * 4, RGBA, engine-owned */
 } CfrImage;
 
 /* Update the pixel size of one character cell. Call on font load and on

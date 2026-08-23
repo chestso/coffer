@@ -137,6 +137,8 @@ void cfr_free(CfrTerm *vt)
 
     cfr_dealloc(vt, vt->tabstops);
     cfr_dealloc(vt, vt->title);
+    cfr_dealloc(vt, vt->parser.osc_buf);
+    cfr_dealloc(vt, vt->parser.apc_buf);
 
     /* Use saved allocator (vt->alloc.free) — vt itself is freed last. */
     CfrAllocator a = vt->alloc;

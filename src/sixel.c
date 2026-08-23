@@ -483,7 +483,7 @@ void cfr_sixel_finish(CfrTerm *vt)
 
     /* Delegate to the shared store: handles buffer pool, eviction,
      * cursor advancement, and damage. */
-    cfr_img_add(vt, st->store, rgba, w, h, 0, IMG_SRC_SIXEL);
+    cfr_img_add(vt, st->store, rgba, w, h, 0, 0, 0, IMG_SRC_SIXEL);
     cfr_dealloc(vt, rgba);
 }
 

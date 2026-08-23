@@ -241,6 +241,7 @@ static void img_damage(CfrTerm *vt, long abs_line, int rows_tall)
 
 int cfr_img_add(void *vt, CfrImgStore *st,
                 const uint8_t *rgba, int w, int h,
+                int disp_w, int disp_h,
                 uint8_t layer, uint8_t source)
 {
     CfrTerm *cvt = vt;
@@ -248,16 +249,28 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     if (!rgba || w <= 0 || h <= 0 || w > IMG_MAX_DIM || h > IMG_MAX_DIM)
         return -1;
 
+    /* Display dimensions default to pixel dimensions (sixel case). */
+    if (disp_w <= 0)
+        disp_w = w;
+    if (disp_h <= 0)
+        disp_h = h;
+    if (disp_w > IMG_MAX_DIM)
+        disp_w = IMG_MAX_DIM;
+    if (disp_h > IMG_MAX_DIM)
+        disp_h = IMG_MAX_DIM;
+
     size_t need = (size_t)w * (size_t)h * 4u;
     if (need == 0 || need > IMG_LIVE_MAX)
         return -1;
 
-    /* Compute display dimensions */
+    /* Compute grid occupancy from logical display dimensions.
+     * cell_w_px/cell_h_px are physical (include content_scale), so
+     * we scale disp to physical before dividing. */
     int cell_h = cvt->cell_h_px;
     int cell_w = cvt->cell_w_px;
     float scale = cvt->content_scale > 0.0f ? cvt->content_scale : 1.0f;
-    int scaled_w = (int)(w * scale);
-    int scaled_h = (int)(h * scale);
+    int scaled_w = (int)(disp_w * scale + 0.5f);
+    int scaled_h = (int)(disp_h * scale + 0.5f);
     int rows_tall = (scaled_h + cell_h - 1) / cell_h;
     int cols_wide = (scaled_w + cell_w - 1) / cell_w;
     if (rows_tall < 1)
@@ -288,8 +301,10 @@ int cfr_img_add(void *vt, CfrImgStore *st,
         }
         memcpy(r->rgba, rgba, need);
         r->version++;
-        r->w = w;
-        r->h = h;
+        r->w = disp_w;
+        r->h = disp_h;
+        r->buf_w = w;
+        r->buf_h = h;
         r->rows_tall = rows_tall;
         r->cols_wide = cols_wide;
         img_damage(cvt, abs_line, rows_tall);
@@ -325,8 +340,10 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     r->source = source;
     r->abs_line = abs_line;
     r->col = col;
-    r->w = w;
-    r->h = h;
+    r->w = disp_w;
+    r->h = disp_h;
+    r->buf_w = w;
+    r->buf_h = h;
     r->rows_tall = rows_tall;
     r->cols_wide = cols_wide;
     r->rgba = buf;
@@ -668,6 +685,10 @@ const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count)
         st->img_scratch_cap = ncap;
     }
 
+    /* Single logical→physical conversion point for the whole pipeline.
+     * The renderer receives physical values and does zero conversions. */
+    float cscale = cvt->content_scale > 0.0f ? cvt->content_scale : 1.0f;
+
     for (int i = 0; i < st->img_count; ++i) {
         CfrImg *r = &st->imgs[i];
         CfrImage *v = &st->img_scratch[i];
@@ -677,8 +698,10 @@ const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count)
         v->source = r->source;
         v->row = (int)(r->abs_line - cvt->sixel_abs_top);
         v->col = r->col;
-        v->width_px = r->w;
-        v->height_px = r->h;
+        v->width_px = (int)(r->w * cscale + 0.5f);
+        v->height_px = (int)(r->h * cscale + 0.5f);
+        v->buf_w = (int)(r->buf_w * cscale + 0.5f);
+        v->buf_h = (int)(r->buf_h * cscale + 0.5f);
         v->rgba = r->rgba;
     }
     if (out_count)

@@ -194,7 +194,19 @@ static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
     if (!rgba)
         return;
 
-    /* Apply width/height scaling */
+    /* Compute display dimensions in LOGICAL pixels from the protocol's
+     * width/height hints.  vt->cell_w_px is physical (includes
+     * content_scale), so we divide to get the logical cell size before
+     * multiplying by the cell count.  cfr_img_add and cfr_img_get each
+     * apply content_scale once to convert logical→physical. */
+    float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
+    int logical_cw = (int)(vt->cell_w_px / cscale + 0.5f);
+    int logical_ch = (int)(vt->cell_h_px / cscale + 0.5f);
+    if (logical_cw < 1)
+        logical_cw = 1;
+    if (logical_ch < 1)
+        logical_ch = 1;
+
     int disp_w = w;
     int disp_h = h;
 
@@ -202,8 +214,7 @@ static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
         if (params->width_is_px) {
             disp_w = params->width;
         } else {
-            /* width in cells → convert to pixels */
-            disp_w = params->width * vt->cell_w_px;
+            disp_w = params->width * logical_cw;
         }
         if (params->preserve_aspect && disp_w > 0 && w > 0) {
             disp_h = (int)((long)disp_w * h / w);
@@ -213,7 +224,7 @@ static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
         if (params->height_is_px) {
             disp_h = params->height;
         } else {
-            disp_h = params->height * vt->cell_h_px;
+            disp_h = params->height * logical_ch;
         }
         if (params->preserve_aspect && disp_h > 0 && h > 0) {
             if (!params->has_width)
@@ -231,10 +242,10 @@ static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
     if (disp_h > IMG_MAX_DIM)
         disp_h = IMG_MAX_DIM;
 
-    /* Store the image */
+    /* Store: pixel buffer at native w×h, display at disp_w×disp_h (both logical) */
     CfrImgStore *store = get_store(vt);
     if (store)
-        cfr_img_add(vt, store, rgba, disp_w, disp_h, 0, IMG_SRC_ITERM);
+        cfr_img_add(vt, store, rgba, w, h, disp_w, disp_h, 0, IMG_SRC_ITERM);
     free(rgba);
 }
 
@@ -323,10 +334,22 @@ static void handle_capabilities(CfrTerm *vt)
 
 static void handle_report_cell_size(CfrTerm *vt)
 {
+    /* Report LOGICAL cell pixels (physical / content_scale) so chafa
+     * scales images to logical dimensions.  cfr_img_get then converts
+     * to physical for the renderer.  Reporting physical here would
+     * make chafa pack too many pixels per cell, and process_image's
+     * logical cell conversion would then shrink the display. */
+    float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
+    int logical_cw = (int)(vt->cell_w_px / cscale + 0.5f);
+    int logical_ch = (int)(vt->cell_h_px / cscale + 0.5f);
+    if (logical_cw < 1)
+        logical_cw = 1;
+    if (logical_ch < 1)
+        logical_ch = 1;
     char buf[64];
     int n = snprintf(buf, sizeof(buf),
                      "\x1b]1337;ReportCellSize=%d;%d;1.0\x07",
-                     vt->cell_h_px, vt->cell_w_px);
+                     logical_ch, logical_cw);
     if (n > 0)
         cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
 }

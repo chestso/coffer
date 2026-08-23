@@ -464,11 +464,23 @@ static void osc_start(CfrParser *p)
 
 static void osc_put(CfrParser *p, uint8_t b)
 {
-    if (p->osc_len < CFR_OSC_BUF_BYTES) {
-        p->osc_buf[p->osc_len++] = b;
-    } else {
-        p->osc_truncated = true;
+    if (p->osc_truncated)
+        return;
+    if (p->osc_len >= p->osc_cap) {
+        uint32_t ncap = p->osc_cap ? p->osc_cap * 2u : CFR_OSC_BUF_INIT;
+        if (ncap > CFR_OSC_BUF_MAX) {
+            p->osc_truncated = true;
+            return;
+        }
+        uint8_t *nb = realloc(p->osc_buf, ncap);
+        if (!nb) {
+            p->osc_truncated = true;
+            return;
+        }
+        p->osc_buf = nb;
+        p->osc_cap = ncap;
     }
+    p->osc_buf[p->osc_len++] = b;
 }
 
 /* ------------------------------------------------------------------ */
@@ -835,7 +847,8 @@ static void state_osc_string(CfrTerm *vt, uint8_t b)
     /* BEL terminates per xterm extension. ST (ESC \ or 0x9C) handled
      * by anywhere_transition / state_escape. */
     if (b == 0x07) {
-        cfr_osc_dispatch(vt, p->osc_buf, p->osc_len);
+        if (!p->osc_truncated)
+            cfr_osc_dispatch(vt, p->osc_buf, p->osc_len);
         p->state = CFR_STATE_GROUND;
         return;
     }
@@ -858,11 +871,23 @@ static void state_sos_pm(CfrTerm *vt, uint8_t b)
 
 static void apc_put(CfrParser *p, uint8_t b)
 {
-    if (p->apc_len < CFR_OSC_BUF_BYTES) {
-        p->apc_buf[p->apc_len++] = b;
-    } else {
-        p->apc_truncated = true;
+    if (p->apc_truncated)
+        return;
+    if (p->apc_len >= p->apc_cap) {
+        uint32_t ncap = p->apc_cap ? p->apc_cap * 2u : CFR_OSC_BUF_INIT;
+        if (ncap > CFR_OSC_BUF_MAX) {
+            p->apc_truncated = true;
+            return;
+        }
+        uint8_t *nb = realloc(p->apc_buf, ncap);
+        if (!nb) {
+            p->apc_truncated = true;
+            return;
+        }
+        p->apc_buf = nb;
+        p->apc_cap = ncap;
     }
+    p->apc_buf[p->apc_len++] = b;
 }
 
 static void state_apc_string(CfrTerm *vt, uint8_t b)
@@ -926,7 +951,8 @@ void cfr_parser_feed(CfrTerm *vt, const uint8_t *bytes, size_t len)
         if (p->state == CFR_STATE_OSC_STRING) {
             if (b == 0x1b) {
                 /* ESC \ pending — finish OSC, then go to ESCAPE. */
-                cfr_osc_dispatch(vt, p->osc_buf, p->osc_len);
+                if (!p->osc_truncated)
+                    cfr_osc_dispatch(vt, p->osc_buf, p->osc_len);
                 p->state = CFR_STATE_ESCAPE;
                 clear_seq(p);
                 p->utf8_state = UTF8_ACCEPT;
