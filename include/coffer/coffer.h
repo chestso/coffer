@@ -434,8 +434,8 @@ uint32_t cfr_default_palette_rgb(uint8_t index);
 
 /*
  * A decoded sixel image, anchored to a grid line. The engine owns the
- * pixel data and the lifetime; the view returned by cfr_get_sixels() is
- * valid until the next cfr_input_write()/cfr_get_sixels() call.
+ * pixel data and the lifetime; the view returned by cfr_get_images() is
+ * valid until the next cfr_input_write()/cfr_get_images() call.
  *
  * `row` is a unified row coordinate: >= 0 is a visible grid row (0 =
  * top), < 0 is scrollback depth (-1 = the line most recently scrolled
@@ -448,7 +448,7 @@ uint32_t cfr_default_palette_rgb(uint8_t index);
  * when it must. `layer` is 0 for foreground (drawn over text); layer 1
  * (background, drawn behind text) is reserved for a future extension.
  */
-/* Image source identifiers for the `source` field on CfrSixel. */
+/* Image source identifiers for the `source` field on CfrImage. */
 enum
 {
     IMG_SRC_SIXEL = 0,
@@ -468,7 +468,7 @@ typedef struct
     int width_px;
     int height_px;
     const uint8_t *rgba; /* width_px * height_px * 4, RGBA, engine-owned */
-} CfrSixel;
+} CfrImage;
 
 /* Update the pixel size of one character cell. Call on font load and on
  * resize. The cell pixel size is always known (set at creation), but this
@@ -483,7 +483,40 @@ void cfr_set_content_scale(CfrTerm *vt, float scale);
 /* Return the live sixel images. The returned array is owned by the
  * engine and valid until the next mutation; *out_count receives the
  * number of images (0 if none). Returns NULL when there are none. */
-const CfrSixel *cfr_get_sixels(CfrTerm *vt, int *out_count);
+const CfrImage *cfr_get_images(CfrTerm *vt, int *out_count);
+
+/* A placement of an image on the terminal grid (1:N image-to-placement,
+ * used by Lottie and kitty graphics). Anchored by absolute line so it
+ * scrolls with text. `row` is the display-relative row (abs_line minus
+ * the scroll top). `image_id` links to the owning CfrImage's id. */
+typedef struct
+{
+    uint64_t id;
+    uint64_t image_id;
+    int row; /* display-relative row */
+    int col;
+    int rows;
+    int cols;
+    uint8_t layer;
+    uint8_t opacity_x256;
+    int z_index;
+    int src_x; /* source rect in the image (kitty); 0 = full */
+    int src_y;
+    int src_w;
+    int src_h;
+} CfrImagePlacement;
+
+/* Return the live image placements (kitty graphics). The returned array
+ * is owned by the engine and valid until the next mutation; *out_count
+ * receives the number of placements (0 if none). Returns NULL if empty. */
+const CfrImagePlacement *cfr_get_image_placements(CfrTerm *vt, int *out_count);
+
+/* Return placements for a single image id. Engine-owned, valid until the
+ * next mutation; *out_count receives the count (0 if none). Returns NULL
+ * when the image has no placements. */
+const CfrImagePlacement *cfr_get_image_placements_for(CfrTerm *vt,
+                                                      uint64_t image_id,
+                                                      int *out_count);
 
 /* --- Lottie animations ------------------------------------------------- */
 

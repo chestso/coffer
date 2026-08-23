@@ -123,6 +123,16 @@ static void test_query(void)
     cfr_free(vt);
 }
 
+static void test_query_capabilities(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b_Ga=q,i=0\x1b\\");
+    ASSERT_TRUE(g_output_len > 0);
+    ASSERT_TRUE(strstr(g_output, "i=0") != NULL);
+    ASSERT_TRUE(strstr(g_output, "flags=") != NULL);
+    cfr_free(vt);
+}
+
 static void test_query_quiet(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -152,7 +162,7 @@ static void test_transmit_rgba(void)
     feed(vt, seq);
 
     int count = 0;
-    const CfrSixel *imgs = cfr_get_sixels(vt, &count);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_NOT_NULL(imgs);
     ASSERT_EQ(count, 1);
     ASSERT_EQ(imgs[0].source, IMG_SRC_KITTY);
@@ -186,7 +196,7 @@ static void test_transmit_alpha(void)
     feed(vt, seq);
 
     int count = 0;
-    const CfrSixel *imgs = cfr_get_sixels(vt, &count);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_NOT_NULL(imgs);
     ASSERT_EQ(count, 1);
     ASSERT_EQ(imgs[0].rgba[0], 100);
@@ -215,14 +225,14 @@ static void test_delete_all(void)
     feed(vt, seq);
 
     int count = 0;
-    cfr_get_sixels(vt, &count);
+    cfr_get_images(vt, &count);
     ASSERT_EQ(count, 1);
 
     /* Delete all */
     g_output_len = 0;
     feed(vt, "\x1b_Ga=d,d=a\x1b\\");
 
-    cfr_get_sixels(vt, &count);
+    cfr_get_images(vt, &count);
     ASSERT_EQ(count, 0);
 
     cfr_free(vt);
@@ -249,6 +259,393 @@ static void test_osc5555_carrier(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 7. Transmit stores image under the client-assigned id           */
+/* --------------------------------------------------------------- */
+
+static void test_transmit_client_id(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=42;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ((long long)imgs[0].id, 42);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 8. Place (a=p) stores a placement with z-index                 */
+/* --------------------------------------------------------------- */
+
+static void test_place(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Place with explicit placement id, z-index, cell offsets and size.
+     * kitty uses w= (cell width) and h= (cell height) for the placement
+     * box; x=/y= are the cell offsets from the cursor. */
+    feed(vt, "\x1b_Ga=p,i=7,p=99,z=-2,x=3,y=4,w=2,h=3\x1b\\");
+
+    int count = 0;
+    const CfrImagePlacement *pls = cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ((long long)pls[0].image_id, 7);
+    ASSERT_EQ((long long)pls[0].id, 99);
+    ASSERT_EQ(pls[0].z_index, -2);
+    ASSERT_EQ(pls[0].col, 3);
+    ASSERT_EQ(pls[0].row, 4);
+    ASSERT_EQ(pls[0].cols, 2);
+    ASSERT_EQ(pls[0].rows, 3);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 8b. Place uses c=/r= as cursor advance, not placement size      */
+/* --------------------------------------------------------------- */
+
+static void test_place_cursor_advance(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* c=2 r=1 moves the cursor; the placement box is the default 1x1. */
+    feed(vt, "\x1b_Ga=p,i=7,c=2,r=1\x1b\\");
+
+    /* The cursor advanced right 2, down 1 from (0,0). */
+    ASSERT_EQ(vt->cursor.col, 2);
+    ASSERT_EQ(vt->cursor.row, 1);
+
+    int count = 0;
+    const CfrImagePlacement *pls = cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(count, 1);
+    /* Placement anchored at original cursor (0,0), 1x1 cells. */
+    ASSERT_EQ(pls[0].col, 0);
+    ASSERT_EQ(pls[0].row, 0);
+    ASSERT_EQ(pls[0].cols, 1);
+    ASSERT_EQ(pls[0].rows, 1);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 8c. Virtual placement (U=1) — cursor is not advanced            */
+/* --------------------------------------------------------------- */
+
+static void test_place_virtual(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* A virtual placement leaves the cursor where it is. */
+    feed(vt, "\x1b_Ga=p,i=7,U=1\x1b\\");
+    ASSERT_EQ(vt->cursor.col, 0);
+    ASSERT_EQ(vt->cursor.row, 0);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 8d. Relative placement (P= parent id, X=/Y= offset)            */
+/* --------------------------------------------------------------- */
+
+static void test_place_relative(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+
+    /* Parent placement at cell (5,6). */
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b_Ga=p,i=7,p=100,x=5,y=6,U=1\x1b\\");
+
+    /* Child relative to parent 100, offset x=2 y=3. */
+    uint8_t rgba2[4] = { 0, 255, 0, 255 };
+    b64_encode(rgba2, sizeof(rgba2), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=8;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b_Ga=p,i=8,P=100,x=2,y=3,U=1\x1b\\");
+
+    int count = 0;
+    const CfrImagePlacement *pls = cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(count, 2);
+
+    /* Find the child (image_id 8). */
+    const CfrImagePlacement *child = NULL;
+    for (int i = 0; i < count; i++)
+        if (pls[i].image_id == 8)
+            child = &pls[i];
+    ASSERT_NOT_NULL(child);
+    ASSERT_EQ(child->col, 7); /* 5 + 2 */
+    ASSERT_EQ(child->row, 9); /* 6 + 3 */
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 9. Delete by image id (d=i) and placement id (d=p)             */
+/* --------------------------------------------------------------- */
+
+static void test_delete_by_id(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b_Ga=p,i=7,p=99,z=0,x=0,y=0\x1b\\");
+
+    int count = 0;
+    cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_EQ(count, 1);
+
+    /* Delete by placement id */
+    feed(vt, "\x1b_Ga=d,d=p,p=99\x1b\\");
+    cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_EQ(count, 0);
+
+    /* Image record still lives (pixel data persists) */
+    int ic = 0;
+    cfr_get_images(vt, &ic);
+    ASSERT_EQ(ic, 1);
+
+    /* Delete by image id */
+    feed(vt, "\x1b_Ga=d,d=i,i=7\x1b\\");
+    cfr_get_images(vt, &ic);
+    ASSERT_EQ(ic, 0);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 10. Outbound response uses the OSC 5556 carrier on Windows      */
+/* --------------------------------------------------------------- */
+
+static void test_outbound_carrier(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    feed(vt, "\x1b_Ga=q,i=1\x1b\\");
+
+#ifdef _WIN32
+    /* On Windows responses must leave via OSC 5556 (raw G payload),
+     * because ConPTY strips outbound APC (ESC _ ... ESC \) too. */
+    ASSERT_TRUE(g_output_len > 0);
+    ASSERT_TRUE(strstr(g_output, "\x1b]5556;G") != NULL);
+    ASSERT_TRUE(strstr(g_output, "OK") != NULL);
+#else
+    /* On POSIX responses use APC form. */
+    ASSERT_TRUE(g_output_len > 0);
+    ASSERT_TRUE(strstr(g_output, "\x1b_G") != NULL);
+    ASSERT_TRUE(strstr(g_output, "OK") != NULL);
+#endif
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 10. Chunked transmit (m=1 accumulate, m=0 final)               */
+/* --------------------------------------------------------------- */
+
+static void test_chunked_transmit(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* 2x2 RGBA red — 16 bytes. Split into two base64 halves. */
+    uint8_t rgba[16] = { 255, 0, 0, 255, 255, 0, 0, 255,
+                         255, 0, 0, 255, 255, 0, 0, 255 };
+    char full[64];
+    b64_encode(rgba, sizeof(rgba), full);
+    size_t half = strlen(full) / 2;
+    /* Split into two chunks (pad independently is messy; here we just
+     * send the whole payload as a single chunk the simple way, but split
+     * at the character level across two m=1 messages). */
+    char first[64], second[64];
+    memcpy(first, full, half);
+    first[half] = '\0';
+    strcpy(second, full + half);
+
+    char seq[512];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=2,v=2,i=1,m=1;%s\x1b\\", first);
+    feed(vt, seq);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=2,v=2,i=1,m=0;%s\x1b\\", second);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].source, IMG_SRC_KITTY);
+    ASSERT_EQ(imgs[0].width_px, 2);
+    ASSERT_EQ(imgs[0].rgba[0], 255);
+    ASSERT_EQ(imgs[0].rgba[3], 255);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 11. Animation: a=a control (sets current frame) + a=f frame data */
+/* --------------------------------------------------------------- */
+
+static void test_animate_put_frame(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Place an image with z-index in a negative layer. */
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* a=f frame data with same id reuses/replaces */
+    uint8_t frame2[4] = { 0, 255, 0, 255 };
+    b64_encode(frame2, sizeof(frame2), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=f,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ((long long)imgs[0].id, 7);
+    /* rgba replaced with frame2 green pixel */
+    ASSERT_EQ(imgs[0].rgba[1], 255);
+    ASSERT_EQ(imgs[0].rgba[0], 0);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 12. zlib-compressed transfer (o=z)                             */
+/* --------------------------------------------------------------- */
+
+static void test_zlib_transmit(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* 2x2 red RGBA zlib-compressed (789c fbcfc0f0ff3f12060043cc07f9) */
+    const char *b64 = "eJz7z8Dw/z8SBgBDzAf5";
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=2,v=2,i=1,o=z;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].width_px, 2);
+    ASSERT_EQ(imgs[0].height_px, 2);
+    ASSERT_EQ(imgs[0].rgba[0], 255);
+    ASSERT_EQ(imgs[0].rgba[3], 255);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 13. Compose (a=c) and other advanced actions accepted w/o error */
+/* --------------------------------------------------------------- */
+
+static void test_compose_accepted(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Compose should reply OK, not error. */
+    g_output_len = 0;
+    feed(vt, "\x1b_Ga=c,i=1,r=1\x1b\\");
+    ASSERT_TRUE(strstr(g_output, "OK") != NULL);
+    ASSERT_TRUE(strstr(g_output, "EINVAL") == NULL);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 14. Transmit-and-place (a=T) stores image and places at cursor  */
+/* --------------------------------------------------------------- */
+
+static void test_transmit_and_place(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Image stored */
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ((long long)imgs[0].id, 7);
+
+    /* Placement created at cursor (0,0) */
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ((long long)pls[0].image_id, 7);
+    ASSERT_EQ(pls[0].col, 0);
+    ASSERT_EQ(pls[0].row, 0);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* main                                                           */
 /* --------------------------------------------------------------- */
 
@@ -260,11 +657,24 @@ int main(int argc, char *argv[])
     RUN_TEST(test_apc_router_graphics);
     RUN_TEST(test_apc_router_lottie);
     RUN_TEST(test_query);
+    RUN_TEST(test_query_capabilities);
     RUN_TEST(test_query_quiet);
     RUN_TEST(test_transmit_rgba);
     RUN_TEST(test_transmit_alpha);
     RUN_TEST(test_delete_all);
     RUN_TEST(test_osc5555_carrier);
+    RUN_TEST(test_transmit_client_id);
+    RUN_TEST(test_place);
+    RUN_TEST(test_place_cursor_advance);
+    RUN_TEST(test_place_virtual);
+    RUN_TEST(test_place_relative);
+    RUN_TEST(test_delete_by_id);
+    RUN_TEST(test_outbound_carrier);
+    RUN_TEST(test_chunked_transmit);
+    RUN_TEST(test_animate_put_frame);
+    RUN_TEST(test_zlib_transmit);
+    RUN_TEST(test_compose_accepted);
+    RUN_TEST(test_transmit_and_place);
 
     TEST_SUMMARY();
 }

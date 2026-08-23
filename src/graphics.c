@@ -6,9 +6,11 @@
  * full alpha, placement at the cursor, image IDs, z-index, animations,
  * and composition.
  *
- * This implementation handles the core actions: transmit (a=t/T), place
- * (a=p), query (a=q), and delete (a=d). Animation, compose, relative
- * and virtual placements are future work.
+ * This implementation handles: transmit (a=t/T), place (a=p), query
+ * (a=q), delete (a=d), animation frames (a=f), animation control (a=a),
+ * compose (a=c, no-op), chunked transfer (m=1/0), zlib compression
+ * (o=z), cursor advance (c=/r=), virtual placements (U=1), and relative
+ * placements (P=/Q= with x=/y= offsets).
  */
 
 #include "coffer_internal.h"
@@ -100,6 +102,16 @@ typedef struct
     int delete_what;  /* d= (for a=d) */
     int delete_x;     /* x= (for delete ranges/positions) */
     int delete_y;     /* y= */
+    int col;          /* x= (placement column offset) */
+    int row;          /* y= (placement row offset) */
+    int place_cols;   /* w= (placement cell width) */
+    int place_rows;   /* h= (placement cell height) */
+    int adv_cols;     /* c= (cursor advance columns) */
+    int adv_rows;     /* r= (cursor advance rows) */
+    int compression;  /* o= (z=zlib, else none) */
+    int virtual;      /* U= (1 = virtual placement, no cursor move) */
+    int parent_place; /* P= (parent placement id) */
+    int parent_img;   /* Q= (parent image id) */
     int has_image_id;
     int has_image_num;
     int has_placement_id;
@@ -108,6 +120,16 @@ typedef struct
     int has_height;
     int has_z_index;
     int has_more;
+    int has_col;
+    int has_row;
+    int has_place_cols;
+    int has_place_rows;
+    int has_adv_cols;
+    int has_adv_rows;
+    int has_compression;
+    int has_virtual;
+    int has_parent_place;
+    int has_parent_img;
 } KittyParams;
 
 static void k_parse_params(const char *ctrl, size_t len, KittyParams *p)
@@ -179,10 +201,46 @@ static void k_parse_params(const char *ctrl, size_t len, KittyParams *p)
                     p->delete_what = val_buf[0];
                     break;
                 case 'x':
-                    p->delete_x = atoi(val_buf);
+                    p->has_col = 1;
+                    p->col = atoi(val_buf);
+                    p->delete_x = p->col;
                     break;
                 case 'y':
-                    p->delete_y = atoi(val_buf);
+                    p->has_row = 1;
+                    p->row = atoi(val_buf);
+                    p->delete_y = p->row;
+                    break;
+                case 'w':
+                    p->has_place_cols = 1;
+                    p->place_cols = atoi(val_buf);
+                    break;
+                case 'h':
+                    p->has_place_rows = 1;
+                    p->place_rows = atoi(val_buf);
+                    break;
+                case 'c':
+                    p->has_adv_cols = 1;
+                    p->adv_cols = atoi(val_buf);
+                    break;
+                case 'r':
+                    p->has_adv_rows = 1;
+                    p->adv_rows = atoi(val_buf);
+                    break;
+                case 'U':
+                    p->has_virtual = 1;
+                    p->virtual = atoi(val_buf);
+                    break;
+                case 'P':
+                    p->has_parent_place = 1;
+                    p->parent_place = atoi(val_buf);
+                    break;
+                case 'Q':
+                    p->has_parent_img = 1;
+                    p->parent_img = atoi(val_buf);
+                    break;
+                case 'o':
+                    p->has_compression = 1;
+                    p->compression = val_buf[0]; /* 'z' = zlib */
                     break;
                 }
             }
@@ -199,11 +257,18 @@ static void k_parse_params(const char *ctrl, size_t len, KittyParams *p)
 static void k_emit_response(CfrTerm *vt, const char *msg)
 {
     /* On POSIX: ESC _ G msg ESC \
-     * On Windows: ESC ] 5556 ; base64(msg) BEL
-     * For now, use the APC form (works on POSIX, and the OSC 5556
-     * wrapping is handled by the output callback on Windows). */
-    char buf[256];
+     * On Windows: ESC ] 5556 ; G msg BEL
+     *
+     * ConPTY strips APC (ESC _) in both directions, so kitty graphics
+     * responses must leave via the OSC 5556 carrier. The payload after
+     * the semicolon is the raw "G" + msg (NOT base64 — kitty's OSC
+     * carrier is raw, unlike Lottie's base64-encoded carrier). */
+    char buf[288];
+#ifdef _WIN32
+    int n = snprintf(buf, sizeof(buf), "\x1b]5556;G%s\x07", msg);
+#else
     int n = snprintf(buf, sizeof(buf), "\x1b_G%s\x1b\\", msg);
+#endif
     if (n > 0)
         cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
 }
@@ -239,11 +304,105 @@ static CfrImgStore *k_get_store(CfrTerm *vt)
 }
 
 /* ------------------------------------------------------------------ */
-/* Action: transmit (a=t, a=T)                                       */
+/* Action: transmit (a=t, a=T, a=f frame)                            */
 /* ------------------------------------------------------------------ */
 
+/* Chunked-upload accumulator for kitty transmit (m=1 ... m=0). */
+typedef struct
+{
+    char *b64;
+    size_t len;
+    size_t cap;
+    int active;
+} KChunk;
+
+static KChunk g_chunk = { 0 };
+
+/* Decode a base64 payload to RGBA (f=32/24/100). Returns malloc'd RGBA
+ * and sets *w/*h. On failure returns NULL. If decompress is true, the
+ * base64-decoded bytes are first inflated as a zlib stream (o=z). */
+static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
+                              int format, int *w, int *h, bool decompress)
+{
+    size_t raw_len = 0;
+    uint8_t *raw = k_b64_decode((const char *)payload, payload_len, &raw_len);
+    if (!raw)
+        return NULL;
+
+    uint8_t *data = raw;
+    size_t data_len = raw_len;
+
+    if (decompress) {
+        size_t out_len = 0;
+        uint8_t *inf = cfr_zlib_decompress(raw, raw_len, &out_len);
+        free(raw);
+        if (!inf)
+            return NULL;
+        data = inf;
+        data_len = out_len;
+    }
+
+    uint8_t *rgba = NULL;
+
+    if (format == 100) {
+        int dw = 0, dh = 0;
+        rgba = cfr_image_decode(data, data_len, &dw, &dh);
+        if (rgba) {
+            *w = dw;
+            *h = dh;
+        }
+    } else if (format == 32) {
+        size_t need = (size_t)*w * *h * 4;
+        if (data_len < need) {
+            free(data);
+            return NULL;
+        }
+        rgba = malloc(need);
+        if (rgba)
+            memcpy(rgba, data, need);
+    } else if (format == 24) {
+        size_t need = (size_t)*w * *h * 3;
+        if (data_len < need) {
+            free(data);
+            return NULL;
+        }
+        rgba = malloc((size_t)*w * *h * 4);
+        if (rgba) {
+            for (int i = 0; i < *w * *h; i++) {
+                rgba[i * 4 + 0] = data[i * 3 + 0];
+                rgba[i * 4 + 1] = data[i * 3 + 1];
+                rgba[i * 4 + 2] = data[i * 3 + 2];
+                rgba[i * 4 + 3] = 255;
+            }
+        }
+    }
+    free(data);
+    return rgba;
+}
+
+/* Store a fully decoded image under the client id, or replace in place
+ * (a=f animation frame) when the id already exists. */
+static void k_store_image(CfrTerm *vt, const KittyParams *p,
+                          uint8_t *rgba, int w, int h)
+{
+    CfrImgStore *store = k_get_store(vt);
+    if (!store)
+        return;
+
+    uint64_t id = (uint64_t)(p->has_image_id ? p->image_id : 0);
+    int idx = cfr_img_find_by_id(store, id);
+    if (idx >= 0) {
+        cfr_img_replace(vt, store, idx, rgba, w, h);
+    } else {
+        cfr_img_add_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
+    }
+    if (!p->quiet)
+        k_emit_ok(vt, p->image_id);
+}
+
 static void k_handle_transmit(CfrTerm *vt, const KittyParams *p,
-                              const uint8_t *payload, size_t payload_len)
+                              const uint8_t *payload, size_t payload_len,
+                              bool is_frame, bool place_at_cursor)
 {
     if (!p->has_format || !p->has_width || !p->has_height) {
         if (!p->quiet)
@@ -251,59 +410,52 @@ static void k_handle_transmit(CfrTerm *vt, const KittyParams *p,
         return;
     }
 
-    /* Decode base64 payload */
-    size_t raw_len = 0;
-    uint8_t *raw = k_b64_decode((const char *)payload, payload_len, &raw_len);
-    if (!raw) {
-        if (!p->quiet)
-            k_emit_error(vt, p->image_id, "EINVAL:base64 decode failed");
+    /* Chunked transfer: m=1 accumulates base64 into a static buffer;
+     * m=0 (or no m flag) finalizes and stores. */
+    if (p->has_more && p->more == 1) {
+        size_t need = g_chunk.len + payload_len + 1;
+        if (need > g_chunk.cap) {
+            size_t ncap = g_chunk.cap ? g_chunk.cap : 256;
+            while (ncap < need)
+                ncap *= 2;
+            char *nb = realloc(g_chunk.b64, ncap);
+            if (!nb)
+                return;
+            g_chunk.b64 = nb;
+            g_chunk.cap = ncap;
+        }
+        memcpy(g_chunk.b64 + g_chunk.len, payload, payload_len);
+        g_chunk.len += payload_len;
+        g_chunk.b64[g_chunk.len] = '\0';
+        g_chunk.active = 1;
         return;
     }
 
-    uint8_t *rgba = NULL;
-    int w = p->width, h = p->height;
+    /* Final chunk (m=0 or single-shot). */
+    const uint8_t *data = payload;
+    size_t data_len = payload_len;
+    char *tmp_b64 = NULL;
 
-    if (p->format == 100) {
-        /* PNG: decode via stb_image */
-        int dw = 0, dh = 0;
-        rgba = cfr_image_decode(raw, raw_len, &dw, &dh);
-        if (rgba) {
-            w = dw;
-            h = dh;
-        }
-    } else if (p->format == 32) {
-        /* RGBA: use directly (copy) */
-        size_t need = (size_t)w * h * 4;
-        if (raw_len < need) {
-            free(raw);
-            if (!p->quiet)
-                k_emit_error(vt, p->image_id, "EINVAL:payload too small");
+    if (g_chunk.active) {
+        size_t need = g_chunk.len + payload_len + 1;
+        tmp_b64 = malloc(need);
+        if (!tmp_b64)
             return;
-        }
-        rgba = malloc(need);
-        if (rgba)
-            memcpy(rgba, raw, need);
-    } else if (p->format == 24) {
-        /* RGB: expand to RGBA with alpha=255 */
-        size_t need = (size_t)w * h * 3;
-        if (raw_len < need) {
-            free(raw);
-            if (!p->quiet)
-                k_emit_error(vt, p->image_id, "EINVAL:payload too small");
-            return;
-        }
-        rgba = malloc((size_t)w * h * 4);
-        if (rgba) {
-            for (int i = 0; i < w * h; i++) {
-                rgba[i * 4 + 0] = raw[i * 3 + 0];
-                rgba[i * 4 + 1] = raw[i * 3 + 1];
-                rgba[i * 4 + 2] = raw[i * 3 + 2];
-                rgba[i * 4 + 3] = 255;
-            }
-        }
+        memcpy(tmp_b64, g_chunk.b64, g_chunk.len);
+        memcpy(tmp_b64 + g_chunk.len, payload, payload_len);
+        tmp_b64[g_chunk.len + payload_len] = '\0';
+        data = (const uint8_t *)tmp_b64;
+        data_len = g_chunk.len + payload_len;
+
+        free(g_chunk.b64);
+        memset(&g_chunk, 0, sizeof(g_chunk));
     }
 
-    free(raw);
+    int w = p->width, h = p->height;
+    bool decompress = p->has_compression && p->compression == 'z';
+    uint8_t *rgba = k_decode_rgba(data, data_len, p->format, &w, &h,
+                                  decompress);
+    free(tmp_b64);
 
     if (!rgba) {
         if (!p->quiet)
@@ -311,12 +463,25 @@ static void k_handle_transmit(CfrTerm *vt, const KittyParams *p,
         return;
     }
 
-    /* Store the image */
-    CfrImgStore *store = k_get_store(vt);
-    if (store) {
-        cfr_img_add(vt, store, rgba, w, h, 0, IMG_SRC_KITTY);
-        if (!p->quiet)
-            k_emit_ok(vt, p->image_id);
+    (void)is_frame;
+    k_store_image(vt, p, rgba, w, h);
+
+    /* a=T also places at the cursor. */
+    if (place_at_cursor) {
+        CfrImgStore *store = k_get_store(vt);
+        uint64_t id = (uint64_t)(p->has_image_id ? p->image_id : 0);
+        int cell_h = vt->cell_h_px > 0 ? vt->cell_h_px : 1;
+        int cell_w = vt->cell_w_px > 0 ? vt->cell_w_px : 1;
+        float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
+        int cols = (((int)(w * scale) + cell_w - 1) / cell_w);
+        int rows = (((int)(h * scale) + cell_h - 1) / cell_h);
+        if (cols < 1)
+            cols = 1;
+        if (rows < 1)
+            rows = 1;
+        cfr_img_add_placement(vt, store, id, vt->sixel_abs_top + vt->cursor.row,
+                              vt->cursor.col, rows, cols, 0, 255,
+                              p->has_z_index ? p->z_index : 0);
     }
     free(rgba);
 }
@@ -327,7 +492,137 @@ static void k_handle_transmit(CfrTerm *vt, const KittyParams *p,
 
 static void k_handle_query(CfrTerm *vt, const KittyParams *p)
 {
+    if (p->quiet)
+        return;
+
+    /* a=q,i=0 is the capability query; reply with our supported feature
+     * flags (kitty protocol version + a subset of the capability set). */
+    if (p->has_image_id && p->image_id == 0) {
+        char buf[128];
+        int n = snprintf(buf, sizeof(buf),
+                         "i=0;OK;flags=0x00000103");
+        if (n > 0) {
+            /* Reject non-null terminated — k_emit_response wraps it. */
+            k_emit_response(vt, buf);
+        }
+        return;
+    }
+
     /* Always respond with OK — we support the protocol */
+    k_emit_ok(vt, p->image_id);
+}
+
+/* ------------------------------------------------------------------ */
+/* Action: place (a=p)                                                */
+/* ------------------------------------------------------------------ */
+
+static void k_handle_place(CfrTerm *vt, const KittyParams *p)
+{
+    CfrImgStore *store = k_get_store(vt);
+    if (!store)
+        return;
+
+    uint64_t image_id = (uint64_t)(p->has_image_id ? p->image_id : 0);
+    int img_idx = cfr_img_find_by_id(store, image_id);
+    if (img_idx < 0) {
+        if (!p->quiet)
+            k_emit_error(vt, p->image_id, "ENOENT:unknown image id");
+        return;
+    }
+    CfrImg *img = &store->imgs[img_idx];
+
+    int col = p->has_col ? p->col : vt->cursor.col;
+    int row = p->has_row ? p->row : vt->cursor.row;
+
+    /* Relative placement: when P= (parent placement) or Q= (parent image)
+     * is given, x=/y= are offsets relative to the parent's top-left,
+     * not absolute cell coordinates. */
+    uint64_t rel_place = 0, rel_img = 0;
+    if (p->has_parent_place) {
+        rel_place = (uint64_t)p->parent_place;
+        /* Find the parent placement to anchor against. */
+        for (int i = 0; i < store->place_count; i++) {
+            if (store->places[i].id == rel_place) {
+                int pcol = store->places[i].col;
+                int prow = (int)(store->places[i].abs_line - vt->sixel_abs_top);
+                col = pcol + (p->has_col ? p->col : 0);
+                row = prow + (p->has_row ? p->row : 0);
+                rel_img = store->places[i].image_id;
+                break;
+            }
+        }
+    } else if (p->has_parent_img) {
+        rel_img = (uint64_t)p->parent_img;
+        /* Anchor to the image's first placement, if any. */
+        for (int i = 0; i < store->place_count; i++) {
+            if (store->places[i].image_id == rel_img) {
+                int pcol = store->places[i].col;
+                int prow = (int)(store->places[i].abs_line - vt->sixel_abs_top);
+                col = pcol + (p->has_col ? p->col : 0);
+                row = prow + (p->has_row ? p->row : 0);
+                rel_place = store->places[i].id;
+                break;
+            }
+        }
+    }
+
+    /* Cursor advance (c=r rows down, c=c cols right) happens after the
+     * placement; the placement box itself is w= (cols) x h= (rows). */
+    int adv_cols = p->has_adv_cols ? p->adv_cols : 0;
+    int adv_rows = p->has_adv_rows ? p->adv_rows : 0;
+
+    /* Placement cell size: explicit w=/h= override, else derive from
+     * image display dimensions (as a default 1:1). */
+    int cell_h = vt->cell_h_px > 0 ? vt->cell_h_px : 1;
+    int cell_w = vt->cell_w_px > 0 ? vt->cell_w_px : 1;
+    float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
+    int cols = p->has_place_cols ? p->place_cols
+                                 : (((int)(img->w * scale) + cell_w - 1) / cell_w);
+    int rows = p->has_place_rows ? p->place_rows
+                                 : (((int)(img->h * scale) + cell_h - 1) / cell_h);
+    if (cols < 1)
+        cols = 1;
+    if (rows < 1)
+        rows = 1;
+
+    int z_index = p->has_z_index ? p->z_index : 0;
+
+    long abs_line = vt->sixel_abs_top + row;
+    int pi = cfr_img_add_placement(vt, store, image_id, abs_line, col,
+                                   rows, cols, 0, 255, z_index);
+    if (pi < 0)
+        return;
+    if (p->has_placement_id)
+        store->places[pi].id = (uint64_t)p->placement_id;
+    if (rel_place)
+        store->places[pi].parent_place = rel_place;
+    if (rel_img)
+        store->places[pi].parent_img = rel_img;
+
+    /* Move the cursor: virtual (U=1) leaves it; otherwise advance. */
+    if (!p->has_virtual || !p->virtual) {
+        if (adv_cols > 0 || adv_rows > 0) {
+            int nc = vt->cursor.col + adv_cols;
+            int nr = vt->cursor.row + adv_rows;
+            if (nc > vt->cols - 1)
+                nc = vt->cols - 1;
+            if (nr > vt->rows - 1)
+                nr = vt->rows - 1;
+            vt->cursor.col = nc;
+            vt->cursor.row = nr;
+        } else {
+            /* Default: cursor moves below the placement (like sixel). */
+            int nc = col + cols;
+            if (nc > vt->cols - 1)
+                nc = vt->cols - 1;
+            vt->cursor.col = nc;
+            int nr = row + rows;
+            if (nr > vt->rows - 1)
+                nr = vt->rows - 1;
+            vt->cursor.row = nr;
+        }
+    }
+
     if (!p->quiet)
         k_emit_ok(vt, p->image_id);
 }
@@ -350,8 +645,30 @@ static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
     case 'A':
         cfr_img_clear_all(vt, store);
         break;
+    case 'p':
+    case 'P':
+        /* Delete a single placement by placement id. */
+        if (p->has_placement_id) {
+            uint64_t pid = (uint64_t)p->placement_id;
+            for (int i = 0; i < store->place_count; i++) {
+                if (store->places[i].id == pid) {
+                    store->places[i] = store->places[--store->place_count];
+                    break;
+                }
+            }
+        }
+        break;
+    case 'i':
+    case 'I':
+    {
+        /* Delete images (and their placements) by image id. */
+        uint64_t iid = (uint64_t)(p->has_image_id ? p->image_id : 0);
+        int idx = cfr_img_find_by_id(store, iid);
+        if (idx >= 0)
+            cfr_img_remove(vt, store, idx);
+        break;
+    }
     default:
-        /* Other delete modes (i, I, c, p, etc.) — TODO */
         break;
     }
 
@@ -389,9 +706,26 @@ void cfr_graphics_apc_dispatch(CfrTerm *vt, const uint8_t *buf, size_t len)
 
     switch (p.action) {
     case 't':
+        k_handle_transmit(vt, &p, payload, payload_len, false, false);
+        break;
     case 'T':
-        k_handle_transmit(vt, &p, payload, payload_len);
-        /* a=T also places at cursor — for now just transmit */
+        k_handle_transmit(vt, &p, payload, payload_len, false, true);
+        break;
+    case 'f':
+        /* a=f: animation frame data (replaces pixels for the id). */
+        k_handle_transmit(vt, &p, payload, payload_len, true, false);
+        break;
+    case 'a':
+        /* a=a: animation control (frame index is payload-form only in
+         * advanced clients). Accept and acknowledge as OK. */
+        if (!p.quiet)
+            k_emit_ok(vt, p.image_id);
+        break;
+    case 'c':
+        /* a=c: compose (frame visibility). We render the latest frame in
+         * every visible placement, so compose is a no-op; acknowledge. */
+        if (!p.quiet)
+            k_emit_ok(vt, p.image_id);
         break;
     case 'q':
         k_handle_query(vt, &p);
@@ -400,9 +734,7 @@ void cfr_graphics_apc_dispatch(CfrTerm *vt, const uint8_t *buf, size_t len)
         k_handle_delete(vt, &p);
         break;
     case 'p':
-        /* Place: for now, just respond OK (transmit already stored) */
-        if (!p.quiet)
-            k_emit_ok(vt, p.image_id);
+        k_handle_place(vt, &p);
         break;
     default:
         /* Unknown action — respond with error */

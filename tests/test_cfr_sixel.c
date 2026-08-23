@@ -44,8 +44,8 @@ static void feed(CfrTerm *vt, const char *s)
     cfr_input_write(vt, (const uint8_t *)s, strlen(s));
 }
 
-/* Pixel accessors over a returned CfrSixel. */
-static const uint8_t *px(const CfrSixel *s, int x, int y)
+/* Pixel accessors over a returned CfrImage. */
+static const uint8_t *px(const CfrImage *s, int x, int y)
 {
     return s->rgba + ((size_t)y * s->width_px + x) * 4;
 }
@@ -60,7 +60,7 @@ static void test_decode_basic(void)
     feed(vt, "\x1bPq#1;2;100;0;0#1BB\x1b\\");
 
     int n = -1;
-    const CfrSixel *s = cfr_get_sixels(vt, &n);
+    const CfrImage *s = cfr_get_images(vt, &n);
     ASSERT_NOT_NULL(s);
     ASSERT_EQ(n, 1);
     ASSERT_EQ(s[0].width_px, 2);
@@ -91,7 +91,7 @@ static void test_transparency(void)
     feed(vt, "\x1bPq#1;2;0;100;0#1@\x1b\\");
 
     int n = -1;
-    const CfrSixel *s = cfr_get_sixels(vt, &n);
+    const CfrImage *s = cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
     ASSERT_EQ(px(&s[0], 0, 0)[3], 255); /* top set → opaque */
     ASSERT_EQ(px(&s[0], 0, 1)[3], 0);   /* below unset → transparent */
@@ -106,7 +106,7 @@ static void test_rle(void)
     feed(vt, "\x1bPq#1;2;0;100;0#1!4~\x1b\\");
 
     int n = -1;
-    const CfrSixel *s = cfr_get_sixels(vt, &n);
+    const CfrImage *s = cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
     ASSERT_EQ(s[0].width_px, 4);
     ASSERT_EQ(s[0].height_px, 6);
@@ -124,7 +124,7 @@ static void test_hls_hue(void)
     feed(vt, "\x1bPq#2;1;0;50;100#2~\x1b\\");
 
     int n = -1;
-    const CfrSixel *s = cfr_get_sixels(vt, &n);
+    const CfrImage *s = cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
     const uint8_t *p = px(&s[0], 0, 0);
     ASSERT_EQ(p[0], 0);   /* R */
@@ -142,7 +142,7 @@ static void test_cursor_advance(void)
     feed(vt, "\x1bPq#1;2;0;100;0#1~-#1~\x1b\\");
 
     int n = -1;
-    const CfrSixel *s = cfr_get_sixels(vt, &n);
+    const CfrImage *s = cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
     ASSERT_EQ(s[0].height_px, 12);
 
@@ -163,7 +163,7 @@ static void test_inplace_animation(void)
 
     feed(vt, "\x1bPq#1;2;100;0;0#1~\x1b\\");
     int n = -1;
-    const CfrSixel *s = cfr_get_sixels(vt, &n);
+    const CfrImage *s = cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
     uint64_t id0 = s[0].id;
     uint32_t v0 = s[0].version;
@@ -175,7 +175,7 @@ static void test_inplace_animation(void)
 
     /* Second frame, same size, same anchor → coalesce. */
     feed(vt, "\x1bPq#1;2;0;100;0#1~\x1b\\");
-    s = cfr_get_sixels(vt, &n);
+    s = cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);                 /* not two stacked images */
     ASSERT_EQ(s[0].id, id0);         /* stable id */
     ASSERT_EQ(s[0].version, v0 + 1); /* version bumped */
@@ -193,7 +193,7 @@ static void test_scroll_into_scrollback(void)
     feed(vt, "\x1bPq#1;2;100;0;0#1~\x1b\\"); /* image anchored at row 0 */
 
     int n = -1;
-    const CfrSixel *s = cfr_get_sixels(vt, &n);
+    const CfrImage *s = cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
     ASSERT_EQ(s[0].row, 0);
 
@@ -201,7 +201,7 @@ static void test_scroll_into_scrollback(void)
     feed(vt, "\x1b[4;1H");  /* CUP to bottom-left */
     feed(vt, "\n\n\n\n\n"); /* five linefeeds → five scrolls */
 
-    s = cfr_get_sixels(vt, &n);
+    s = cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
     ASSERT_TRUE(s[0].row < 0); /* now in scrollback */
     cfr_free(vt);
@@ -213,11 +213,11 @@ static void test_clear_on_ed(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1bPq#1;2;100;0;0#1~\x1b\\");
     int n = -1;
-    cfr_get_sixels(vt, &n);
+    cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
 
     feed(vt, "\x1b[2J"); /* erase whole display */
-    cfr_get_sixels(vt, &n);
+    cfr_get_images(vt, &n);
     ASSERT_EQ(n, 0);
     cfr_free(vt);
 }
@@ -228,12 +228,12 @@ static void test_clear_on_ris(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1bPq#1;2;100;0;0#1~\x1b\\");
     int n = -1;
-    cfr_get_sixels(vt, &n);
+    cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
 
     feed(vt, "\x1b"
              "c"); /* RIS */
-    cfr_get_sixels(vt, &n);
+    cfr_get_images(vt, &n);
     ASSERT_EQ(n, 0);
     cfr_free(vt);
 }
@@ -244,11 +244,11 @@ static void test_clear_on_altscreen(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1bPq#1;2;100;0;0#1~\x1b\\");
     int n = -1;
-    cfr_get_sixels(vt, &n);
+    cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
 
     feed(vt, "\x1b[?1049h"); /* enter altscreen */
-    cfr_get_sixels(vt, &n);
+    cfr_get_images(vt, &n);
     ASSERT_EQ(n, 0);
     cfr_free(vt);
 }
@@ -259,11 +259,11 @@ static void test_clear_on_resize(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1bPq#1;2;100;0;0#1~\x1b\\");
     int n = -1;
-    cfr_get_sixels(vt, &n);
+    cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
 
     cfr_resize(vt, 30, 100);
-    cfr_get_sixels(vt, &n);
+    cfr_get_images(vt, &n);
     ASSERT_EQ(n, 0);
     cfr_free(vt);
 }
@@ -305,7 +305,7 @@ static void test_animation_stress(void)
 
     feed(vt, "\x1bPq#1;2;100;0;0#1~\x1b\\");
     int n = -1;
-    const CfrSixel *s = cfr_get_sixels(vt, &n);
+    const CfrImage *s = cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);
     uint64_t id0 = s[0].id;
     const uint8_t *buf0 = s[0].rgba;
@@ -313,7 +313,7 @@ static void test_animation_stress(void)
     for (int i = 0; i < 500; ++i)
         feed(vt, "\x1bPq#1;2;0;100;0#1~\x1b\\");
 
-    s = cfr_get_sixels(vt, &n);
+    s = cfr_get_images(vt, &n);
     ASSERT_EQ(n, 1);                /* never piles up */
     ASSERT_EQ(s[0].id, id0);        /* same image */
     ASSERT_EQ(s[0].version, 501u);  /* 1 + 500 replacements */
@@ -332,7 +332,7 @@ static void test_image_count_cap(void)
         feed(vt, "\x1bPq#1;2;100;0;0#1~\x1b\\");
 
     int n = -1;
-    cfr_get_sixels(vt, &n);
+    cfr_get_images(vt, &n);
     ASSERT_TRUE(n > 0);
     ASSERT_TRUE(n <= 256); /* SX_MAX_IMAGES */
     cfr_free(vt);

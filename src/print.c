@@ -96,7 +96,7 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
          * they sit on, then cull any that scrolled out of scrollback. */
         vt->sixel_abs_top += lines;
         if (vt->sixel)
-            cfr_sixel_note_scroll(vt, lines);
+            cfr_img_note_scroll(vt, vt->images, lines);
         if (vt->lottie)
             cfr_lottie_note_scroll(vt, lines);
     }
@@ -575,7 +575,7 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
             vt->grid->row_flags[r] = 0;
         }
         if (vt->sixel)
-            cfr_sixel_clear_display_rows(vt, row, vt->rows - 1);
+            cfr_img_clear_display_rows(vt, vt->images, row, vt->rows - 1);
         if (vt->lottie)
             cfr_lottie_clear_display_rows(vt, row, vt->rows - 1);
         break;
@@ -587,7 +587,7 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
             vt->grid->row_flags[r] = 0;
         }
         if (vt->sixel)
-            cfr_sixel_clear_display_rows(vt, 0, row);
+            cfr_img_clear_display_rows(vt, vt->images, 0, row);
         if (vt->lottie)
             cfr_lottie_clear_display_rows(vt, 0, row);
         break;
@@ -598,7 +598,7 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
                         vt->cols);
         memset(vt->grid->row_flags, 0, (size_t)vt->rows);
         if (vt->sixel)
-            cfr_sixel_clear_display_rows(vt, 0, vt->rows - 1);
+            cfr_img_clear_display_rows(vt, vt->images, 0, vt->rows - 1);
         if (vt->lottie)
             cfr_lottie_clear_display_rows(vt, 0, vt->rows - 1);
         break;

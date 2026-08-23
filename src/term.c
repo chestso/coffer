@@ -163,7 +163,7 @@ void cfr_resize(CfrTerm *vt, int rows, int cols)
     /* Reflow rebuilds the grid with no line identity, so anchored sixel
      * images can't be followed across a rewrap — drop them on resize. */
     if (vt->sixel)
-        cfr_sixel_clear_all(vt);
+        cfr_img_clear_all(vt, vt->images);
     if (vt->lottie)
         cfr_lottie_clear_all(vt);
     cfr_reflow(vt, rows, cols);

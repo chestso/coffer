@@ -414,6 +414,217 @@ static void test_img_get_empty(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 6. Placement records (1:N image-to-placement)                  */
+/* --------------------------------------------------------------- */
+
+static void test_img_add_placement_basic(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    ASSERT_TRUE(img_idx >= 0);
+    uint64_t img_id = st->imgs[img_idx].id;
+
+    int p = cfr_img_add_placement(vt, st, img_id, vt->sixel_abs_top + 2,
+                                  3, 4, 5, 0, 200, -1);
+    ASSERT_TRUE(p >= 0);
+    ASSERT_EQ(st->place_count, 1);
+
+    CfrPlacement *pl = &st->places[p];
+    ASSERT_EQ(pl->image_id, img_id);
+    ASSERT_EQ(pl->abs_line, vt->sixel_abs_top + 2);
+    ASSERT_EQ(pl->col, 3);
+    ASSERT_EQ(pl->rows, 4);
+    ASSERT_EQ(pl->cols, 5);
+    ASSERT_EQ(pl->layer, 0);
+    ASSERT_EQ(pl->opacity_x256, 200);
+    ASSERT_EQ(pl->z_index, -1);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+static void test_img_add_placement_dedup(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    uint64_t img_id = st->imgs[img_idx].id;
+
+    int p1 = cfr_img_add_placement(vt, st, img_id, 100, 0, 2, 2, 0, 255, 0);
+    int p2 = cfr_img_add_placement(vt, st, img_id, 100, 0, 4, 4, 1, 100, 5);
+    ASSERT_TRUE(p1 >= 0);
+    ASSERT_EQ(p1, p2); /* same image + anchor + col dedups */
+    ASSERT_EQ(st->place_count, 1);
+    ASSERT_EQ(st->places[p1].rows, 4);  /* updated */
+    ASSERT_EQ(st->places[p1].layer, 1); /* updated */
+    ASSERT_EQ(st->places[p1].opacity_x256, 100);
+    ASSERT_EQ(st->places[p1].z_index, 5);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+static void test_img_add_placement_unknown_image(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    int p = cfr_img_add_placement(vt, st, 999999, 0, 0, 2, 2, 0, 255, 0);
+    ASSERT_EQ(p, -1);
+    ASSERT_EQ(st->place_count, 0);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+static void test_img_get_placements(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    uint64_t img_id = st->imgs[img_idx].id;
+
+    cfr_img_add_placement(vt, st, img_id, vt->sixel_abs_top + 2, 3, 4, 5,
+                          0, 200, -1);
+
+    int count = -1;
+    const CfrImagePlacement *pls = cfr_img_get_placements(vt, st, &count);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(pls[0].image_id, img_id);
+    ASSERT_EQ(pls[0].row, 2); /* abs_line - sixel_abs_top */
+    ASSERT_EQ(pls[0].col, 3);
+    ASSERT_EQ(pls[0].rows, 4);
+    ASSERT_EQ(pls[0].cols, 5);
+    ASSERT_EQ(pls[0].opacity_x256, 200);
+    ASSERT_EQ(pls[0].z_index, -1);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+static void test_img_clear_removes_placements(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    uint64_t img_id = st->imgs[img_idx].id;
+
+    cfr_img_add_placement(vt, st, img_id, vt->sixel_abs_top, 0, 1, 1, 0, 255, 0);
+    ASSERT_EQ(st->place_count, 1);
+
+    cfr_img_clear_all(vt, st);
+    ASSERT_EQ(st->img_count, 0);
+    ASSERT_EQ(st->place_count, 0);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+static void test_img_scroll_cull_removes_placements(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    vt->sb_capacity = 5;
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    uint64_t img_id = st->imgs[img_idx].id;
+
+    cfr_img_add_placement(vt, st, img_id, vt->sixel_abs_top, 0, 1, 1, 0, 255, 0);
+    ASSERT_EQ(st->place_count, 1);
+
+    vt->sixel_abs_top = 10;
+    cfr_img_note_scroll(vt, st, 10);
+
+    ASSERT_EQ(st->img_count, 0);
+    ASSERT_EQ(st->place_count, 0);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 7. Placement-aware scroll cull + clear for 1:N (kitty/lottie)   */
+/* --------------------------------------------------------------- */
+
+/* A 1:N image not anchored at the cursor must be culled based on its
+ * placement's abs_line, not its image record's abs_line (which is 0). */
+static void test_named_image_scroll_culls_by_placement(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    vt->sb_capacity = 5;
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int img_idx = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    ASSERT_TRUE(img_idx >= 0);
+
+    /* Placement anchored at abs_line 0 (row 0), 1 cell tall. */
+    int pi = cfr_img_add_placement(vt, st, 7, vt->sixel_abs_top, 0, 1, 1,
+                                   0, 255, 0);
+    ASSERT_TRUE(pi >= 0);
+    ASSERT_EQ(st->place_count, 1);
+    ASSERT_EQ(st->img_count, 1);
+
+    /* Advance the scroll top so the placement scrolls past capacity. */
+    vt->sixel_abs_top = 10;
+    cfr_img_note_scroll(vt, st, 10);
+
+    ASSERT_EQ(st->img_count, 0);
+    ASSERT_EQ(st->place_count, 0);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* A placement clears rows based on its own abs_line, even though the
+ * image record's abs_line is 0 (1:N model). */
+static void test_named_image_clear_rows_by_placement(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int img_idx = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    ASSERT_TRUE(img_idx >= 0);
+
+    /* Placement at display row 5. */
+    int pi = cfr_img_add_placement(vt, st, 7, vt->sixel_abs_top + 5, 0, 1, 1,
+                                   0, 255, 0);
+    ASSERT_TRUE(pi >= 0);
+
+    /* Clear rows 0-4 — placement at 5 survives. */
+    cfr_img_clear_display_rows(vt, st, 0, 4);
+    ASSERT_EQ(st->img_count, 1);
+    ASSERT_EQ(st->place_count, 1);
+
+    /* Clear rows 5-5 — placement at 5 removed (image + placement). */
+    cfr_img_clear_display_rows(vt, st, 5, 5);
+    ASSERT_EQ(st->img_count, 0);
+    ASSERT_EQ(st->place_count, 0);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* main                                                           */
 /* --------------------------------------------------------------- */
 
@@ -436,6 +647,14 @@ int main(int argc, char *argv[])
     RUN_TEST(test_img_clear_preserves_background_layer);
     RUN_TEST(test_img_get_returns_images);
     RUN_TEST(test_img_get_empty);
+    RUN_TEST(test_img_add_placement_basic);
+    RUN_TEST(test_img_add_placement_dedup);
+    RUN_TEST(test_img_add_placement_unknown_image);
+    RUN_TEST(test_img_get_placements);
+    RUN_TEST(test_img_clear_removes_placements);
+    RUN_TEST(test_img_scroll_cull_removes_placements);
+    RUN_TEST(test_named_image_scroll_culls_by_placement);
+    RUN_TEST(test_named_image_clear_rows_by_placement);
 
     TEST_SUMMARY();
 }

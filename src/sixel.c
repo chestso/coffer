@@ -25,7 +25,7 @@
  * order), and a retained-pool ceiling.
  *
  * Single-threaded: all mutation happens under cfr_input_write and reads
- * under cfr_get_sixels, on the caller's one thread. No locking.
+ * under cfr_get_images, on the caller's one thread. No locking.
  */
 
 #include "coffer_internal.h"
@@ -491,27 +491,6 @@ void cfr_sixel_finish(CfrTerm *vt)
 /* Grid maintenance                                                    */
 /* ------------------------------------------------------------------ */
 
-void cfr_sixel_note_scroll(CfrTerm *vt, int lines)
-{
-    if (!vt || !vt->images)
-        return;
-    cfr_img_note_scroll(vt, vt->images, lines);
-}
-
-void cfr_sixel_clear_display_rows(CfrTerm *vt, int top, int bot)
-{
-    if (!vt || !vt->images)
-        return;
-    cfr_img_clear_display_rows(vt, vt->images, top, bot);
-}
-
-void cfr_sixel_clear_all(CfrTerm *vt)
-{
-    if (!vt || !vt->images)
-        return;
-    cfr_img_clear_all(vt, vt->images);
-}
-
 void cfr_sixel_state_free(CfrTerm *vt)
 {
     CfrSixelState *st = vt->sixel;
@@ -543,9 +522,25 @@ void cfr_set_content_scale(CfrTerm *vt, float scale)
     vt->content_scale = scale > 0.0f ? scale : 1.0f;
 }
 
-const CfrSixel *cfr_get_sixels(CfrTerm *vt, int *out_count)
+const CfrImage *cfr_get_images(CfrTerm *vt, int *out_count)
 {
     if (!vt || !vt->images)
         return NULL;
-    return (const CfrSixel *)cfr_img_get(vt, vt->images, out_count);
+    return (const CfrImage *)cfr_img_get(vt, vt->images, out_count);
+}
+
+const CfrImagePlacement *cfr_get_image_placements(CfrTerm *vt, int *out_count)
+{
+    if (!vt || !vt->images)
+        return NULL;
+    return cfr_img_get_placements(vt, vt->images, out_count);
+}
+
+const CfrImagePlacement *cfr_get_image_placements_for(CfrTerm *vt,
+                                                      uint64_t image_id,
+                                                      int *out_count)
+{
+    if (!vt || !vt->images)
+        return NULL;
+    return cfr_img_get_placements_for(vt, vt->images, image_id, out_count);
 }

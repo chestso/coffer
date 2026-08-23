@@ -109,7 +109,7 @@ static void test_inline_png(void)
 
     /* Should have created an image in the store */
     int count = -1;
-    const CfrSixel *imgs = cfr_get_sixels(vt, &count);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_NOT_NULL(imgs);
     ASSERT_EQ(count, 1);
     ASSERT_EQ(imgs[0].source, IMG_SRC_ITERM);
@@ -138,7 +138,7 @@ static void test_download_ignored(void)
     feed(vt, seq);
 
     int count = 0;
-    const CfrSixel *imgs = cfr_get_sixels(vt, &count);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_EQ(count, 0);
     ASSERT_NULL(imgs);
 
@@ -159,7 +159,7 @@ static void test_inline_scroll(void)
     feed(vt, seq);
 
     int count = -1;
-    const CfrSixel *imgs = cfr_get_sixels(vt, &count);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_EQ(count, 1);
     int row_before = imgs[0].row;
 
@@ -167,7 +167,7 @@ static void test_inline_scroll(void)
     feed(vt, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
 
     /* After scrolling, the image row should decrease (or be culled) */
-    imgs = cfr_get_sixels(vt, &count);
+    imgs = cfr_get_images(vt, &count);
     if (count > 0) {
         ASSERT_TRUE(imgs[0].row < row_before);
     }
@@ -208,7 +208,7 @@ static void test_multipart(void)
 
     /* Should have assembled and stored the image */
     int count = 0;
-    const CfrSixel *imgs = cfr_get_sixels(vt, &count);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_NOT_NULL(imgs);
     ASSERT_EQ(count, 1);
     ASSERT_EQ(imgs[0].source, IMG_SRC_ITERM);
@@ -236,7 +236,7 @@ static void test_width_cells(void)
     feed(vt, seq);
 
     int count = 0;
-    const CfrSixel *imgs = cfr_get_sixels(vt, &count);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_NOT_NULL(imgs);
     ASSERT_EQ(count, 1);
     /* With width=2 (cells) and cell_w=10, display width should be 20px */
@@ -259,7 +259,7 @@ static void test_width_pixels(void)
     feed(vt, seq);
 
     int count = 0;
-    const CfrSixel *imgs = cfr_get_sixels(vt, &count);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_NOT_NULL(imgs);
     ASSERT_EQ(count, 1);
     ASSERT_EQ(imgs[0].width_px, 16);
@@ -281,7 +281,7 @@ static void test_intermediate_alpha(void)
     feed(vt, seq);
 
     int count = 0;
-    const CfrSixel *imgs = cfr_get_sixels(vt, &count);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_NOT_NULL(imgs);
     ASSERT_EQ(count, 1);
     ASSERT_EQ(imgs[0].width_px, 2);

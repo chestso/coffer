@@ -456,6 +456,9 @@ void cfr_emit_bytes(CfrTerm *vt, const uint8_t *bytes, size_t len);
 /* Image decoding (image_decode.c). Decodes PNG/JPEG/etc. to RGBA. */
 uint8_t *cfr_image_decode(const uint8_t *data, size_t len, int *w, int *h);
 
+/* Zlib decompression (image_decode.c). Inflates a RFC1950 stream. */
+uint8_t *cfr_zlib_decompress(const uint8_t *data, size_t len, size_t *out_len);
+
 /* OSC 1337 (iTerm2 inline images, osc_1337.c). */
 void cfr_osc_1337_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len);
 
@@ -514,13 +517,6 @@ void cfr_sixel_state_free(CfrTerm *vt);
 void cfr_sixel_begin(CfrTerm *vt, const uint32_t *params, int nparams);
 void cfr_sixel_put(CfrTerm *vt, const uint8_t *data, size_t len);
 void cfr_sixel_finish(CfrTerm *vt);
-/* Grid maintenance. note_scroll is called after sixel_abs_top advances by
- * `lines`; it culls images that have scrolled out of retained scrollback.
- * clear_display_rows removes foreground images overlapping the inclusive
- * display-row range [top,bot]; clear_all removes everything. */
-void cfr_sixel_note_scroll(CfrTerm *vt, int lines);
-void cfr_sixel_clear_display_rows(CfrTerm *vt, int top, int bot);
-void cfr_sixel_clear_all(CfrTerm *vt);
 
 /* Lottie animations (lottie.c). Lazily allocated, same pattern as sixel.
  * All entry points are no-ops when no animation has been loaded. */

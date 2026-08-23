@@ -53,9 +53,26 @@ typedef struct
     size_t cap;
 } ImgSpare;
 
-/* Public image snapshot. CfrSixel is defined in coffer.h and is the
- * same struct — the alias keeps the name in sync with the rename. */
-typedef CfrSixel CfrImage;
+/* One placement of an image on the terminal grid (1:N image-to-placement
+ * model used by Lottie and kitty). */
+typedef struct
+{
+    uint64_t id;       /* placement id (client- or engine-assigned) */
+    uint64_t image_id; /* owning image's id */
+    long abs_line;     /* absolute line anchor (scrolls with text) */
+    int col;
+    int rows, cols;
+    uint8_t layer;
+    uint8_t opacity_x256;
+    int z_index;                    /* kitty only; 0 for others */
+    int src_x, src_y, src_w, src_h; /* source rect (kitty only) */
+    int pix_offset_x, pix_offset_y; /* pixel offset in first cell (kitty only) */
+    int cell_off_x, cell_off_y;
+    uint64_t parent_img;   /* relative placement parent image (kitty) */
+    uint64_t parent_place; /* relative placement parent placement (kitty) */
+} CfrPlacement;
+
+/* Public image snapshot (defined in coffer.h). */
 
 /* The store state (was CfrSixelState storage fields / CfrLottieState). */
 typedef struct CfrImgStore
@@ -66,6 +83,11 @@ typedef struct CfrImgStore
     uint64_t next_id;
     size_t live_bytes;
 
+    /* Tier 1b: placement records (for 1:N systems) */
+    CfrPlacement *places;
+    int place_count, place_cap;
+    uint64_t next_place_id;
+
     /* Tier 2: pixel-buffer free-list pool */
     ImgSpare spares[IMG_SPARE_MAX];
     int spare_count;
@@ -74,9 +96,11 @@ typedef struct CfrImgStore
     /* Query scratch — reused, grown, never freed between calls */
     CfrImage *img_scratch;
     int img_scratch_cap;
+    CfrImagePlacement *place_scratch;
+    int place_scratch_cap;
 } CfrImgStore;
 
-/* CfrImage is typedef'd to CfrSixel above. */
+/* CfrImage is typedef'd to CfrImage above. */
 
 /* ------------------------------------------------------------------ */
 /* Store lifecycle                                                    */
@@ -106,12 +130,43 @@ int cfr_img_add(void *vt, CfrImgStore *st,
                 const uint8_t *rgba, int w, int h,
                 uint8_t layer, uint8_t source);
 
+/* Store RGBA data keyed by explicit id (lottie animation). Creates or
+ * replaces the image with the given id at an explicit anchor without
+ * advancing the cursor or damaging (caller handles placement/damage).
+ * Returns image index >= 0, or -1 on failure. */
+int cfr_img_add_named(void *vt, CfrImgStore *st,
+                      uint64_t id, const uint8_t *rgba, int w, int h,
+                      uint8_t layer, uint8_t source);
+
+/* Ensure a zero-initialised RGBA buffer exists for the given id, sized
+ * w*h. Returns the image index (>= 0) or -1. The caller writes pixels
+ * directly into st->imgs[idx].rgba (e.g. a software rasterizer target)
+ * and then calls cfr_img_mark_dirty(). No copy, no cursor advance. */
+int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
+                        int w, int h, uint8_t layer, uint8_t source);
+
+/* Bump the image version after in-place pixel writes (rasterizer wrote
+ * directly into the buffer). Damage is the caller's responsibility. */
+void cfr_img_mark_dirty(CfrImgStore *st, int idx);
+
 /* Replace image pixel data (animation / frame update). Bumps version. */
 void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
                      const uint8_t *rgba, int w, int h);
 
 /* Find an image at a given anchor + layer. Returns index or -1. */
 int cfr_img_find_at(CfrImgStore *st, long abs_line, int col, uint8_t layer);
+
+/* Find an image by id. Returns index or -1. */
+int cfr_img_find_by_id(CfrImgStore *st, uint64_t id);
+
+/* Remove an image (and its placements) by index. */
+void cfr_img_remove(void *vt, CfrImgStore *st, int idx);
+
+/* Add a placement of an existing image (1:N model). Dedups on
+ * image_id + abs_line + col. Returns placement index >= 0, or -1. */
+int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_id,
+                          long abs_line, int col, int rows, int cols,
+                          uint8_t layer, uint8_t opacity, int z_index);
 
 /* Evict oldest (lowest abs_line) images until incoming more bytes fit. */
 void img_evict_to_budget(void *vt, CfrImgStore *st, size_t incoming);
@@ -139,5 +194,19 @@ void cfr_img_clear_all(void *vt, CfrImgStore *st);
  * is owned by the engine and valid until the next mutation.
  * *out_count receives the count (0 if none). Returns NULL when empty. */
 const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count);
+
+/* Return the live placements as an array of CfrImagePlacement snapshots.
+ * The array is owned by the engine and valid until the next mutation.
+ * *out_count receives the count (0 if none). Returns NULL when empty. */
+const CfrImagePlacement *cfr_img_get_placements(void *vt, CfrImgStore *st,
+                                                int *out_count);
+
+/* Return placements for a single image id (1:N model). The returned array
+ * is owned by the engine and valid until the next mutation. *out_count
+ * receives the count (0 if none). Returns NULL when the image has no
+ * placements or doesn't exist. */
+const CfrImagePlacement *cfr_img_get_placements_for(void *vt, CfrImgStore *st,
+                                                    uint64_t image_id,
+                                                    int *out_count);
 
 #endif /* COFFER_IMAGE_STORE_H */

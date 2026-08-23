@@ -2,8 +2,8 @@
  * coffer — generic grid-anchored image store.
  *
  * Extracted from sixel.c (sx_buf_alloc, sx_buf_release, sx_rec_release,
- * sx_evict_to_budget, sx_find_at, sx_advance_cursor, cfr_sixel_note_scroll,
- * cfr_sixel_clear_display_rows, cfr_sixel_clear_all, cfr_get_sixels).
+ * sx_evict_to_budget, sx_find_at, sx_advance_cursor, cfr_img_note_scroll,
+ * cfr_img_clear_display_rows, cfr_img_clear_all, cfr_img_get).
  *
  * All four image protocols (sixel, lottie, iTerm2, kitty) share this store
  * for RGBA pixel data anchored to absolute grid lines. The source field
@@ -40,7 +40,9 @@ void cfr_img_store_free(void *vt, CfrImgStore *st)
     for (int i = 0; i < st->spare_count; i++)
         cfr_dealloc(cvt, st->spares[i].ptr);
     cfr_dealloc(cvt, st->imgs);
+    cfr_dealloc(cvt, st->places);
     cfr_dealloc(cvt, st->img_scratch);
+    cfr_dealloc(cvt, st->place_scratch);
     cfr_dealloc(cvt, st);
 }
 
@@ -96,9 +98,18 @@ void img_buf_release(void *vt, CfrImgStore *st, uint8_t *ptr, size_t cap)
 static void img_rec_release(void *vt, CfrImgStore *st, int idx)
 {
     CfrImg *r = &st->imgs[idx];
+    uint64_t id = r->id;
     st->live_bytes -= r->cap;
     img_buf_release(vt, st, r->rgba, r->cap);
     st->imgs[idx] = st->imgs[--st->img_count];
+
+    /* Remove any placements that referenced the released image. */
+    for (int i = 0; i < st->place_count;) {
+        if (st->places[i].image_id == id)
+            st->places[i] = st->places[--st->place_count];
+        else
+            ++i;
+    }
 }
 
 void img_evict_to_budget(void *vt, CfrImgStore *st, size_t incoming)
@@ -119,6 +130,77 @@ int cfr_img_find_at(CfrImgStore *st, long abs_line, int col, uint8_t layer)
             st->imgs[i].layer == layer)
             return i;
     return -1;
+}
+
+int cfr_img_find_by_id(CfrImgStore *st, uint64_t id)
+{
+    for (int i = 0; i < st->img_count; ++i)
+        if (st->imgs[i].id == id)
+            return i;
+    return -1;
+}
+
+void cfr_img_remove(void *vt, CfrImgStore *st, int idx)
+{
+    if (idx < 0 || idx >= st->img_count)
+        return;
+    img_rec_release(vt, st, idx);
+}
+
+/* Remove a placement record (swap-remove). */
+static void place_rec_release(CfrImgStore *st, int idx)
+{
+    st->places[idx] = st->places[--st->place_count];
+}
+
+int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_id,
+                          long abs_line, int col, int rows, int cols,
+                          uint8_t layer, uint8_t opacity, int z_index)
+{
+    if (!st)
+        return -1;
+
+    /* The owning image must exist. */
+    if (cfr_img_find_by_id(st, image_id) < 0)
+        return -1;
+
+    /* Dedup on image_id + abs_line + col. */
+    for (int i = 0; i < st->place_count; ++i) {
+        if (st->places[i].image_id == image_id &&
+            st->places[i].abs_line == abs_line &&
+            st->places[i].col == col) {
+            CfrPlacement *pl = &st->places[i];
+            pl->rows = rows;
+            pl->cols = cols;
+            pl->layer = layer;
+            pl->opacity_x256 = opacity;
+            pl->z_index = z_index;
+            return i;
+        }
+    }
+
+    if (st->place_count >= st->place_cap) {
+        int ncap = st->place_cap ? st->place_cap * 2 : 8;
+        CfrPlacement *np =
+            cfr_realloc(vt, st->places, (size_t)ncap * sizeof(CfrPlacement));
+        if (!np)
+            return -1;
+        st->places = np;
+        st->place_cap = ncap;
+    }
+
+    CfrPlacement *pl = &st->places[st->place_count++];
+    memset(pl, 0, sizeof(*pl));
+    pl->id = st->next_place_id++;
+    pl->image_id = image_id;
+    pl->abs_line = abs_line;
+    pl->col = col;
+    pl->rows = rows;
+    pl->cols = cols;
+    pl->layer = layer;
+    pl->opacity_x256 = opacity;
+    pl->z_index = z_index;
+    return st->place_count - 1;
 }
 
 /* Move the cursor below a placed image and scroll the grid as needed. */
@@ -258,6 +340,156 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     return st->img_count - 1;
 }
 
+int cfr_img_add_named(void *vt, CfrImgStore *st,
+                      uint64_t id, const uint8_t *rgba, int w, int h,
+                      uint8_t layer, uint8_t source)
+{
+    if (!rgba || w <= 0 || h <= 0 || w > IMG_MAX_DIM || h > IMG_MAX_DIM)
+        return -1;
+
+    size_t need = (size_t)w * (size_t)h * 4u;
+    if (need == 0 || need > IMG_LIVE_MAX)
+        return -1;
+
+    int existing = cfr_img_find_by_id(st, id);
+    if (existing >= 0) {
+        CfrImg *r = &st->imgs[existing];
+        if (r->cap < need) {
+            st->live_bytes -= r->cap;
+            img_buf_release(vt, st, r->rgba, r->cap);
+            size_t cap = 0;
+            uint8_t *buf = img_buf_alloc(vt, st, need, &cap);
+            if (!buf) {
+                st->imgs[existing] = st->imgs[--st->img_count];
+                return -1;
+            }
+            r->rgba = buf;
+            r->cap = cap;
+            st->live_bytes += cap;
+        }
+        memcpy(r->rgba, rgba, need);
+        r->w = w;
+        r->h = h;
+        r->layer = layer;
+        r->source = source;
+        return existing;
+    }
+
+    if (st->img_count >= IMG_MAX_IMAGES)
+        img_rec_release(vt, st, 0);
+    img_evict_to_budget(vt, st, need);
+
+    if (st->img_count >= st->img_cap) {
+        int ncap = st->img_cap ? st->img_cap * 2 : 8;
+        if (ncap > IMG_MAX_IMAGES)
+            ncap = IMG_MAX_IMAGES;
+        CfrImg *nr = cfr_realloc(vt, st->imgs, (size_t)ncap * sizeof(CfrImg));
+        if (!nr)
+            return -1;
+        st->imgs = nr;
+        st->img_cap = ncap;
+    }
+
+    size_t cap = 0;
+    uint8_t *buf = img_buf_alloc(vt, st, need, &cap);
+    if (!buf)
+        return -1;
+
+    CfrImg *r = &st->imgs[st->img_count++];
+    r->id = id;
+    r->version = 1;
+    r->layer = layer;
+    r->source = source;
+    r->abs_line = 0;
+    r->col = 0;
+    r->w = w;
+    r->h = h;
+    r->rows_tall = 1;
+    r->cols_wide = 1;
+    r->rgba = buf;
+    r->cap = cap;
+    st->live_bytes += cap;
+    memcpy(buf, rgba, need);
+    return st->img_count - 1;
+}
+
+int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
+                        int w, int h, uint8_t layer, uint8_t source)
+{
+    if (w <= 0 || h <= 0 || w > IMG_MAX_DIM || h > IMG_MAX_DIM)
+        return -1;
+
+    size_t need = (size_t)w * (size_t)h * 4u;
+    if (need == 0 || need > IMG_LIVE_MAX)
+        return -1;
+
+    int existing = cfr_img_find_by_id(st, id);
+    if (existing >= 0) {
+        CfrImg *r = &st->imgs[existing];
+        if (r->cap < need) {
+            st->live_bytes -= r->cap;
+            img_buf_release(vt, st, r->rgba, r->cap);
+            size_t cap = 0;
+            uint8_t *buf = img_buf_alloc(vt, st, need, &cap);
+            if (!buf) {
+                st->imgs[existing] = st->imgs[--st->img_count];
+                return -1;
+            }
+            r->rgba = buf;
+            r->cap = cap;
+            st->live_bytes += cap;
+        }
+        r->w = w;
+        r->h = h;
+        r->layer = layer;
+        r->source = source;
+        return existing;
+    }
+
+    if (st->img_count >= IMG_MAX_IMAGES)
+        img_rec_release(vt, st, 0);
+    img_evict_to_budget(vt, st, need);
+
+    if (st->img_count >= st->img_cap) {
+        int ncap = st->img_cap ? st->img_cap * 2 : 8;
+        if (ncap > IMG_MAX_IMAGES)
+            ncap = IMG_MAX_IMAGES;
+        CfrImg *nr = cfr_realloc(vt, st->imgs, (size_t)ncap * sizeof(CfrImg));
+        if (!nr)
+            return -1;
+        st->imgs = nr;
+        st->img_cap = ncap;
+    }
+
+    size_t cap = 0;
+    uint8_t *buf = img_buf_alloc(vt, st, need, &cap);
+    if (!buf)
+        return -1;
+
+    CfrImg *r = &st->imgs[st->img_count++];
+    r->id = id;
+    r->version = 1;
+    r->layer = layer;
+    r->source = source;
+    r->abs_line = 0;
+    r->col = 0;
+    r->w = w;
+    r->h = h;
+    r->rows_tall = 1;
+    r->cols_wide = 1;
+    r->rgba = buf;
+    r->cap = cap;
+    st->live_bytes += cap;
+    return st->img_count - 1;
+}
+
+void cfr_img_mark_dirty(CfrImgStore *st, int idx)
+{
+    if (idx < 0 || idx >= st->img_count)
+        return;
+    st->imgs[idx].version++;
+}
+
 void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
                      const uint8_t *rgba, int w, int h)
 {
@@ -302,6 +534,16 @@ void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
 /* Grid maintenance                                                   */
 /* ------------------------------------------------------------------ */
 
+/* True if the image with the given id has at least one placement
+ * (1:N model, kitty/lottie). 1:1 (sixel/iTerm2) images have none. */
+static bool img_has_placements(const CfrImgStore *st, uint64_t image_id)
+{
+    for (int i = 0; i < st->place_count; ++i)
+        if (st->places[i].image_id == image_id)
+            return true;
+    return false;
+}
+
 void cfr_img_note_scroll(void *vt, CfrImgStore *st, int lines)
 {
     CfrTerm *cvt = vt;
@@ -309,7 +551,33 @@ void cfr_img_note_scroll(void *vt, CfrImgStore *st, int lines)
         return;
     (void)lines;
     int cap = cvt->sb_capacity;
+
     for (int i = 0; i < st->img_count;) {
+        uint64_t id = st->imgs[i].id;
+
+        if (img_has_placements(st, id)) {
+            /* 1:N — cull placements whose bottom scrolled off. */
+            for (int j = 0; j < st->place_count;) {
+                if (st->places[j].image_id != id) {
+                    ++j;
+                    continue;
+                }
+                long depth = cvt->sixel_abs_top - st->places[j].abs_line;
+                long bottom_depth = depth - st->places[j].rows + 1;
+                if (bottom_depth > cap)
+                    place_rec_release(st, j);
+                else
+                    ++j;
+            }
+            /* Remove the image if no placements remain. */
+            if (!img_has_placements(st, id))
+                img_rec_release(vt, st, i);
+            else
+                ++i;
+            continue;
+        }
+
+        /* 1:1 — cull based on the record's own anchor. */
         long depth = cvt->sixel_abs_top - st->imgs[i].abs_line;
         long bottom_depth = depth - st->imgs[i].rows_tall + 1;
         if (bottom_depth > cap)
@@ -324,7 +592,37 @@ void cfr_img_clear_display_rows(void *vt, CfrImgStore *st, int top, int bot)
     CfrTerm *cvt = vt;
     if (!st || st->img_count == 0)
         return;
+
     for (int i = 0; i < st->img_count;) {
+        uint64_t id = st->imgs[i].id;
+
+        if (img_has_placements(st, id)) {
+            /* 1:N — remove foreground placements overlapping [top,bot]. */
+            bool removed = false;
+            for (int j = 0; j < st->place_count;) {
+                if (st->places[j].image_id != id ||
+                    st->places[j].layer != 0) {
+                    ++j;
+                    continue;
+                }
+                int ptop = (int)(st->places[j].abs_line - cvt->sixel_abs_top);
+                int pbot = ptop + st->places[j].rows - 1;
+                if (ptop <= bot && pbot >= top) {
+                    place_rec_release(st, j);
+                    removed = true;
+                } else {
+                    ++j;
+                }
+            }
+            /* Remove the image if no placements remain. */
+            if (removed && !img_has_placements(st, id))
+                img_rec_release(vt, st, i);
+            else
+                ++i;
+            continue;
+        }
+
+        /* 1:1 — clear based on the record's own anchor. */
         if (st->imgs[i].layer != 0) {
             ++i;
             continue;
@@ -386,4 +684,101 @@ const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count)
     if (out_count)
         *out_count = st->img_count;
     return st->img_scratch;
+}
+
+const CfrImagePlacement *cfr_img_get_placements(void *vt, CfrImgStore *st,
+                                                int *out_count)
+{
+    CfrTerm *cvt = vt;
+    if (out_count)
+        *out_count = 0;
+    if (!st || st->place_count == 0)
+        return NULL;
+
+    if (st->place_scratch_cap < st->place_count) {
+        int ncap = st->place_scratch_cap ? st->place_scratch_cap * 2 : 8;
+        while (ncap < st->place_count)
+            ncap *= 2;
+        CfrImagePlacement *ns = cfr_realloc(
+            cvt, st->place_scratch, (size_t)ncap * sizeof(CfrImagePlacement));
+        if (!ns)
+            return NULL;
+        st->place_scratch = ns;
+        st->place_scratch_cap = ncap;
+    }
+
+    for (int i = 0; i < st->place_count; ++i) {
+        CfrPlacement *r = &st->places[i];
+        CfrImagePlacement *v = &st->place_scratch[i];
+        v->id = r->id;
+        v->image_id = r->image_id;
+        v->row = (int)(r->abs_line - cvt->sixel_abs_top);
+        v->col = r->col;
+        v->rows = r->rows;
+        v->cols = r->cols;
+        v->layer = r->layer;
+        v->opacity_x256 = r->opacity_x256;
+        v->z_index = r->z_index;
+        v->src_x = r->src_x;
+        v->src_y = r->src_y;
+        v->src_w = r->src_w;
+        v->src_h = r->src_h;
+    }
+    if (out_count)
+        *out_count = st->place_count;
+    return st->place_scratch;
+}
+
+const CfrImagePlacement *cfr_img_get_placements_for(void *vt, CfrImgStore *st,
+                                                    uint64_t image_id,
+                                                    int *out_count)
+{
+    CfrTerm *cvt = vt;
+    if (out_count)
+        *out_count = 0;
+    if (!st || st->place_count == 0)
+        return NULL;
+
+    int want = 0;
+    for (int i = 0; i < st->place_count; ++i)
+        if (st->places[i].image_id == image_id)
+            want++;
+    if (want == 0)
+        return NULL;
+
+    if (st->place_scratch_cap < want) {
+        int ncap = st->place_scratch_cap ? st->place_scratch_cap * 2 : 8;
+        while (ncap < want)
+            ncap *= 2;
+        CfrImagePlacement *ns = cfr_realloc(
+            cvt, st->place_scratch, (size_t)ncap * sizeof(CfrImagePlacement));
+        if (!ns)
+            return NULL;
+        st->place_scratch = ns;
+        st->place_scratch_cap = ncap;
+    }
+
+    int w = 0;
+    for (int i = 0; i < st->place_count; ++i) {
+        CfrPlacement *r = &st->places[i];
+        if (r->image_id != image_id)
+            continue;
+        CfrImagePlacement *v = &st->place_scratch[w++];
+        v->id = r->id;
+        v->image_id = r->image_id;
+        v->row = (int)(r->abs_line - cvt->sixel_abs_top);
+        v->col = r->col;
+        v->rows = r->rows;
+        v->cols = r->cols;
+        v->layer = r->layer;
+        v->opacity_x256 = r->opacity_x256;
+        v->z_index = r->z_index;
+        v->src_x = r->src_x;
+        v->src_y = r->src_y;
+        v->src_w = r->src_w;
+        v->src_h = r->src_h;
+    }
+    if (out_count)
+        *out_count = want;
+    return st->place_scratch;
 }
