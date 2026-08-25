@@ -252,9 +252,11 @@ static void test_zwj_family_full(void)
     return;
 #else
     PtyContext *pty = NULL;
+    /* Octal escapes: dash's printf does not support \xHH, so use POSIX
+     * \0NNN to keep this working on Debian/Ubuntu where /bin/sh is dash. */
     CfrTerm *vt = run_cmd(
-        "printf '\\xf0\\x9f\\x91\\xa8\\xe2\\x80\\x8d\\xf0\\x9f\\x91\\xa9"
-        "\\xe2\\x80\\x8d\\xf0\\x9f\\x91\\xa7\\xe2\\x80\\x8d\\xf0\\x9f\\x91\\xa6'",
+        "printf '\\360\\237\\221\\250\\342\\200\\215\\360\\237\\221\\251"
+        "\\342\\200\\215\\360\\237\\221\\247\\342\\200\\215\\360\\237\\221\\246'",
         24, 80, 2000, &pty);
     ASSERT_NOT_NULL(vt);
     /* Find the cluster: the first cell with cp == 0x1F468 (man) should
@@ -294,7 +296,8 @@ static void test_cjk_echo(void)
     return;
 #else
     PtyContext *pty = NULL;
-    CfrTerm *vt = run_cmd("printf '\\xe4\\xbd\\xa0\\xe5\\xa5\\xbd'", /* 你好 */
+    /* Octal escapes: dash printf lacks \xHH support (see test_zwj_family_full). */
+    CfrTerm *vt = run_cmd("printf '\\344\\275\\240\\345\\245\\275'", /* 你好 */
                           24, 80, 1000, &pty);
     ASSERT_NOT_NULL(vt);
     int found = -1;
@@ -324,15 +327,17 @@ static void test_cjk_echo(void)
 
 static void test_altscreen_swap(void)
 {
-    /* tput smcup, write FOO, tput rmcup. After rmcup we should be back on
-     * the primary screen with FOO not visible. */
+    /* Raw DECSET/DECRST 1049, write FOO, leave. After rmcup we should be
+     * back on the primary screen with FOO not visible. */
 #ifdef _WIN32
-    /* tput is not available on Windows; skip. */
-    printf("    (skipping on Windows: needs tput)\n");
+    /* printf escape sequences not supported by cmd.exe; skip. */
+    printf("    (skipping on Windows: needs POSIX printf)\n");
     return;
 #else
     PtyContext *pty = NULL;
-    CfrTerm *vt = run_cmd("tput smcup; printf 'FOO_ALT'; sleep 0.05; tput rmcup",
+    /* Use raw DECSET/DECRST 1049 instead of tput smcup/rmcup: tput needs
+     * the portty terminfo entry, which is not installed in CI. */
+    CfrTerm *vt = run_cmd("printf '\\033[?1049hFOO_ALT\\033[?1049l'",
                           24, 80, 2000, &pty);
     ASSERT_NOT_NULL(vt);
     /* On the primary screen now — FOO_ALT should NOT be visible. */
