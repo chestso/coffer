@@ -30,6 +30,7 @@ libcoffer_a_SOURCES = \
     esc.c \
     hyperlink.c \
     log.c \
+    selection.c \
     coffer_internal.h \
     image_store.h
 

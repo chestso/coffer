@@ -123,6 +123,7 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
     }
     memset(&vt->grid->row_flags[clear_start], 0, (size_t)lines);
 
+    cfr_selection_on_scroll(vt, true, lines, top, bot);
     cfr_damage_all(vt);
 }
 
@@ -156,6 +157,7 @@ void cfr_scroll_down(CfrTerm *vt, int lines)
                     vt->cols);
     memset(&vt->grid->row_flags[top], 0, (size_t)lines);
 
+    cfr_selection_on_scroll(vt, false, lines, top, bot);
     cfr_damage_all(vt);
 }
 
@@ -311,6 +313,7 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
         cont->hyperlink_id = cell->hyperlink_id;
     }
 
+    cfr_selection_on_draw(vt, vt->cursor.row);
     cfr_damage_cell(vt, vt->cursor.row, vt->cursor.col);
 
     if (vt->cursor.col + width >= vt->cols) {

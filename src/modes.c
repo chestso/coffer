@@ -22,6 +22,9 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
     /* Flush any pending cluster before swapping grids. */
     cfr_flush_cluster(vt);
 
+    /* Selection is screen-specific — clear on any altscreen switch. */
+    cfr_selection_clear(vt);
+
     /* Sixel images belong to the primary grid. We don't keep a separate
      * per-screen image set yet, so clear on any altscreen switch. */
     if (vt->sixel)

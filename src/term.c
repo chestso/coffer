@@ -139,6 +139,7 @@ void cfr_free(CfrTerm *vt)
     cfr_dealloc(vt, vt->title);
     cfr_dealloc(vt, vt->parser.osc_buf);
     cfr_dealloc(vt, vt->parser.apc_buf);
+    cfr_selection_free(vt);
 
     /* Use saved allocator (vt->alloc.free) — vt itself is freed last. */
     CfrAllocator a = vt->alloc;
@@ -162,6 +163,7 @@ void cfr_resize(CfrTerm *vt, int rows, int cols)
         return;
     if (rows == vt->rows && cols == vt->cols)
         return;
+    cfr_selection_clear(vt);
     /* Reflow rebuilds the grid with no line identity, so anchored sixel
      * images can't be followed across a rewrap — drop them on resize. */
     if (vt->sixel)

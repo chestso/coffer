@@ -342,6 +342,11 @@ struct CfrTerm
 
     /* One-time log guards. See should_log_once() above. */
     uint32_t logged_once;
+
+    /* Selection state. Owned by the engine, adjusted inline during
+     * scroll and cleared on draw/erase/resize/altscreen. */
+    CfrSelection selection;
+    char *selection_word_chars;
 };
 
 /* The saved-cursor register for the currently active screen. DECSC/DECRC and
@@ -521,6 +526,13 @@ void cfr_damage_all(CfrTerm *vt);
 /* Scrollback (scrollback.c). */
 void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols, bool wrapline);
 void cfr_scrollback_clear(CfrTerm *vt);
+
+/* Selection (selection.c). Internal functions called inline during
+ * scroll, draw, erase, resize, and altscreen transitions. */
+void cfr_selection_on_scroll(CfrTerm *vt, bool up, int lines, int top, int bottom);
+void cfr_selection_on_draw(CfrTerm *vt, int row);
+void cfr_selection_fire_callback(CfrTerm *vt, bool active);
+void cfr_selection_free(CfrTerm *vt);
 
 /* Sixel graphics (sixel.c). The state hangs off vt->sixel, allocated
  * lazily. All entry points are no-ops when no sixel has been seen. */

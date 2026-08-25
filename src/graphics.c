@@ -439,7 +439,8 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         if (!tmp_b64)
             return;
         memcpy(tmp_b64, g_chunk.b64, g_chunk.len);
-        memcpy(tmp_b64 + g_chunk.len, payload, payload_len);
+        if (payload_len > 0)
+            memcpy(tmp_b64 + g_chunk.len, payload, payload_len);
         tmp_b64[g_chunk.len + payload_len] = '\0';
         data = (const uint8_t *)tmp_b64;
         data_len = g_chunk.len + payload_len;

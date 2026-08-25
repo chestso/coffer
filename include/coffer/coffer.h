@@ -304,6 +304,12 @@ typedef struct
     /* log: diagnostic message from the engine (e.g. unimplemented
      * sequence warnings). NULL = silently dropped. */
     void (*log)(CfrLogLevel level, const char *msg, void *user);
+
+    /* selection_changed: selection transitioned between active and
+     * inactive. Fires on start, clear, draw-induced clear, and
+     * scroll-boundary clear. Does NOT fire on update/extend.
+     * NULL = host doesn't care. */
+    void (*selection_changed)(bool active, void *user);
 } CfrCallbacks;
 
 /* ------------------------------------------------------------------ */
@@ -611,6 +617,70 @@ bool cfr_have_lottie(void);
  * @return Display width in terminal cells, or -1 on invalid UTF-8.
  */
 int cfr_utf8_display_width(const char *utf8, size_t len);
+
+/* ------------------------------------------------------------------ */
+/* Selection                                                           */
+/* ------------------------------------------------------------------ */
+
+typedef enum
+{
+    CFR_SEL_NONE = 0,
+    CFR_SEL_CHAR, /* click-drag */
+    CFR_SEL_WORD, /* double-click */
+    CFR_SEL_LINE, /* triple-click */
+} CfrSelectionMode;
+
+typedef struct
+{
+    int row; /* unified: >=0 visible, <0 scrollback */
+    int col;
+} CfrSelectionPoint;
+
+typedef struct
+{
+    bool active;
+    CfrSelectionMode mode;
+    CfrSelectionPoint anchor; /* original click point */
+    CfrSelectionPoint start;  /* normalized (always <= end) */
+    CfrSelectionPoint end;    /* normalized (always >= end) */
+} CfrSelection;
+
+/* Configure the word character set for CFR_SEL_WORD mode.
+ * NULL or empty resets to the default: a-zA-Z0-9_-./~ */
+void cfr_selection_set_word_chars(CfrTerm *vt, const char *chars);
+
+/* Start a selection at (row, col) in the given mode. For WORD and
+ * LINE modes, the selection is expanded immediately. Fires
+ * selection_changed(true) if the selection becomes active. */
+void cfr_selection_start(CfrTerm *vt, int row, int col,
+                         CfrSelectionMode mode);
+
+/* Update the selection endpoint to (row, col). Re-normalizes start/end
+ * relative to the anchor. Does NOT fire selection_changed. */
+void cfr_selection_update(CfrTerm *vt, int row, int col);
+
+/* Extend the selection to (row, col) from the nearer endpoint.
+ * Used for shift+click. Does NOT fire selection_changed. */
+void cfr_selection_extend(CfrTerm *vt, int row, int col);
+
+/* Clear the selection. Fires selection_changed(false) if it was active.
+ * No-op if already inactive. */
+void cfr_selection_clear(CfrTerm *vt);
+
+/* Query whether a selection is active. */
+bool cfr_selection_active(const CfrTerm *vt);
+
+/* Check if (unified_row, col) falls within the active selection. */
+bool cfr_selection_in_cell(const CfrTerm *vt, int unified_row, int col);
+
+/* Get the current selection state (read-only pointer, valid until the
+ * next selection operation). NULL if no selection is active. */
+const CfrSelection *cfr_selection_get(const CfrTerm *vt);
+
+/* Extract the selected text as UTF-8. Returns a malloc'd,
+ * NUL-terminated string the caller must free. NULL if no selection
+ * or allocation failure. */
+char *cfr_selection_get_text(const CfrTerm *vt);
 
 #ifdef __cplusplus
 }
