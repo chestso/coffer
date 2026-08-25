@@ -347,6 +347,17 @@ static void test_altscreen_swap(void)
 #endif
 }
 
+/* DSR reply capture for test_dsr_after_natural_scroll. */
+static char g_dsr_buf[64];
+static size_t g_dsr_len = 0;
+static void cb_capture_dsr(const uint8_t *b, size_t n, void *u)
+{
+    (void)u;
+    for (size_t i = 0; i < n && g_dsr_len + 1 < sizeof(g_dsr_buf); ++i)
+        g_dsr_buf[g_dsr_len++] = (char)b[i];
+    g_dsr_buf[g_dsr_len] = 0;
+}
+
 static void test_dsr_after_natural_scroll(void)
 {
 #ifdef _WIN32
