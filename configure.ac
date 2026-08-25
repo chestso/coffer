@@ -137,6 +137,7 @@ AC_CONFIG_FILES([
     tests/Makefile
     contrib/Makefile
     contrib/cfr-debug/Makefile
+    data/Makefile
     coffer.pc
 ])
 

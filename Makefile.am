@@ -1,6 +1,6 @@
 # Top-level Makefile.am for coffer
 
-SUBDIRS = src include tests contrib
+SUBDIRS = src include tests contrib data
 
 ACLOCAL_AMFLAGS = -I m4
 

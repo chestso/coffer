@@ -33,9 +33,13 @@ jobs:
           mkdir build && cd build
           ../configure
           make -j"$(nproc)"
+          # Compile terminfo so PTY tests can resolve coffer-vty-256color
+          tic -x -o "${PWD}/terminfo" ../data/coffer.ti
 
       - name: Run tests
-        run: make -C build check
+        run: |
+          export TERMINFO_DIRS="${PWD}/terminfo"
+          make -C build check
 
       - name: Upload test logs on failure
         if: failure()
@@ -64,9 +68,13 @@ jobs:
           mkdir build && cd build
           ../configure
           make -j"$(sysctl -n hw.ncpu)"
+          # Compile terminfo so PTY tests can resolve coffer-vty-256color
+          tic -x -o "${PWD}/terminfo" ../data/coffer.ti
 
       - name: Run tests
-        run: make -C build check
+        run: |
+          export TERMINFO_DIRS="${PWD}/terminfo"
+          make -C build check
 
       - name: Upload test logs on failure
         if: failure()
@@ -99,11 +107,16 @@ jobs:
 
       - name: Build
         shell: msys2 {0}
-        run: ./scripts/build-ucrt64.sh --no-check
+        run: |
+          ./scripts/build-ucrt64.sh --no-check
+          # Compile terminfo so PTY tests can resolve coffer-vty-256color
+          tic -x -o "${PWD}/build/terminfo" data/coffer.ti
 
       - name: Run tests
         shell: msys2 {0}
-        run: make -C build check
+        run: |
+          export TERMINFO_DIRS="${PWD}/build/terminfo"
+          make -C build check
 
       - name: Upload test logs on failure
         if: failure()

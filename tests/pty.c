@@ -166,12 +166,12 @@ PtyContext *pty_create(int rows, int cols, char *const argv[])
         // matterhorn, etc.) can parse it. 24-bit colour still works via
         // Tc/RGB flags and COLORTERM=truecolor for apps using modern
         // detection. Apps that want the full ncurses-parseable entry
-        // with 24-bit setaf/setab/Setulc can set TERM=portty-256color.
-        setenv("TERM", "portty-vty-256color", 1);
+        // with 24-bit setaf/setab/Setulc can set TERM=coffer-256color.
+        setenv("TERM", "coffer-vty-256color", 1);
 
         // Clear any inherited TERMINFO (e.g. kitty's) so it doesn't
         // shadow our installed entry. Add our terminfo paths to
-        // TERMINFO_DIRS so the child shell can find portty's entry.
+        // TERMINFO_DIRS so the child shell can find coffer's entry.
         unsetenv("TERMINFO");
         {
             char buf[4096];
