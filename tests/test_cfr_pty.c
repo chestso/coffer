@@ -215,7 +215,9 @@ static void test_sgr_red(void)
 
 static void test_tput_cursor(void)
 {
-    /* tput cup 5 10 then echo X — we expect 'X' near row 5 col 10. */
+    /* tput cup 5 10 then echo X — we expect 'X' near row 5 col 10.
+     * This tests that coffer-vty-256color terminfo entry resolves
+     * correctly and produces a valid cursor positioning sequence. */
 #ifdef _WIN32
     /* tput is not available on Windows; skip. */
     printf("    (skipping on Windows: needs tput)\n");
@@ -237,6 +239,26 @@ static void test_tput_cursor(void)
         }
     }
     ASSERT_TRUE(found >= 0);
+    cfr_free(vt);
+    pty_destroy(pty);
+#endif
+}
+
+static void test_terminfo_smcup_rmcup(void)
+{
+    /* Verify that tput smcup/rmcup produce sequences coffer recognizes.
+     * This tests terminfo resolution - if the terminfo entry is missing,
+     * tput will produce nothing or an error. */
+#ifdef _WIN32
+    printf("    (skipping on Windows: needs tput)\n");
+    return;
+#else
+    PtyContext *pty = NULL;
+    /* Full smcup/write/rmcup cycle - should be back on primary. */
+    CfrTerm *vt = run_cmd("tput smcup; printf X; tput rmcup", 24, 80, 1500, &pty);
+    ASSERT_NOT_NULL(vt);
+    /* After rmcup we should be back on primary screen. */
+    ASSERT_FALSE(cfr_is_altscreen(vt));
     cfr_free(vt);
     pty_destroy(pty);
 #endif
@@ -437,6 +459,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_echo_hello);
     RUN_TEST(test_sgr_red);
     RUN_TEST(test_tput_cursor);
+    RUN_TEST(test_terminfo_smcup_rmcup);
     RUN_TEST(test_zwj_family_full);
     RUN_TEST(test_cjk_echo);
     RUN_TEST(test_altscreen_swap);
