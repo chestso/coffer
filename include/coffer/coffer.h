@@ -327,19 +327,20 @@ typedef struct
 /* Configuration for cfr_new(). Zero-initialize then set fields; unset
  * fields (0 / false) use defaults. Rows, cols, and cell pixel size
  * are required and must be > 0. */
-#define CFR_CONFIG_DEFAULTS                                                                                              \
-    {                                                                                                                    \
-        .rows = 0, .cols = 0, .cell_w_px = 0, .cell_h_px = 0, .scrollback = -1, .reflow = false, .ambiguous_wide = false \
+#define CFR_CONFIG_DEFAULTS                                                                                                                     \
+    {                                                                                                                                           \
+        .rows = 0, .cols = 0, .cell_w_px = 0, .cell_h_px = 0, .scrollback = -1, .reflow = false, .ambiguous_wide = false, .terminal_name = NULL \
     }
 typedef struct
 {
-    int rows;            /* grid height (required > 0) */
-    int cols;            /* grid width  (required > 0) */
-    int cell_w_px;       /* pixel width of one cell  (required > 0) */
-    int cell_h_px;       /* pixel height of one cell (required > 0) */
-    int scrollback;      /* scrollback lines (-1 = default 1000, 0 = off) */
-    bool reflow;         /* reflow text on resize (default false) */
-    bool ambiguous_wide; /* treat ambiguous-width chars as wide (default false) */
+    int rows;                  /* grid height (required > 0) */
+    int cols;                  /* grid width  (required > 0) */
+    int cell_w_px;             /* pixel width of one cell  (required > 0) */
+    int cell_h_px;             /* pixel height of one cell (required > 0) */
+    int scrollback;            /* scrollback lines (-1 = default 1000, 0 = off) */
+    bool reflow;               /* reflow text on resize (default false) */
+    bool ambiguous_wide;       /* treat ambiguous-width chars as wide (default false) */
+    const char *terminal_name; /* XTVERSION response string (default "coffer") */
 } CfrConfig;
 
 /* ------------------------------------------------------------------ */

@@ -347,6 +347,10 @@ struct CfrTerm
      * scroll and cleared on draw/erase/resize/altscreen. */
     CfrSelection selection;
     char *selection_word_chars;
+
+    /* Terminal name for XTVERSION response (CSI > q). Borrowed from
+     * CfrConfig.terminal_name at cfr_new time; NULL = "coffer". */
+    const char *terminal_name;
 };
 
 /* The saved-cursor register for the currently active screen. DECSC/DECRC and

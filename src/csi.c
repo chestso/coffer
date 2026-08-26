@@ -701,6 +701,22 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
         }
         break;
 
+    case 'q':
+    {
+        /* XTVERSION (CSI > Ps q). Reply with DCS > | <name> ST.
+         * Emacs uses this to auto-enable xterm-mouse-mode on known
+         * terminals. Ps is ignored (all values query the version).
+         * Note: CSI ? Ps q (DECSCUSR, cursor shape) shares the final
+         * byte — only respond when the '>' intermediate is present. */
+        if (has_intermediate(vt, '>')) {
+            const char *name = vt->terminal_name ? vt->terminal_name : "coffer";
+            char buf[64];
+            int n = snprintf(buf, sizeof(buf), "\x1bP>|%s\x1b\\", name);
+            cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+        }
+        break;
+    }
+
     case 'i':
     { /* Media copy (mc0/mc4/mc5) — printer control, not implemented. */
         if (should_log_once(vt, CFR_LOGGED_MEDIA_COPY))

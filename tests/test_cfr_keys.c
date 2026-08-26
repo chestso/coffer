@@ -379,6 +379,45 @@ static void test_bare_csi_u_still_restores(void)
     cfr_free(vt);
 }
 
+/* XTVERSION (CSI > Ps q) — reply with DCS > | <name> ST.
+ * Emacs uses this to auto-enable xterm-mouse-mode on known terminals. */
+static void test_xtversion_default_name(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>0q");
+    ASSERT_STR_EQ(g_output_buf, "\x1bP>|coffer\x1b\\");
+    cfr_free(vt);
+}
+
+static void test_xtversion_custom_name(void)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.terminal_name = "portty";
+    CfrTerm *vt = cfr_new(&cfg);
+    CfrCallbacks cb = { 0 };
+    cb.output = on_output;
+    cfr_set_callbacks(vt, &cb, NULL);
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    feed(vt, "\x1b[>0q");
+    ASSERT_STR_EQ(g_output_buf, "\x1bP>|portty\x1b\\");
+    cfr_free(vt);
+}
+
+/* DECSCUSR (CSI ? Ps q) shares the final byte 'q' but has '?' intermediate,
+ * so it must NOT trigger an XTVERSION response. */
+static void test_decscusr_does_not_emit_xtversion(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[?3q");
+    ASSERT_EQ(g_output_len, 0);
+    cfr_free(vt);
+}
+
 int main(int argc, char **argv)
 {
     test_parse_args(argc, argv);
@@ -400,5 +439,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_ris_clears_modes);
     RUN_TEST(test_ris_fires_set_mode_callback);
     RUN_TEST(test_bare_csi_u_still_restores);
+    RUN_TEST(test_xtversion_default_name);
+    RUN_TEST(test_xtversion_custom_name);
+    RUN_TEST(test_decscusr_does_not_emit_xtversion);
     TEST_SUMMARY();
 }

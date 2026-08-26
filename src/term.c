@@ -82,6 +82,7 @@ CfrTerm *cfr_new_with_allocator(const CfrConfig *cfg, const CfrAllocator *alloc)
     vt->sb_capacity = cfg->scrollback >= 0 ? cfg->scrollback : CFR_DEFAULT_SCROLLBACK;
     vt->reflow_enabled = cfg->reflow;
     vt->ambiguous_wide = cfg->ambiguous_wide;
+    vt->terminal_name = cfg->terminal_name;
     vt->cursor.visible = true;
     vt->cursor.blink = true;
     /* Mirror the initial cursor so the first flush doesn't spuriously damage. */
