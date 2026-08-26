@@ -241,6 +241,108 @@ static void test_report_all_bare_tab(void)
     cfr_free(vt);
 }
 
+/* xterm modifyOtherKeys (CSI > 4 ; m) — level 1. coffer honours this
+ * so apps that request it (Emacs's term/xterm.el sends `CSI > 4 ; 1 m`
+ * via modifyOtherKeys) receive the xterm tilde form for modified keys
+ * that have no traditional control encoding. Level 1 leaves Ctrl+ASCII
+ * alone (Ctrl+C stays 0x03 so SIGINT still works). */
+
+/* Ctrl+Enter under modifyOtherKeys=1 → xterm tilde form. */
+static void test_modify_other_keys_ctrl_enter(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>4;1m");
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_ENTER, CFR_MOD_CTRL);
+    ASSERT_STR_EQ(g_output_buf, "\x1b[27;5;13~");
+    cfr_free(vt);
+}
+
+/* Ctrl+Tab under modifyOtherKeys=1 → tilde form. */
+static void test_modify_other_keys_ctrl_tab(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>4;1m");
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_TAB, CFR_MOD_CTRL);
+    ASSERT_STR_EQ(g_output_buf, "\x1b[27;5;9~");
+    cfr_free(vt);
+}
+
+/* Shift+Enter under modifyOtherKeys=1 → tilde form with mod=2. */
+static void test_modify_other_keys_shift_enter(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>4;1m");
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_ENTER, CFR_MOD_SHIFT);
+    ASSERT_STR_EQ(g_output_buf, "\x1b[27;2;13~");
+    cfr_free(vt);
+}
+
+/* Bare Enter under modifyOtherKeys=1 is still a plain \r. */
+static void test_modify_other_keys_bare_enter_unchanged(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>4;1m");
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_ENTER, 0);
+    ASSERT_STR_EQ(g_output_buf, "\r");
+    cfr_free(vt);
+}
+
+/* Ctrl+letter under modifyOtherKeys=1 stays the control byte — level 1
+ * must not touch keys with a traditional control mapping, or Ctrl+C
+ * stops producing SIGINT. */
+static void test_modify_other_keys_ctrl_letter_unchanged(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>4;1m");
+    clear_output();
+    cfr_send_text(vt, "a", 1, CFR_MOD_CTRL);
+    ASSERT_EQ(g_output_len, (size_t)1);
+    ASSERT_EQ((unsigned char)g_output_buf[0], 0x01u);
+    cfr_free(vt);
+}
+
+/* CSI > 4 ; 0 m turns modifyOtherKeys back off. */
+static void test_modify_other_keys_off(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>4;1m");
+    feed(vt, "\x1b[>4;0m");
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_ENTER, CFR_MOD_CTRL);
+    ASSERT_STR_EQ(g_output_buf, "\r");
+    cfr_free(vt);
+}
+
+/* RIS clears modifyOtherKeys along with the kitty stack. */
+static void test_modify_other_keys_ris_resets(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>4;1m");
+    feed(vt, "\x1b"
+             "c"); /* RIS */
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_ENTER, CFR_MOD_CTRL);
+    ASSERT_STR_EQ(g_output_buf, "\r");
+    cfr_free(vt);
+}
+
+/* The kitty protocol still wins when both are active: Disambiguate
+ * routes modified Enter through CSI-u, not the tilde form. */
+static void test_modify_other_keys_kitty_still_wins(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>4;1m");
+    feed(vt, "\x1b[>1u"); /* kitty disambiguate */
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_ENTER, CFR_MOD_CTRL);
+    ASSERT_STR_EQ(g_output_buf, "\x1b[13;5u");
+    cfr_free(vt);
+}
+
 /* CSI > 4 ; 2 m is xterm's modifyOtherKeys; the same params interpreted
  * as SGR mean "underline; faint". Claude Code (and other modern TUIs)
  * emit this on startup right next to their kitty-stack push, so if we
@@ -434,6 +536,14 @@ int main(int argc, char **argv)
     RUN_TEST(test_query_active_flags);
     RUN_TEST(test_set_clear_replace);
     RUN_TEST(test_report_all_bare_tab);
+    RUN_TEST(test_modify_other_keys_ctrl_enter);
+    RUN_TEST(test_modify_other_keys_ctrl_tab);
+    RUN_TEST(test_modify_other_keys_shift_enter);
+    RUN_TEST(test_modify_other_keys_bare_enter_unchanged);
+    RUN_TEST(test_modify_other_keys_ctrl_letter_unchanged);
+    RUN_TEST(test_modify_other_keys_off);
+    RUN_TEST(test_modify_other_keys_ris_resets);
+    RUN_TEST(test_modify_other_keys_kitty_still_wins);
     RUN_TEST(test_modify_other_keys_is_not_sgr);
     RUN_TEST(test_ris_clears_kitty_stack);
     RUN_TEST(test_ris_clears_modes);

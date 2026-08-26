@@ -548,13 +548,22 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
             p->intermediates[0] >= 0x3c && p->intermediates[0] <= 0x3f) {
             /* CSI {<,=,>,?} … m — DEC-private form. Examples:
              *   `CSI > Pp ; Pv m` — xterm modifyOtherKeys (key-resource
-             *      set/reset). We cover the same ground via the kitty
-             *      keyboard protocol, so this is a no-op.
+             *      set/reset). Level 1 (Pv=1) makes modified keys with no
+             *      traditional control encoding emit the xterm tilde form
+             *      (CSI 27 ; mod ; code ~); Pv=0 turns it off. The kitty
+             *      keyboard protocol covers the same ground and takes
+             *      precedence, but honouring this lets apps that request
+             *      modifyOtherKeys (Emacs's term/xterm.el sends
+             *      `CSI > 4 ; 1 m`) receive Ctrl+Enter etc. without any
+             *      Emacs-side changes.
              *   `CSI ? Pm m` — crush emits this on startup (probing for
              *      an xterm extension). Undefined for us; ignore.
              * Critical: do NOT fall through to sgr_dispatch — interpreting
              * e.g. `?4` as SGR 4 turns on underline and paints the next
              * styled run underlined until the program's next reset. */
+            if (p->intermediates[0] == '>' && param_or(vt, 0, 0) == 4)
+                vt->modify_other_keys =
+                    (uint8_t)(param_or(vt, 1, 0) == 0 ? 0 : 1);
             break;
         }
         sgr_dispatch(vt);

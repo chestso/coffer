@@ -281,6 +281,13 @@ struct CfrTerm
     bool decckm;
     /* Keypad application mode (DECKPAM). */
     bool deckpam;
+    /* xterm modifyOtherKeys level (CSI > 4 ; m). 0 = off (default),
+     * 1 = emit the xterm tilde form (CSI 27 ; mod ; code ~) for
+     * modified keys that have no traditional control encoding (Enter,
+     * Tab, Backspace, Escape, and Ctrl+non-letter symbols). Level 1
+     * leaves Ctrl+ASCII alone so Ctrl+C still produces 0x03/SIGINT.
+     * The kitty keyboard protocol takes precedence when active. */
+    uint8_t modify_other_keys;
     /* Origin mode (DECOM). When true, CUP/HVP/VPA coordinates are
      * relative to the active scroll region instead of the full screen,
      * and the cursor is confined to the scroll region. */

@@ -70,6 +70,17 @@ static void emit_csi_u(CfrTerm *vt, uint32_t code, CfrMods mods)
     cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
 }
 
+/* Emit the xterm modifyOtherKeys tilde form `CSI 27 ; <mod> ; <code> ~`
+ * for a modified key. Code 27 is xterm's reserved "modified non-function
+ * key" slot. */
+static void emit_modify_other(CfrTerm *vt, uint32_t code, CfrMods mods)
+{
+    int mv = mod_value(mods);
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "\x1b[27;%d;%u~", mv + 1, code);
+    cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+}
+
 /* Decide whether ENTER / TAB / BACKSPACE / ESCAPE should be emitted in
  * kitty CSI-u form. Disambiguate (0x1) only kicks in when modifiers
  * are present (its purpose is to distinguish e.g. Shift+Enter from
@@ -137,12 +148,16 @@ void cfr_send_key(CfrTerm *vt, CfrKey key, CfrMods mods)
     case CFR_KEY_ENTER:
         if (kitty_route_special(vt, mods))
             emit_csi_u(vt, 13, mods);
+        else if (vt->modify_other_keys && mod_value(mods) != 0)
+            emit_modify_other(vt, 13, mods);
         else
             cfr_emit_bytes(vt, (const uint8_t *)"\r", 1);
         break;
     case CFR_KEY_TAB:
         if (kitty_route_special(vt, mods))
             emit_csi_u(vt, 9, mods);
+        else if (vt->modify_other_keys && mod_value(mods) != 0)
+            emit_modify_other(vt, 9, mods);
         else if (mods & CFR_MOD_SHIFT)
             emit_str(vt, "\x1b[Z");
         else
@@ -151,12 +166,16 @@ void cfr_send_key(CfrTerm *vt, CfrKey key, CfrMods mods)
     case CFR_KEY_BACKSPACE:
         if (kitty_route_special(vt, mods))
             emit_csi_u(vt, 127, mods);
+        else if (vt->modify_other_keys && mod_value(mods) != 0)
+            emit_modify_other(vt, 127, mods);
         else
             cfr_emit_bytes(vt, (const uint8_t *)"\x7f", 1);
         break;
     case CFR_KEY_ESCAPE:
         if (kitty_route_special(vt, mods))
             emit_csi_u(vt, 27, mods);
+        else if (vt->modify_other_keys && mod_value(mods) != 0)
+            emit_modify_other(vt, 27, mods);
         else
             cfr_emit_bytes(vt, (const uint8_t *)"\x1b", 1);
         break;
