@@ -287,6 +287,19 @@ bool cfr_get_line_continuation(const CfrTerm *vt, int row)
     return (vt->grid->row_flags[row] & CFR_CELL_WRAPLINE) != 0u;
 }
 
+bool cfr_row_is_continuation(const CfrTerm *vt, int row)
+{
+    if (!vt)
+        return false;
+    int prev = row - 1;
+    int sb = cfr_get_scrollback_lines(vt);
+    if (prev < -sb)
+        return false; /* no row above `row` exists at all */
+    if (prev >= 0)
+        return cfr_get_line_continuation(vt, prev);
+    return cfr_get_scrollback_wrapline(vt, -(prev + 1));
+}
+
 const CfrStyle *cfr_cell_style(const CfrTerm *vt, const CfrCell *cell)
 {
     if (!vt || !cell)
