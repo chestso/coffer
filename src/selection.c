@@ -96,6 +96,25 @@ static const CfrCell *read_cell_unified(const CfrTerm *vt, int row, int col)
     return cfr_get_scrollback_cell(vt, sb_row, col);
 }
 
+/* True when unified row `row` continues the previous row (i.e. the row
+ * above it soft-wrapped into it). CFR_CELL_WRAPLINE sits on the row that
+ * *wrapped into* the next one, so the flag to consult is on `row - 1` —
+ * the inverse direction of cfr_get_line_continuation(vt, row), which
+ * answers "does *row* wrap into row+1". Walks across the
+ * visible/scrollback boundary as well. */
+static bool is_continuation_unified(const CfrTerm *vt, int row)
+{
+    if (!vt)
+        return false;
+    int prev = row - 1;
+    int sb = cfr_get_scrollback_lines(vt);
+    if (prev < -sb)
+        return false; /* no row above `row` exists at all */
+    if (prev >= 0)
+        return cfr_get_line_continuation(vt, prev);
+    return cfr_get_scrollback_wrapline(vt, -(prev + 1));
+}
+
 static void expand_word(const CfrTerm *vt, int row, int col,
                         CfrSelectionPoint *out_start,
                         CfrSelectionPoint *out_end)
@@ -114,15 +133,14 @@ static void expand_word(const CfrTerm *vt, int row, int col,
 
     /* Scan left */
     int scan_row = row, left = col;
-    while (left > 0 || (scan_row > 0 &&
-                        cfr_get_line_continuation(vt, scan_row))) {
+    while (left > 0 || is_continuation_unified(vt, scan_row)) {
         if (left > 0) {
             const CfrCell *c = read_cell_unified(vt, scan_row, left - 1);
             if (!c || char_class(c->cp, wchars) != cls)
                 break;
             left--;
         } else {
-            if (!cfr_get_line_continuation(vt, scan_row))
+            if (!is_continuation_unified(vt, scan_row))
                 break;
             scan_row--;
             left = cols - 1;
@@ -134,16 +152,14 @@ static void expand_word(const CfrTerm *vt, int row, int col,
 
     /* Scan right */
     int scan_row_r = row, right = col;
-    while (right < cols - 1 ||
-           (scan_row_r < vt->rows - 1 &&
-            cfr_get_line_continuation(vt, scan_row_r + 1))) {
+    while (right < cols - 1 || is_continuation_unified(vt, scan_row_r + 1)) {
         if (right < cols - 1) {
             const CfrCell *c = read_cell_unified(vt, scan_row_r, right + 1);
             if (!c || char_class(c->cp, wchars) != cls)
                 break;
             right++;
         } else {
-            if (!cfr_get_line_continuation(vt, scan_row_r + 1))
+            if (!is_continuation_unified(vt, scan_row_r + 1))
                 break;
             scan_row_r++;
             right = 0;
@@ -452,8 +468,7 @@ char *cfr_selection_get_text(const CfrTerm *vt)
 
         /* Strip trailing whitespace at hard line breaks */
         bool next_is_continuation =
-            row < sel->end.row &&
-            cfr_get_line_continuation(vt, row + 1);
+            row < sel->end.row && is_continuation_unified(vt, row + 1);
         if (!next_is_continuation)
             pos = last_nonblank_pos;
 

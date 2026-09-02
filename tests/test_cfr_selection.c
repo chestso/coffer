@@ -451,6 +451,78 @@ static void test_selection_word_mode(void)
     cfr_free(vt);
 }
 
+/* Regression: soft-wrapped lines must copy as one logical line with no
+ * padding spaces, and hard newlines must survive. The WRAPLINE flag sits
+ * on the row that wrapped into the next row — get_text used to read it
+ * off-by-one, gluing hard-broken rows together and splitting soft wraps. */
+static void test_selection_get_text_soft_wrap(void)
+{
+    /* 10 cols: row 0 "abc" (hard break), rows 1-3 one 24-char word that
+     * soft-wraps. */
+    CfrTerm *vt = make_term(5, 10);
+
+    feed(vt, "abc\r\n012345678901234567890123");
+    ASSERT_FALSE(cfr_get_line_continuation(vt, 0));
+    ASSERT_TRUE(cfr_get_line_continuation(vt, 1));
+    ASSERT_TRUE(cfr_get_line_continuation(vt, 2));
+    ASSERT_FALSE(cfr_get_line_continuation(vt, 3));
+
+    cfr_selection_start(vt, 0, 0, CFR_SEL_CHAR);
+    cfr_selection_update(vt, 3, 9);
+
+    char *text = cfr_selection_get_text(vt);
+    ASSERT_NOT_NULL(text);
+    ASSERT_STR_EQ(text, "abc\n012345678901234567890123");
+    free(text);
+
+    cfr_free(vt);
+}
+
+/* Regression: soft-wrapped word must double-click-select as one word. */
+static void test_selection_word_mode_soft_wrap(void)
+{
+    CfrTerm *vt = make_term(3, 5);
+
+    /* "abcdef" soft-wraps: row 0 "abcde" (WRAPLINE), row 1 "f". */
+    feed(vt, "abcdef");
+    ASSERT_TRUE(cfr_get_line_continuation(vt, 0));
+
+    cfr_selection_start(vt, 1, 0, CFR_SEL_WORD);
+
+    const CfrSelection *sel = cfr_selection_get(vt);
+    ASSERT_NOT_NULL(sel);
+    ASSERT_EQ(sel->start.row, 0);
+    ASSERT_EQ(sel->start.col, 0);
+    ASSERT_EQ(sel->end.row, 1);
+    ASSERT_EQ(sel->end.col, 0);
+
+    cfr_free(vt);
+}
+
+/* Regression: a soft wrap at the scrollback boundary must still copy as
+ * one logical line. */
+static void test_selection_get_text_wrap_into_scrollback(void)
+{
+    CfrTerm *vt = make_term(2, 10);
+
+    /* Row 0 hard line + 24-char word wrapping rows 1, then new lines push
+     * everything into scrollback. */
+    feed(vt, "abc\r\n012345678901234567890123\r\nmore");
+    ASSERT_TRUE(cfr_get_scrollback_lines(vt) > 0);
+
+    /* Select from scrollback through the visible rows. */
+    int sb = cfr_get_scrollback_lines(vt);
+    cfr_selection_start(vt, -sb, 0, CFR_SEL_CHAR);
+    cfr_selection_update(vt, 1, 4);
+
+    char *text = cfr_selection_get_text(vt);
+    ASSERT_NOT_NULL(text);
+    ASSERT_STR_EQ(text, "abc\n012345678901234567890123\nmore");
+    free(text);
+
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -481,8 +553,11 @@ int main(int argc, char *argv[])
 
     RUN_TEST(test_selection_get_text_basic);
     RUN_TEST(test_selection_get_text_multiline);
+    RUN_TEST(test_selection_get_text_soft_wrap);
+    RUN_TEST(test_selection_get_text_wrap_into_scrollback);
 
     RUN_TEST(test_selection_word_mode);
+    RUN_TEST(test_selection_word_mode_soft_wrap);
 
     TEST_SUMMARY();
 }
