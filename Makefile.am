@@ -10,7 +10,10 @@ pkgconfig_DATA = coffer.pc
 EXTRA_DIST = \
     autogen.sh \
     build-aux/git-version.sh \
-    version \
+    scripts \
+    src/scripts/gen_unicode_tables.py \
+    docs \
+    third_party/stb/stb_image.h \
     README.md \
     COPYING \
     FOLLOWUPS.md \
@@ -25,11 +28,9 @@ version: version_force
 	@v=`"$(srcdir)/build-aux/git-version.sh" "$(srcdir)" 2>/dev/null`; \
 	test -n "$$v" || v="$(COFFER_VERSION)"; \
 	test -n "$$v" || v="unknown"; \
-	printf '%s' "$$v" > "$(srcdir)/version.tmp"; \
-	if cmp -s "$(srcdir)/version.tmp" "$(srcdir)/version" 2>/dev/null; then \
-	  rm -f "$(srcdir)/version.tmp"; \
-	else \
-	  mv "$(srcdir)/version.tmp" "$(srcdir)/version"; \
+	if test "x$$v" != "x$$(cat "$(srcdir)/version" 2>/dev/null)" \
+	   && test -w "$(srcdir)"; then \
+	  printf '%s' "$$v" > "$(srcdir)/version"; \
 	  echo "  GEN      $@ ($$v)"; \
 	fi
 version_force:
