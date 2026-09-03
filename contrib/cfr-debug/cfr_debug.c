@@ -1148,10 +1148,8 @@ int main(int argc, char *argv[])
 
     /* Final render if no script or script didn't render */
     if (!script_path || rc == 0) {
-        if (!quiet || n_show == 0) {
-            render_grid(vt, rows, cols, show_rows, n_show, show_cells,
-                        show_styles, quiet);
-        }
+        render_grid(vt, rows, cols, show_rows, n_show, show_cells,
+                    show_styles, quiet);
     }
 
     if (outfile) {
