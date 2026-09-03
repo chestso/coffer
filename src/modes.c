@@ -200,6 +200,11 @@ void cfr_full_reset(CfrTerm *vt)
     memset(vt->kitty_kb_stack, 0, sizeof(vt->kitty_kb_stack));
     vt->kitty_kb_depth = 0;
 
+    /* RIS clears scrollback too — `reset` must behave like a fresh
+     * terminal, not like `clear`. bash's `reset` runs `tput reset`,
+     * which sends RIS (ESC c). */
+    cfr_scrollback_clear(vt);
+
     /* Charsets back to ASCII. */
     vt->charset[0] = vt->charset[1] = vt->charset[2] = vt->charset[3] = 'B';
     vt->charset_active = 0;

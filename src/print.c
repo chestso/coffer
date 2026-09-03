@@ -604,6 +604,11 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
             cfr_img_clear_display_rows(vt, vt->images, 0, vt->rows - 1);
         if (vt->lottie)
             cfr_lottie_clear_display_rows(vt, 0, vt->rows - 1);
+        /* Mode 3 (E3, xterm's "Erase Saved Lines") also purges the
+         * scrollback buffer — the E3 cap in terminfo. Unlike mode 2,
+         * which only clears the visible grid. */
+        if (mode == 3)
+            cfr_scrollback_clear(vt);
         break;
     default:
         return;

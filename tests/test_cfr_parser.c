@@ -717,6 +717,45 @@ static void test_scrollback_push_read(void)
     cfr_free(vt);
 }
 
+/* Regression: bash's `reset` (tput reset → RIS, ESC c) must purge
+ * scrollback — a reset terminal is a fresh terminal, unlike `clear`
+ * which only erases the visible grid. */
+static void test_ris_clears_scrollback(void)
+{
+    CfrTerm *vt = make_term(3, 5);
+    feed(vt, "AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD");
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
+
+    feed(vt, "\x1b"
+             "c"); /* RIS */
+
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    ASSERT_NULL(cfr_get_scrollback_cell(vt, 0, 0));
+    /* Grid is cleared too. */
+    const CfrCell *cell = cfr_get_cell(vt, 0, 0);
+    ASSERT_EQ(cell->cp, 0u);
+    cfr_free(vt);
+}
+
+/* Regression: CSI 3 J (E3, "Erase Saved Lines" — the E3 cap) must purge
+ * scrollback. Modes 0-2 leave scrollback alone; only mode 3 clears it. */
+static void test_ed3_clears_scrollback(void)
+{
+    CfrTerm *vt = make_term(3, 5);
+    feed(vt, "AAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD");
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
+
+    /* ED 2 clears the visible grid but keeps scrollback. */
+    feed(vt, "\x1b[2J");
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
+
+    /* ED 3 purges scrollback as well. */
+    feed(vt, "\x1b[3J");
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    ASSERT_NULL(cfr_get_scrollback_cell(vt, 0, 0));
+    cfr_free(vt);
+}
+
 static void test_scrollback_grapheme_reintern(void)
 {
     /* When a row containing a multi-codepoint cluster scrolls off,
@@ -1665,6 +1704,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_zwj_does_not_overmerge);
     RUN_TEST(test_skin_tone);
     RUN_TEST(test_scrollback_push_read);
+    RUN_TEST(test_ris_clears_scrollback);
+    RUN_TEST(test_ed3_clears_scrollback);
     RUN_TEST(test_scrollback_grapheme_reintern);
     RUN_TEST(test_send_key_arrow);
     RUN_TEST(test_decckm_arrow);
