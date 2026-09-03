@@ -398,7 +398,11 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         if (cfr_buf_append((uint8_t **)&g_chunk.b64, &g_chunk.len,
                            &g_chunk.cap, payload, payload_len) != 0)
             return;
-        g_chunk.b64[g_chunk.len] = '\0';
+        /* A transfer whose first chunk carries only control data (no
+         * ';' — chafa emits "ESC _ G a=T,...,m=1,q=2 ESC \") never
+         * appends any bytes, so the buffer may still be unallocated. */
+        if (g_chunk.b64)
+            g_chunk.b64[g_chunk.len] = '\0';
         g_chunk.active = 1;
         return;
     }
@@ -438,7 +442,8 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         tmp_b64 = malloc(need);
         if (!tmp_b64)
             return;
-        memcpy(tmp_b64, g_chunk.b64, g_chunk.len);
+        if (g_chunk.len > 0)
+            memcpy(tmp_b64, g_chunk.b64, g_chunk.len);
         if (payload_len > 0)
             memcpy(tmp_b64 + g_chunk.len, payload, payload_len);
         tmp_b64[g_chunk.len + payload_len] = '\0';

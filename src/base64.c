@@ -19,6 +19,12 @@
 int cfr_buf_append(uint8_t **buf, size_t *len, size_t *cap,
                    const void *data, size_t n)
 {
+    /* Zero-byte append is a no-op. Callers may pass a NULL buffer with
+     * n=0 (kitty control-only chunks carry no payload at all); growing
+     * the buffer would leave it NULL and the memcpy below would be UB
+     * with a NULL destination. */
+    if (n == 0)
+        return 0;
     if (*len + n > *cap) {
         size_t ncap = *cap ? *cap : 256;
         while (ncap < *len + n)

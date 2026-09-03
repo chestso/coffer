@@ -582,6 +582,50 @@ static void test_chunked_transmit_no_action(void)
     cfr_free(vt);
 }
 
+/* Chunked transmit where the first chunk carries only control data
+ * and no payload at all — the exact form chafa emits for the first
+ * message: "ESC _ G a=T,f=32,s=W,v=H,c=..,r=..,m=1,q=2 ESC \" (no
+ * ';'). This used to crash: cfr_buf_append() with n=0 leaves the
+ * accumulator NULL and the NUL-terminate wrote through it. */
+static void test_chunked_transmit_control_only_first(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 0, 255, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+
+    char seq[512];
+    /* First chunk: control data only, m=1, no ';' and no payload. */
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=3,c=1,r=1,m=1,q=2\x1b\\");
+    feed(vt, seq);
+    /* Continuation chunk with the full payload. */
+    snprintf(seq, sizeof(seq), "\x1b_Gm=1;%s\x1b\\", b64);
+    feed(vt, seq);
+    /* Final chunk: control only, no payload (chafa's m=0 form). */
+    snprintf(seq, sizeof(seq), "\x1b_Gm=0\x1b\\");
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].source, IMG_SRC_KITTY);
+    ASSERT_EQ(imgs[0].width_px, 1);
+    ASSERT_EQ(imgs[0].rgba[1], 255);
+    ASSERT_EQ(imgs[0].rgba[3], 255);
+
+    /* a=T places at the cursor. */
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ((long long)pls[0].image_id, 3);
+
+    cfr_free(vt);
+}
+
 /* --------------------------------------------------------------- */
 /* 11. Animation: a=a control (sets current frame) + a=f frame data */
 /* --------------------------------------------------------------- */
@@ -748,6 +792,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_outbound_carrier);
     RUN_TEST(test_chunked_transmit);
     RUN_TEST(test_chunked_transmit_no_action);
+    RUN_TEST(test_chunked_transmit_control_only_first);
     RUN_TEST(test_animate_put_frame);
     RUN_TEST(test_zlib_transmit);
     RUN_TEST(test_compose_accepted);
