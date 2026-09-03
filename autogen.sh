@@ -3,7 +3,7 @@
 set -e
 
 srcdir=$(cd "$(dirname "$0")" && pwd)
-"$srcdir/build-aux/git-version.sh" "$srcdir" > "$srcdir/version"
+"$srcdir/build-aux/git-version.sh" "$srcdir" >"$srcdir/version"
 echo "Version: $(cat "$srcdir/version")"
 
 exec autoreconf -fi "$@"
