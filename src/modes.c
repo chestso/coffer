@@ -27,7 +27,7 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
 
     /* Sixel images belong to the primary grid. We don't keep a separate
      * per-screen image set yet, so clear on any altscreen switch. */
-    if (vt->sixel)
+    if (vt->images)
         cfr_img_clear_all(vt, vt->images);
 
     if (on) {
@@ -222,7 +222,7 @@ void cfr_full_reset(CfrTerm *vt)
     /* Reset last-printed char for REP. */
     vt->last_char = 0;
 
-    if (vt->sixel)
+    if (vt->images)
         cfr_img_clear_all(vt, vt->images);
 
     cfr_damage_all(vt);

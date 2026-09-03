@@ -900,6 +900,81 @@ static void test_frame_keeps_placements(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 16. ED (clear screen) clears kitty images                       */
+/* --------------------------------------------------------------- */
+
+/* The kitty spec: "The clear screen escape code (usually ESC[2J)
+ * should also clear all images." The image store is shared by sixel,
+ * kitty and iTerm2, so the gate must be the store (vt->images), not
+ * the lazily-created sixel decoder state (vt->sixel) — a session that
+ * only ever used kitty graphics has vt->sixel == NULL, and chafa's
+ * --clear (ESC[2J) silently left the previous image on screen. */
+static void test_clear_on_ed_kitty_only(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    /* No sixel DCS was ever parsed, so vt->sixel is NULL — the clear
+     * must still drop the kitty image and its placement. */
+    feed(vt, "\x1b[2J");
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 0);
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 16b. Scrolling culls kitty-only images into scrollback         */
+/* --------------------------------------------------------------- */
+
+/* The scroll-cull gate had the same vt->sixel bug: with only kitty
+ * graphics in use, images never entered scrollback bookkeeping and
+ * kept rendering at stale rows once they scrolled off. */
+static void test_scroll_culls_kitty_only(void)
+{
+    CfrTerm *vt = make_term(4, 20);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int n = -1;
+    const CfrImage *imgs = cfr_get_images(vt, &n);
+    ASSERT_EQ(n, 1);
+    ASSERT_EQ(imgs[0].row, 0);
+
+    /* Scroll the image off the top of a 4-row screen. */
+    feed(vt, "\x1b[4;1H");
+    feed(vt, "\n\n\n\n\n");
+
+    /* sixel_abs_top advanced by 5 even though no sixel was parsed;
+     * the kitty image's row must track into scrollback. */
+    imgs = cfr_get_images(vt, &n);
+    ASSERT_EQ(n, 1);
+    ASSERT_TRUE(imgs[0].row < 0);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* main                                                           */
 /* --------------------------------------------------------------- */
 
@@ -935,6 +1010,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_transmit_no_id_creates_new_image);
     RUN_TEST(test_retransmit_id_drops_placements);
     RUN_TEST(test_frame_keeps_placements);
+    RUN_TEST(test_clear_on_ed_kitty_only);
+    RUN_TEST(test_scroll_culls_kitty_only);
 
     TEST_SUMMARY();
 }
