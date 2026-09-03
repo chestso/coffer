@@ -350,24 +350,53 @@ static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
     return rgba;
 }
 
-/* Store a fully decoded image under the client id, or replace in place
- * (a=f animation frame) when the id already exists. */
-static void k_store_image(CfrTerm *vt, const KittyParams *p,
-                          uint8_t *rgba, int w, int h)
+/* Store a fully decoded image. Returns the id under which the image was
+ * stored, or 0 on failure.
+ *
+ * Id semantics (kitty graphics spec):
+ *  - a=f (animation frame): replaces the pixels of the existing image
+ *    in place; its placements stay alive and now show the new frame.
+ *  - a=t / a=T with an explicit id: re-transmitting an existing id
+ *    deletes the image *and all its placements*; the new data is not
+ *    displayed until a new placement is created.
+ *  - No i= key: multiple images with id=0 may exist, so each id-less
+ *    transmit must create a *new* image under a fresh engine id.
+ */
+static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
+                              uint8_t *rgba, int w, int h, bool is_frame)
 {
     CfrImgStore *store = cfr_img_get_store(vt);
     if (!store)
-        return;
+        return 0;
 
-    uint64_t id = (uint64_t)(p->has_image_id ? p->image_id : 0);
-    int idx = cfr_img_find_by_id(store, id);
-    if (idx >= 0) {
-        cfr_img_replace(vt, store, idx, rgba, w, h);
-    } else {
+    if (p->has_image_id) {
+        uint64_t id = (uint64_t)p->image_id;
+        int idx = cfr_img_find_by_id(store, id);
+        if (idx >= 0 && is_frame) {
+            /* Animation frame: replace pixels in place, keep placements. */
+            cfr_img_replace(vt, store, idx, rgba, w, h);
+            if (!p->quiet)
+                k_emit_ok(vt, p->image_id);
+            return id;
+        }
+        if (idx >= 0 && !is_frame) {
+            /* Re-transmit: delete the image and all its placements. */
+            cfr_img_remove(vt, store, idx);
+        }
         cfr_img_add_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
+        if (!p->quiet)
+            k_emit_ok(vt, p->image_id);
+        return id;
     }
+
+    /* No i= key: always a fresh image under a unique engine id so
+     * successive id-less transmits (chafa, kitten icat) don't collide
+     * on id=0. The engine id is what placements must reference. */
+    uint64_t id = store->next_id++;
+    cfr_img_add_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
     if (!p->quiet)
         k_emit_ok(vt, p->image_id);
+    return id;
 }
 
 static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
@@ -473,13 +502,11 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         return;
     }
 
-    (void)is_frame;
-    k_store_image(vt, p, rgba, w, h);
+    uint64_t stored_id = k_store_image(vt, p, rgba, w, h, is_frame);
 
     /* a=T also places at the cursor. */
     if (place_at_cursor) {
         CfrImgStore *store = cfr_img_get_store(vt);
-        uint64_t id = (uint64_t)(p->has_image_id ? p->image_id : 0);
         int cell_h = vt->cell_h_px > 0 ? vt->cell_h_px : 1;
         int cell_w = vt->cell_w_px > 0 ? vt->cell_w_px : 1;
         float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
@@ -491,7 +518,7 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
             rows = 1;
         int place_row = vt->cursor.row;
         int place_col = vt->cursor.col;
-        cfr_img_add_placement(vt, store, id, vt->sixel_abs_top + place_row,
+        cfr_img_add_placement(vt, store, stored_id, vt->sixel_abs_top + place_row,
                               place_col, rows, cols, 0, 255,
                               p->has_z_index ? p->z_index : 0);
 

@@ -766,6 +766,140 @@ static void test_transmit_and_place_cursor_advance(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 15. Id-less transmit always creates a new image                  */
+/* --------------------------------------------------------------- */
+
+/* The kitty spec allows multiple images with id=0 to coexist: a
+ * transmit without an i= key must never reuse or replace a previous
+ * id-less image. Regression test for chafa --clear slideshows, where
+ * a second a=T without i= replaced the first image's pixels in place
+ * and rendered the new image stretched inside the old placement while
+ * also adding a second, correct placement. */
+static void test_transmit_no_id_creates_new_image(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba1[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba1, sizeof(rgba1), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    uint8_t rgba2[4] = { 0, 255, 0, 255 };
+    b64_encode(rgba2, sizeof(rgba2), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Two distinct images, each with its own pixels. */
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 2);
+    ASSERT_TRUE(imgs[0].id != imgs[1].id);
+    ASSERT_EQ(imgs[0].rgba[0], 255); /* first image kept its pixels */
+    ASSERT_EQ(imgs[0].rgba[1], 0);
+    ASSERT_EQ(imgs[1].rgba[1], 255); /* second image has its own */
+
+    /* Two placements, each referencing its own image. */
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(pc, 2);
+    ASSERT_EQ(pls[0].image_id, imgs[0].id);
+    ASSERT_EQ(pls[1].image_id, imgs[1].id);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 15b. Re-transmitting an explicit id deletes the old placements    */
+/* --------------------------------------------------------------- */
+
+/* Kitty spec: "When re-transmitting image data for a specific id, the
+ * existing image and all its placements must be deleted. The new data
+ * replaces the old image data but is not actually displayed until a
+ * placement for it is created." */
+static void test_retransmit_id_drops_placements(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Image + placement created. */
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+
+    /* Re-transmit the same id with a=t (no place): image replaced,
+     * old placement dropped, no new placement created. */
+    uint8_t rgba2[4] = { 0, 255, 0, 255 };
+    b64_encode(rgba2, sizeof(rgba2), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ((long long)imgs[0].id, 7);
+    ASSERT_EQ(imgs[0].rgba[1], 255); /* new pixels */
+    pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0); /* old placement deleted */
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 15c. a=f animation frame keeps placements                        */
+/* --------------------------------------------------------------- */
+
+/* Unlike a=t/T re-transmit, an a=f frame only replaces pixels; the
+ * existing placements must survive and now show the new frame. */
+static void test_frame_keeps_placements(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    uint8_t frame2[4] = { 0, 255, 0, 255 };
+    b64_encode(frame2, sizeof(frame2), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=f,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ((long long)imgs[0].id, 7);
+    ASSERT_EQ(imgs[0].rgba[1], 255); /* frame pixels replaced */
+
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1); /* placement survived */
+    ASSERT_EQ(pls[0].image_id, 7);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* main                                                           */
 /* --------------------------------------------------------------- */
 
@@ -798,6 +932,9 @@ int main(int argc, char *argv[])
     RUN_TEST(test_compose_accepted);
     RUN_TEST(test_transmit_and_place);
     RUN_TEST(test_transmit_and_place_cursor_advance);
+    RUN_TEST(test_transmit_no_id_creates_new_image);
+    RUN_TEST(test_retransmit_id_drops_placements);
+    RUN_TEST(test_frame_keeps_placements);
 
     TEST_SUMMARY();
 }
