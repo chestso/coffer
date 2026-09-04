@@ -26,29 +26,30 @@
 
 typedef struct
 {
-    int action;       /* a= (t,T,q,p,d,f,a,c) */
-    int image_id;     /* i= (0 = unassigned) */
-    int image_num;    /* I= (non-unique) */
-    int placement_id; /* p= */
-    int format;       /* f= (32=RGBA, 24=RGB, 100=PNG) */
-    int width;        /* s= (pixel width) */
-    int height;       /* v= (pixel height) */
-    int z_index;      /* z= */
-    int quiet;        /* q= (0,1,2) */
-    int more;         /* m= (chunked: 1=more, 0=last) */
-    int delete_what;  /* d= (for a=d) */
-    int delete_x;     /* x= (for delete ranges/positions) */
-    int delete_y;     /* y= */
-    int col;          /* x= (placement column offset) */
-    int row;          /* y= (placement row offset) */
-    int place_cols;   /* w= (placement cell width) */
-    int place_rows;   /* h= (placement cell height) */
-    int adv_cols;     /* c= (cursor advance columns) */
-    int adv_rows;     /* r= (cursor advance rows) */
-    int compression;  /* o= (z=zlib, else none) */
-    int virtual;      /* U= (1 = virtual placement, no cursor move) */
-    int parent_place; /* P= (parent placement id) */
-    int parent_img;   /* Q= (parent image id) */
+    int action;         /* a= (t,T,q,p,d,f,a,c) */
+    int image_id;       /* i= (0 = unassigned) */
+    int image_num;      /* I= (non-unique) */
+    int placement_id;   /* p= */
+    int format;         /* f= (32=RGBA, 24=RGB, 100=PNG) */
+    int width;          /* s= (pixel width) */
+    int height;         /* v= (pixel height) */
+    int z_index;        /* z= */
+    int quiet;          /* q= (0,1,2) */
+    int more;           /* m= (chunked: 1=more, 0=last) */
+    int delete_what;    /* d= (for a=d) */
+    int delete_x;       /* x= (for delete ranges/positions) */
+    int delete_y;       /* y= */
+    int col;            /* x= (placement column offset) */
+    int row;            /* y= (placement row offset) */
+    int place_cols;     /* w= (placement cell width) */
+    int place_rows;     /* h= (placement cell height) */
+    int disp_cols;      /* c= (display cols; placement cell width) */
+    int disp_rows;      /* r= (display rows; placement cell height) */
+    int no_cursor_move; /* C= (1 = leave the cursor where it is) */
+    int compression;    /* o= (z=zlib, else none) */
+    int virtual;        /* U= (1 = virtual placement, no cursor move) */
+    int parent_place;   /* P= (parent placement id) */
+    int parent_img;     /* Q= (parent image id) */
     int has_image_id;
     int has_image_num;
     int has_placement_id;
@@ -61,8 +62,9 @@ typedef struct
     int has_row;
     int has_place_cols;
     int has_place_rows;
-    int has_adv_cols;
-    int has_adv_rows;
+    int has_disp_cols;
+    int has_disp_rows;
+    int has_no_cursor_move;
     int has_compression;
     int has_virtual;
     int has_parent_place;
@@ -156,12 +158,16 @@ static void k_parse_params(const char *ctrl, size_t len, KittyParams *p)
                     p->place_rows = atoi(val_buf);
                     break;
                 case 'c':
-                    p->has_adv_cols = 1;
-                    p->adv_cols = atoi(val_buf);
+                    p->has_disp_cols = 1;
+                    p->disp_cols = atoi(val_buf);
                     break;
                 case 'r':
-                    p->has_adv_rows = 1;
-                    p->adv_rows = atoi(val_buf);
+                    p->has_disp_rows = 1;
+                    p->disp_rows = atoi(val_buf);
+                    break;
+                case 'C':
+                    p->has_no_cursor_move = 1;
+                    p->no_cursor_move = atoi(val_buf);
                     break;
                 case 'U':
                     p->has_virtual = 1;
@@ -230,36 +236,33 @@ static void k_emit_error(CfrTerm *vt, int image_id, const char *err)
 /* Cursor advance                                                      */
 /* ------------------------------------------------------------------ */
 
-/* Move the cursor after a placement. When adv_cols/adv_rows are given
- * (c=/r=) they override the default, which is to move below the placement
- * box (like sixel). The column is clamped to the last column and row
- * advances scroll at the scroll margin. */
-static void k_advance_cursor(CfrTerm *vt, int start_col, int cols, int rows,
-                             int adv_cols, int adv_rows)
+/* Move the cursor after a placement: kitty's rule is
+ * col += cols, row += rows - 1, then wrap col to the next line start
+ * when it runs past the right edge, and scroll only when the row runs
+ * past the bottom scroll margin. The wrap matters for full-width
+ * placements: leaving the cursor at the last column makes a following
+ * newline scroll the grid, shifting the image up a row. */
+static void k_advance_cursor(CfrTerm *vt, int start_col, int cols, int rows)
 {
-    if (adv_cols > 0 || adv_rows > 0) {
-        int nc = vt->cursor.col + adv_cols;
-        if (nc > vt->cols - 1)
-            nc = vt->cols - 1;
-        vt->cursor.col = nc;
-        for (int i = 0; i < adv_rows; i++) {
-            if (vt->cursor.row == vt->scroll_bottom)
-                cfr_scroll_up(vt, 1);
-            else if (vt->cursor.row < vt->rows - 1)
-                vt->cursor.row++;
-        }
-    } else {
-        int nc = start_col + cols;
-        if (nc > vt->cols - 1)
-            nc = vt->cols - 1;
-        vt->cursor.col = nc;
-        for (int i = 0; i < rows; i++) {
-            if (vt->cursor.row == vt->scroll_bottom)
-                cfr_scroll_up(vt, 1);
-            else if (vt->cursor.row < vt->rows - 1)
-                vt->cursor.row++;
-        }
+    int nc = start_col + cols;
+    int nr = vt->cursor.row + rows - 1;
+    if (nc >= vt->cols) {
+        nc -= vt->cols;
+        nr++;
     }
+    vt->cursor.col = nc < vt->cols - 1 ? nc : vt->cols - 1;
+    /* The loop body advances cursor.row, so capture the target row up
+     * front rather than recomputing nr - cursor.row per iteration. */
+    int target = nr;
+    while (vt->cursor.row < target) {
+        if (vt->cursor.row == vt->scroll_bottom)
+            cfr_scroll_up(vt, 1);
+        else if (vt->cursor.row < vt->rows - 1)
+            vt->cursor.row++;
+        else
+            break;
+    }
+    vt->cursor.pending_wrap = false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -283,7 +286,12 @@ typedef struct
     int image_id;    /* i= from the first chunk */
     int has_image_id;
     int quiet;
-    int action; /* a= from the first chunk (t/T/f) */
+    int action;    /* a= from the first chunk (t/T/f) */
+    int disp_cols; /* c= from the first chunk (display cols) */
+    int disp_rows; /* r= from the first chunk (display rows) */
+    int has_disp_cols;
+    int has_disp_rows;
+    int no_cursor_move; /* C= from the first chunk (1 = leave cursor) */
 } KChunk;
 
 static KChunk g_chunk = { 0 };
@@ -423,6 +431,11 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
             g_chunk.has_image_id = p->has_image_id;
             g_chunk.quiet = p->quiet;
             g_chunk.action = p->action;
+            g_chunk.disp_cols = p->disp_cols;
+            g_chunk.disp_rows = p->disp_rows;
+            g_chunk.has_disp_cols = p->has_disp_cols;
+            g_chunk.has_disp_rows = p->has_disp_rows;
+            g_chunk.no_cursor_move = p->no_cursor_move;
         }
         if (cfr_buf_append((uint8_t **)&g_chunk.b64, &g_chunk.len,
                            &g_chunk.cap, payload, payload_len) != 0)
@@ -466,6 +479,16 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         }
         if (!p->quiet)
             p->quiet = g_chunk.quiet;
+        if (!p->has_disp_cols) {
+            p->disp_cols = g_chunk.disp_cols;
+            p->has_disp_cols = g_chunk.has_disp_cols;
+        }
+        if (!p->has_disp_rows) {
+            p->disp_rows = g_chunk.disp_rows;
+            p->has_disp_rows = g_chunk.has_disp_rows;
+        }
+        if (p->no_cursor_move == 0)
+            p->no_cursor_move = g_chunk.no_cursor_move;
 
         size_t need = g_chunk.len + payload_len + 1;
         tmp_b64 = malloc(need);
@@ -512,6 +535,12 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
         int cols = (((int)(w * scale) + cell_w - 1) / cell_w);
         int rows = (((int)(h * scale) + cell_h - 1) / cell_h);
+        /* c=/r= override the display size in cells (the image is
+         * scaled/letterboxed into that rectangle, like kitty). */
+        if (p->has_disp_cols && p->disp_cols > 0)
+            cols = p->disp_cols;
+        if (p->has_disp_rows && p->disp_rows > 0)
+            rows = p->disp_rows;
         if (cols < 1)
             cols = 1;
         if (rows < 1)
@@ -522,11 +551,9 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
                               place_col, rows, cols, 0, 255,
                               p->has_z_index ? p->z_index : 0);
 
-        /* Cursor advance: explicit c=/r= override, else default to
-         * below the placement (like sixel and a=p). */
-        int adv_cols = p->has_adv_cols ? p->adv_cols : 0;
-        int adv_rows = p->has_adv_rows ? p->adv_rows : 0;
-        k_advance_cursor(vt, place_col, cols, rows, adv_cols, adv_rows);
+        /* Cursor advance by the placement size, unless C=1. */
+        if (!(p->has_no_cursor_move && p->no_cursor_move))
+            k_advance_cursor(vt, place_col, cols, rows);
     }
     free(rgba);
 }
@@ -606,20 +633,17 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
         }
     }
 
-    /* Cursor advance (c=r rows down, c=c cols right) happens after the
-     * placement; the placement box itself is w= (cols) x h= (rows). */
-    int adv_cols = p->has_adv_cols ? p->adv_cols : 0;
-    int adv_rows = p->has_adv_rows ? p->adv_rows : 0;
-
-    /* Placement cell size: explicit w=/h= override, else derive from
-     * image display dimensions (as a default 1:1). */
+    /* Placement cell size: c=/r= (display cols/rows) with w=/h= as the
+     * pixel-rect aliases, else derive from image display dimensions. */
     int cell_h = vt->cell_h_px > 0 ? vt->cell_h_px : 1;
     int cell_w = vt->cell_w_px > 0 ? vt->cell_w_px : 1;
     float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
-    int cols = p->has_place_cols ? p->place_cols
-                                 : (((int)(img->w * scale) + cell_w - 1) / cell_w);
-    int rows = p->has_place_rows ? p->place_rows
-                                 : (((int)(img->h * scale) + cell_h - 1) / cell_h);
+    int cols = p->has_disp_cols ? p->disp_cols
+                                : (p->has_place_cols ? p->place_cols
+                                                     : (((int)(img->w * scale) + cell_w - 1) / cell_w));
+    int rows = p->has_disp_rows ? p->disp_rows
+                                : (p->has_place_rows ? p->place_rows
+                                                     : (((int)(img->h * scale) + cell_h - 1) / cell_h));
     if (cols < 1)
         cols = 1;
     if (rows < 1)
@@ -639,9 +663,11 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
     if (rel_img)
         store->places[pi].parent_img = rel_img;
 
-    /* Move the cursor: virtual (U=1) leaves it; otherwise advance. */
-    if (!p->has_virtual || !p->virtual)
-        k_advance_cursor(vt, col, cols, rows, adv_cols, adv_rows);
+    /* Move the cursor: virtual (U=1) and C=1 leave it; otherwise
+     * advance by the placement size. */
+    if ((!p->has_virtual || !p->virtual) &&
+        !(p->has_no_cursor_move && p->no_cursor_move))
+        k_advance_cursor(vt, col, cols, rows);
 
     if (!p->quiet)
         k_emit_ok(vt, p->image_id);

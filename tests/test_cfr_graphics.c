@@ -320,7 +320,7 @@ static void test_place(void)
 }
 
 /* --------------------------------------------------------------- */
-/* 8b. Place uses c=/r= as cursor advance, not placement size      */
+/* 8b. Place uses c=/r= as display size                            */
 /* --------------------------------------------------------------- */
 
 static void test_place_cursor_advance(void)
@@ -335,21 +335,22 @@ static void test_place_cursor_advance(void)
              "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
     feed(vt, seq);
 
-    /* c=2 r=1 moves the cursor; the placement box is the default 1x1. */
+    /* c=2 r=1 display a 2x1-cell rectangle; the cursor advances by
+     * the placement size. */
     feed(vt, "\x1b_Ga=p,i=7,c=2,r=1\x1b\\");
 
-    /* The cursor advanced right 2, down 1 from (0,0). */
+    /* The cursor advanced right 2, down 1 - 1 = 0 rows from (0,0). */
     ASSERT_EQ(vt->cursor.col, 2);
-    ASSERT_EQ(vt->cursor.row, 1);
+    ASSERT_EQ(vt->cursor.row, 0);
 
     int count = 0;
     const CfrImagePlacement *pls = cfr_img_get_placements(vt, vt->images, &count);
     ASSERT_NOT_NULL(pls);
     ASSERT_EQ(count, 1);
-    /* Placement anchored at original cursor (0,0), 1x1 cells. */
+    /* Placement anchored at original cursor (0,0), 2x1 cells. */
     ASSERT_EQ(pls[0].col, 0);
     ASSERT_EQ(pls[0].row, 0);
-    ASSERT_EQ(pls[0].cols, 1);
+    ASSERT_EQ(pls[0].cols, 2);
     ASSERT_EQ(pls[0].rows, 1);
 
     cfr_free(vt);
@@ -738,14 +739,16 @@ static void test_transmit_and_place(void)
     ASSERT_EQ(pls[0].col, 0);
     ASSERT_EQ(pls[0].row, 0);
 
-    /* Cursor advanced below the placement (1x1 image → 1 row, 1 col). */
-    ASSERT_EQ(vt->cursor.row, 1);
+    /* Cursor after the placement: kitty's rule is col += cols,
+     * row += rows - 1. A 1x1 image leaves the cursor on its own
+     * row, one column right. */
+    ASSERT_EQ(vt->cursor.row, 0);
     ASSERT_EQ(vt->cursor.col, 1);
 
     cfr_free(vt);
 }
 
-/* 14b. a=T with explicit c=/r= cursor advance */
+/* 14b. a=T with c=/r= display size */
 static void test_transmit_and_place_cursor_advance(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -758,9 +761,119 @@ static void test_transmit_and_place_cursor_advance(void)
              "\x1b_Ga=T,f=32,s=1,v=1,i=7,c=3,r=2;%s\x1b\\", b64);
     feed(vt, seq);
 
-    /* Cursor moved by c=3 cols, r=2 rows from (0,0). */
+    /* c=3,r=2 set the display size to 3x2 cells; the cursor advance
+     * is by the placement size: col += 3, row += 2 - 1. */
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ(pls[0].cols, 3);
+    ASSERT_EQ(pls[0].rows, 2);
     ASSERT_EQ(vt->cursor.col, 3);
-    ASSERT_EQ(vt->cursor.row, 2);
+    ASSERT_EQ(vt->cursor.row, 1);
+
+    cfr_free(vt);
+}
+
+/* 14c. a=T display-size keys survive a chunked upload */
+static void test_transmit_chunked_keeps_display_size(void)
+{
+    CfrTerm *vt = make_term(30, 130);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+
+    /* chafa's form: first chunk carries the control data (with the
+     * display size), the final m=0 chunk carries only m=. */
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,c=99,r=29,m=1,q=2\x1b\\");
+    feed(vt, seq);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Gm=1;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b_Gm=0\x1b\\");
+
+    /* The placement kept the first chunk's 99x29 display size. */
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ(pls[0].cols, 99);
+    ASSERT_EQ(pls[0].rows, 29);
+    /* Kitty cursor rule: col 0 + 99 = 99 (no wrap), row 0 + 29 - 1. */
+    ASSERT_EQ(vt->cursor.col, 99);
+    ASSERT_EQ(vt->cursor.row, 28);
+
+    cfr_free(vt);
+}
+
+/* 14d. C=1 leaves the cursor where it is */
+static void test_transmit_no_cursor_move(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Park the cursor away from the origin. */
+    feed(vt, "\x1b[5;10H");
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7,C=1;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Placement created at (4,9), cursor untouched. */
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ(pls[0].row, 4);
+    ASSERT_EQ(pls[0].col, 9);
+    ASSERT_EQ(vt->cursor.row, 4);
+    ASSERT_EQ(vt->cursor.col, 9);
+
+    cfr_free(vt);
+}
+
+/* 14e. The cursor advance uses rows - 1, so a near-full-height image
+ * leaves the cursor one row above the bottom and a trailing newline
+ * moves to the bottom-left without scrolling the grid.
+ * Regression test for chafa --align mid,mid rendering, where the
+ * old rows-count advance hit the bottom margin early and the
+ * trailing newline scrolled the image up, clipping its top and
+ * leaving two blank rows. */
+static void test_transmit_full_width_no_extra_scroll(void)
+{
+    CfrTerm *vt = make_term(30, 130);
+
+    /* chafa's shape: cursor parked at col 15 by leading spaces, then a
+     * 99x29 display-size transmit. */
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    feed(vt, "\x1b[1;16H"); /* park the cursor at col 15 like chafa's spaces */
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,c=99,r=29,m=1,q=2\x1b\\");
+    feed(vt, seq);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Gm=1;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b_Gm=0\x1b\\");
+
+    /* col 15 + 99 = 114 (no wrap), row 0 + 29 - 1 = 28. */
+    ASSERT_EQ(vt->cursor.row, 28);
+    ASSERT_EQ(vt->cursor.col, 114);
+
+    /* The trailing \r\n clients print after the image moves to the
+     * bottom-left without scrolling: the image stays at row 0. */
+    feed(vt, "\r\n");
+    ASSERT_EQ(vt->cursor.row, 29);
+    ASSERT_EQ(vt->cursor.col, 0);
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ(pls[0].row, 0);
 
     cfr_free(vt);
 }
@@ -1007,6 +1120,9 @@ int main(int argc, char *argv[])
     RUN_TEST(test_compose_accepted);
     RUN_TEST(test_transmit_and_place);
     RUN_TEST(test_transmit_and_place_cursor_advance);
+    RUN_TEST(test_transmit_chunked_keeps_display_size);
+    RUN_TEST(test_transmit_no_cursor_move);
+    RUN_TEST(test_transmit_full_width_no_extra_scroll);
     RUN_TEST(test_transmit_no_id_creates_new_image);
     RUN_TEST(test_retransmit_id_drops_placements);
     RUN_TEST(test_frame_keeps_placements);
