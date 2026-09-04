@@ -422,6 +422,15 @@ The full API is in [`include/coffer/coffer.h`](include/coffer/coffer.h).
 
 The default 16-color ANSI palette is [Dracula](https://draculatheme.com) (per the [official spec](https://draculatheme.com/spec)). The default terminal background is pitch-black (`#000000`), separate from the palette's AnsiBlack.
 
+Embedded third-party code:
+
+- [stb](https://github.com/nothings/stb) — Sean Barrett's single-header
+  `stb_image.h` (auto-fetched at configure time), used for PNG/JPEG
+  decoding of iTerm2 inline images and kitty graphics.
+- Bjoern Hoehrmann's table-driven
+  [UTF-8 decoder](https://bjoern.hoehrmann.de/utf-8/decoder/dfa/),
+  used for decoding printable bytes in the GROUND state.
+
 ## License
 
 MIT. See [`COPYING`](COPYING).
