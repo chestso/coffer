@@ -104,12 +104,31 @@ embedded within other control string contexts.
 experimental terminals. Not a real corpus case — no known applications
 emit this pattern. Purely defensive.
 
-### Kitty graphics protocol
+### Kitty graphics protocol — remaining gaps
 
-No implementation exists. This is a competing image protocol to sixel,
-used primarily by kitty terminal itself.
+The core protocol is implemented (`src/graphics.c`, tests in
+`test_cfr_graphics.c`): transmit `a=t`/`a=T`, place `a=p` (absolute,
+`U=1` virtual, `P=`/`Q=` relative-to-parent), delete `a=d` with
+`d=a`/`d=i`/`d=p`, capability query `a=q`, chunked upload (`m=`), zlib
+compression (`o=z`), formats `f=24`/`32`/`100`, cursor advance
+(`c=`/`r=`), z-index, and the ConPTY OSC 5556 carrier workaround.
 
-**Benefit:** Would enable rendering of high-quality images in kitty
-terminal. Low priority since sixel is more widely supported and already
-implemented. Only worth adding if a major application exclusively uses
-kitty graphics.
+Not yet implemented:
+
+- **Animation control (`a=a`)** — only acknowledged with OK; no frame
+  index, no loop/gap timing, no playback. `a=f` replaces the image's
+  pixels in place (single-frame), there is no frame store.
+- **Compose (`a=c`)** — no-op acknowledgment; we always render the
+  latest frame in every visible placement.
+- **Delete subtypes** — `d=c` (cursor cell/region), `d=n` (image
+  number `I=`), `d=x`/`d=y` (intersecting ranges). The `x=`/`y=` keys
+  are parsed into `delete_x`/`delete_y` but unused by the delete
+  handler.
+- **Unicode placeholders (`q=1`)** — no placeholder-cell rendering or
+  cursor-movement-via-placeholder-text.
+- **`I=` image number** — parsed but otherwise ignored; only unique
+  ids (`i=`) are supported.
+
+**Benefit:** Full spec compliance for kitty-native clients (timg,
+chafa, and tools driving kitty animations). Most consumers only need
+the transmit/place/delete paths, which already work.
