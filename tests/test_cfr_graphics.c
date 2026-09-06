@@ -7,11 +7,55 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 /* --------------------------------------------------------------- */
 /* Test harness                                                    */
 /* --------------------------------------------------------------- */
+
+/* Abort the suite instead of hanging if a feed spins forever. POSIX
+ * has alarm(); Windows gets a one-shot watchdog thread. */
+#ifdef _WIN32
+static HANDLE g_watchdog_event;
+
+static DWORD WINAPI watchdog_thread(LPVOID arg)
+{
+    (void)arg;
+    if (WaitForSingleObject(g_watchdog_event, 10000) == WAIT_TIMEOUT) {
+        fputs("test_cfr_graphics: timed out after 10s\n", stderr);
+        _exit(1);
+    }
+    return 0;
+}
+
+static void watchdog_arm(void)
+{
+    g_watchdog_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    HANDLE thread = CreateThread(NULL, 0, watchdog_thread, NULL, 0, NULL);
+    if (thread) {
+        CloseHandle(thread);
+    }
+}
+
+static void watchdog_disarm(void)
+{
+    if (g_watchdog_event) {
+        SetEvent(g_watchdog_event);
+    }
+}
+#else
+static void watchdog_arm(void)
+{
+    alarm(10);
+}
+
+static void watchdog_disarm(void)
+{
+    alarm(0);
+}
+#endif
 
 static char g_output[1024];
 static size_t g_output_len;
@@ -902,9 +946,9 @@ static void test_transmit_taller_than_screen_no_spin(void)
              "\x1b_Ga=T,f=32,s=1,v=1,c=10,r=20,q=2;%s\x1b\\", b64);
     /* A regression turns this feed into an infinite scroll loop; bound
      * it so the suite aborts instead of hanging. */
-    alarm(10);
+    watchdog_arm();
     feed(vt, seq);
-    alarm(0);
+    watchdog_disarm();
 
     /* The 20-row advance ends 10 rows below the bottom margin: the
      * grid scrolls 10 times with the cursor pinned there, the cursor
