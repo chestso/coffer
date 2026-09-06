@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 /* --------------------------------------------------------------- */
 /* Test harness                                                    */
@@ -879,6 +880,50 @@ static void test_transmit_full_width_no_extra_scroll(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 14b. Oversized a=T must not spin at the bottom scroll margin      */
+/* --------------------------------------------------------------- */
+
+/* An a=T whose display size exceeds the remaining screen rows must
+ * scroll the grid and stop. cfr_scroll_up moves rows but leaves
+ * cursor.row on the bottom margin, so the cursor-advance loop may only
+ * iterate while it makes progress; a loop that waits for cursor.row to
+ * reach a target below the margin never terminates and pushes one
+ * scrollback line per iteration until memory or the user gives out. */
+static void test_transmit_taller_than_screen_no_spin(void)
+{
+    CfrTerm *vt = make_term(10, 40);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    /* 1x1 image displayed as 20 rows x 10 cols on a 10-row terminal. */
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,c=10,r=20,q=2;%s\x1b\\", b64);
+    /* A regression turns this feed into an infinite scroll loop; bound
+     * it so the suite aborts instead of hanging. */
+    alarm(10);
+    feed(vt, seq);
+    alarm(0);
+
+    /* The 20-row advance ends 10 rows below the bottom margin: the
+     * grid scrolls 10 times with the cursor pinned there, the cursor
+     * parks on the bottom row, and the image anchor lifts to
+     * abs_line - scrolls. */
+    ASSERT_EQ(vt->cursor.row, vt->rows - 1);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 20 - vt->rows);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 10);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].row, -(20 - vt->rows));
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* 15. Id-less transmit always creates a new image                  */
 /* --------------------------------------------------------------- */
 
@@ -1123,6 +1168,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_transmit_chunked_keeps_display_size);
     RUN_TEST(test_transmit_no_cursor_move);
     RUN_TEST(test_transmit_full_width_no_extra_scroll);
+    RUN_TEST(test_transmit_taller_than_screen_no_spin);
     RUN_TEST(test_transmit_no_id_creates_new_image);
     RUN_TEST(test_retransmit_id_drops_placements);
     RUN_TEST(test_frame_keeps_placements);

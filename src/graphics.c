@@ -238,8 +238,7 @@ static void k_emit_error(CfrTerm *vt, int image_id, const char *err)
 
 /* Move the cursor after a placement: kitty's rule is
  * col += cols, row += rows - 1, then wrap col to the next line start
- * when it runs past the right edge, and scroll only when the row runs
- * past the bottom scroll margin. The wrap matters for full-width
+ * when it runs past the right edge. The wrap matters for full-width
  * placements: leaving the cursor at the last column makes a following
  * newline scroll the grid, shifting the image up a row. */
 static void k_advance_cursor(CfrTerm *vt, int start_col, int cols, int rows)
@@ -251,17 +250,21 @@ static void k_advance_cursor(CfrTerm *vt, int start_col, int cols, int rows)
         nr++;
     }
     vt->cursor.col = nc < vt->cols - 1 ? nc : vt->cols - 1;
-    /* The loop body advances cursor.row, so capture the target row up
-     * front rather than recomputing nr - cursor.row per iteration. */
+
+    /* Rows past the bottom scroll margin scroll the grid with the
+     * cursor pinned on the margin, so the advance clamps the cursor
+     * there and scrolls the remainder: the image's bottom row lands on
+     * the screen bottom, as if the cursor had walked down one row per
+     * step. The scroll count is bounded by the placement height, which
+     * keeps an oversized a=T from spinning. */
     int target = nr;
-    while (vt->cursor.row < target) {
-        if (vt->cursor.row == vt->scroll_bottom)
+    if (target > vt->scroll_bottom) {
+        for (int i = 0; i < target - vt->scroll_bottom; ++i)
             cfr_scroll_up(vt, 1);
-        else if (vt->cursor.row < vt->rows - 1)
-            vt->cursor.row++;
-        else
-            break;
+        target = vt->scroll_bottom;
     }
+    if (vt->cursor.row < target)
+        vt->cursor.row = target;
     vt->cursor.pending_wrap = false;
 }
 
