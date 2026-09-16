@@ -59,6 +59,21 @@ static void cursor_clamp(CfrTerm *vt)
         vt->cursor.col = vt->cols - 1;
 }
 
+/* Drop the WRAPLINE flag on `row`. Callers invoke this whenever an
+ * operation removes the cell at the row's final column: a soft-wrapped row
+ * only continues into the next row while its margin cell is still on
+ * screen, so erasing or overwriting that cell truncates the logical line
+ * and the next row stops being a continuation. */
+static void clear_wrapline(CfrTerm *vt, int row)
+{
+    if (!vt->grid || row < 0 || row >= vt->rows)
+        return;
+    if ((vt->grid->row_flags[row] & CFR_CELL_WRAPLINE) == 0u)
+        return;
+    vt->grid->row_flags[row] &= (uint8_t)~CFR_CELL_WRAPLINE;
+    cfr_damage_row(vt, row);
+}
+
 void cfr_scroll_up(CfrTerm *vt, int lines)
 {
     cfr_grid_ensure(vt);
@@ -163,6 +178,10 @@ void cfr_scroll_down(CfrTerm *vt, int lines)
 
 static void linefeed(CfrTerm *vt)
 {
+    if (vt->cursor.pending_wrap && vt->cursor.col == vt->cols - 1 &&
+        vt->cursor.row >= 0 && vt->cursor.row < vt->rows)
+        clear_wrapline(vt, vt->cursor.row);
+    vt->cursor.pending_wrap = false;
     if (vt->cursor.row == vt->scroll_bottom) {
         cfr_scroll_up(vt, 1);
     } else if (vt->cursor.row < vt->rows - 1) {
@@ -443,6 +462,8 @@ void cfr_erase_in_line(CfrTerm *vt, int mode)
     if (from >= to)
         return;
     erase_cells(vt, &line[from], to - from);
+    if (to == vt->cols)
+        clear_wrapline(vt, row);
     cfr_damage_row(vt, row);
 }
 
@@ -464,6 +485,9 @@ void cfr_insert_chars(CfrTerm *vt, int count)
                 (size_t)move * sizeof(CfrCell));
     }
     erase_cells(vt, &line[col], count);
+    /* ICH leaves the row's wrap state alone: it shifts the existing cells
+     * (including whatever sits at the margin) to the right, it does not
+     * remove them. */
     cfr_damage_row(vt, row);
 }
 
@@ -485,6 +509,8 @@ void cfr_delete_chars(CfrTerm *vt, int count)
                 (size_t)move * sizeof(CfrCell));
     }
     erase_cells(vt, &line[vt->cols - count], count);
+    if (col + count >= vt->cols)
+        clear_wrapline(vt, row);
     cfr_damage_row(vt, row);
 }
 
@@ -501,6 +527,8 @@ void cfr_erase_chars(CfrTerm *vt, int count)
         count = vt->cols - col;
     CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
     erase_cells(vt, &line[col], count);
+    if (col + count >= vt->cols)
+        clear_wrapline(vt, row);
     cfr_damage_row(vt, row);
 }
 
@@ -595,7 +623,6 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
             cfr_lottie_clear_display_rows(vt, 0, row);
         break;
     case 2:
-    case 3:
         for (int r = 0; r < vt->rows; ++r)
             erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
                         vt->cols);
@@ -604,11 +631,14 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
             cfr_img_clear_display_rows(vt, vt->images, 0, vt->rows - 1);
         if (vt->lottie)
             cfr_lottie_clear_display_rows(vt, 0, vt->rows - 1);
-        /* Mode 3 (E3, xterm's "Erase Saved Lines") also purges the
-         * scrollback buffer — the E3 cap in terminfo. Unlike mode 2,
-         * which only clears the visible grid. */
-        if (mode == 3)
-            cfr_scrollback_clear(vt);
+        break;
+    case 3:
+        /* Mode 3 (E3, xterm's "Erase Saved Lines") purges scrollback
+         * only. The visible grid is untouched — xterm and VTE both treat
+         * E3 as "drop the saved lines", and shells that emit it (e.g.
+         * as part of a clear sequence followed by ED2) rely on that to
+         * reset history without flickering the screen. */
+        cfr_scrollback_clear(vt);
         break;
     default:
         return;

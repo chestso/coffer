@@ -5,6 +5,19 @@ on. Order is roughly priority, not strict dependency.
 
 ## Investigate
 
+- **Line feed at the bottom row while a deferred wrap is pending.** When
+  the cursor sits on the last column of the last screen row with a
+  deferred wrap (`pending_wrap`) and an LF arrives, coffer scrolls and
+  carries the phantom onto the new row, so a subsequent print joins the
+  scrolled-off row to the new one. xterm, tmux and libvterm each do
+  something different here (xterm appears to clear the wrap and print at
+  column 0 / scroll, tmux moves down and prints at column 0, libvterm
+  keeps the deferred wrap and prints at column 0 of the new row), and the
+  existing `pending_wrap` bookkeeping has no slot for "column 0 but the
+  wrap is still pending" — the phantom is represented _by_ sitting on the
+  last column. Repro: `\e[8;1H` + 20 chars + `\n` + one char on an 8x20
+  grid. Not worth chasing until a real program hits it.
+
 - **Hoist `cfr_flush_cluster()` into `cfr_osc_dispatch`.** OSC 8 added a
   flush at the top of its handler (mirroring the csi.c / esc.c / modes.c
   pattern) so the previous link's still-pending cluster gets the old
