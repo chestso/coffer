@@ -2,20 +2,20 @@
 
 ## Executive Summary
 
-The plumbing for ambiguous-width rendering is fully in place (`CfrConfig.ambiguous_wide`, `CfrTerm.ambiguous_wide`, `cfr_set_ambiguous_wide()`). Two things are missing: the `AMBIGUOUS[]` range table in `width.c`, and the check in `cfr_codepoint_width()`. The existing `scripts/gen_unicode_tables.py` already knows how to generate this table from `EastAsianWidth.txt`, but no UCD data is vendored and the script has never been run.
+The plumbing for ambiguous-width rendering is fully in place (`CfrConfig.ambiguous_wide`, `CfrTerm.ambiguous_wide`, `cfr_set_ambiguous_wide()`). Two things were missing: the `AMBIGUOUS[]` range table, and the check in `cfr_codepoint_width()`. Both have landed: the tables are now UCD-derived data in the generated `src/unicode_tables.h` (`CFR_AMBIGUOUS`, consulted only when `vt->ambiguous_wide` is set), emitted by `src/scripts/gen_unicode_tables.py`.
 
 ## Current State
 
-| Component                     | Location                            | Status                                                             |
-| ----------------------------- | ----------------------------------- | ------------------------------------------------------------------ |
-| `CfrConfig.ambiguous_wide`    | `include/coffer/coffer.h:336`       | Exists, defaults to `false`                                        |
-| `CfrTerm.ambiguous_wide`      | `src/coffer_internal.h:271`         | Exists                                                             |
-| Config copy to `vt`           | `src/term.c:84`                     | `vt->ambiguous_wide = cfg->ambiguous_wide`                         |
-| `cfr_set_ambiguous_wide()`    | `src/term.c:175`                    | Implemented                                                        |
-| `AMBIGUOUS[]` table           | `src/width.c`                       | **Missing** (header comment acknowledges this)                     |
-| `cfr_codepoint_width()` check | `src/width.c:510-513`               | **TODO stub** — discards `vt` with `(void)vt`                      |
-| `cfr_utf8_display_width()`    | `src/width.c:617`                   | Passes `NULL` to `cfr_codepoint_width()` — ambiguous always narrow |
-| `gen_unicode_tables.py`       | `src/scripts/gen_unicode_tables.py` | Supports `EastAsianWidth.txt` class `A` but has never been run     |
+| Component                     | Location                            | Status                                                                 |
+| ----------------------------- | ----------------------------------- | ---------------------------------------------------------------------- |
+| `CfrConfig.ambiguous_wide`    | `include/coffer/coffer.h:336`       | Exists, defaults to `false`                                            |
+| `CfrTerm.ambiguous_wide`      | `src/coffer_internal.h:271`         | Exists                                                                 |
+| Config copy to `vt`           | `src/term.c:84`                     | `vt->ambiguous_wide = cfg->ambiguous_wide`                             |
+| `cfr_set_ambiguous_wide()`    | `src/term.c:175`                    | Implemented                                                            |
+| `CFR_AMBIGUOUS[]` table       | `src/unicode_tables.h` (generated)  | Present — 179 ranges from `EastAsianWidth.txt` class A                 |
+| `cfr_codepoint_width()` check | `src/width.c`                       | Implemented — consults `vt->ambiguous_wide`                            |
+| `cfr_utf8_display_width()`    | `src/width.c`                       | Passes `NULL` to `cfr_codepoint_width()` — ambiguous always narrow     |
+| `gen_unicode_tables.py`       | `src/scripts/gen_unicode_tables.py` | Emits the committed header (`--prefix`/`--type`/`--out`); run + commit |
 
 ## Implementation Steps
 
@@ -28,33 +28,23 @@ Download UCD files from `https://www.unicode.org/Public/UCD/latest/ucd/`:
 - `emoji/emoji-data.txt`
 - `DerivedCoreProperties.txt`
 
-The script downloads these automatically when no UCD directory is provided:
+The script downloads these automatically and writes the generated header
+(a provenance banner records the UCD versions, per-file SHA-256, the
+generator's SHA-256, and the exact command):
 
 ```sh
-python3 src/scripts/gen_unicode_tables.py > /tmp/unicode_tables.c
+python3 src/scripts/gen_unicode_tables.py --out src/unicode_tables.h
 ```
 
 Or with a local UCD directory:
 
 ```sh
-python3 src/scripts/gen_unicode_tables.py /path/to/UCD > /tmp/unicode_tables.c
+python3 src/scripts/gen_unicode_tables.py --ucd /path/to/UCD --out src/unicode_tables.h
 ```
 
-Extract the `CFR_AMBIGUOUS` table from the output and commit it in `width.c` as `AMBIGUOUS[]` (adapting the formatting to match the existing `WIDE[]` / `ZERO[]` style — spaces inside braces, no `CFR_` prefix, no `_LEN` macro since `width.c` uses `ARRAY_LEN()`).
-
-Place the table after `ZERO[]` and before `range_lookup()` (around line 474). Format:
-
-```c
-static const Range AMBIGUOUS[] = {
-    { 0x00A1, 0x00A1 },
-    { 0x00A4, 0x00A4 },
-    /* ... full UAX #11 Ambiguous set (179 ranges) ... */
-};
-```
-
-Update the header comment (lines 12-15) to remove the "not yet enumerated" note.
-
-Add a regeneration comment above the table documenting the source and process.
+Commit the regenerated header. `width.c` includes it and holds all the
+logic: the ranges are `CFR_*` (sized by the generated `CFR_*_LEN`
+macros), so the tables are never hand-maintained or hand-copied.
 
 ### Step 2 — Wire `vt->ambiguous_wide` into `cfr_codepoint_width()`
 
@@ -72,7 +62,7 @@ Replace the current TODO stub:
 with:
 
 ```c
-    if (vt && vt->ambiguous_wide && range_lookup(AMBIGUOUS, ARRAY_LEN(AMBIGUOUS), cp))
+    if (vt && vt->ambiguous_wide && range_lookup(CFR_AMBIGUOUS, CFR_AMBIGUOUS_LEN, cp))
         return 2;
     return 1;
 ```
@@ -111,19 +101,21 @@ make -j$(nproc) && make check TESTS='test_cfr_parser'
 
 ## Files Changed
 
-| File                      | Change                                                                                                                                                                                         |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/width.c`             | Add `AMBIGUOUS[]` table (179 ranges); wire `vt->ambiguous_wide` check into `cfr_codepoint_width()`; update `cfr_utf8_display_width()` comment; update header comment; add regeneration comment |
-| `tests/test_cfr_parser.c` | Add `test_ambiguous_wide` test + `RUN_TEST` registration                                                                                                                                       |
+| File                      | Change                                                                                                                                                                                                                    |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/unicode_tables.h`    | Generated: adds `CFR_AMBIGUOUS` (179 ranges) alongside the existing `CFR_WIDE` / `CFR_ZERO` / grapheme tables; committed from `gen_unicode_tables.py`                                                                     |
+| `src/width.c`             | Includes the generated header instead of carrying the tables inline; `range_lookup()` takes `const CfrRange *` and call sites use the generated `CFR_*_LEN` macros; `cfr_codepoint_width()` consults `vt->ambiguous_wide` |
+| `tests/test_cfr_parser.c` | Add `test_ambiguous_wide` test + `RUN_TEST` registration                                                                                                                                                                  |
+| `tests/test_cfr_width.c`  | Add `test_symbol_width` — pins the UAX #11 boundaries (`U+2713` ✓ / `U+270F` ✏ narrow, `U+2693` ⚓ wide, VS16 widens, skin-tone modifiers zero-width)                                                                     |
 
 ## No Changes Needed
 
-| File                                | Why                                                                                                                          |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `include/coffer/coffer.h`           | `CfrConfig.ambiguous_wide` and `cfr_set_ambiguous_wide()` already exist                                                      |
-| `src/term.c`                        | Already copies `cfg->ambiguous_wide` to `vt->ambiguous_wide` (line 84) and implements `cfr_set_ambiguous_wide()` (line 175)  |
-| `src/coffer_internal.h`             | `CfrTerm.ambiguous_wide` field already exists (line 271)                                                                     |
-| `src/scripts/gen_unicode_tables.py` | Already supports generating the `CFR_AMBIGUOUS` table from `EastAsianWidth.txt` — used as-is to generate the committed table |
+| File                                | Why                                                                                                                                           |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `include/coffer/coffer.h`           | `CfrConfig.ambiguous_wide` and `cfr_set_ambiguous_wide()` already exist                                                                       |
+| `src/term.c`                        | Already copies `cfg->ambiguous_wide` to `vt->ambiguous_wide` (line 84) and implements `cfr_set_ambiguous_wide()` (line 175)                   |
+| `src/coffer_internal.h`             | `CfrTerm.ambiguous_wide` field already exists (line 271)                                                                                      |
+| `src/scripts/gen_unicode_tables.py` | Emits the committed `src/unicode_tables.h` (`--out`), with `--prefix`/`--type` for downstream vendors; `CFR_AMBIGUOUS` is part of that output |
 
 ## Risk Assessment
 

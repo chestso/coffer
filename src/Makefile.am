@@ -33,7 +33,8 @@ libcoffer_a_SOURCES = \
     log.c \
     selection.c \
     coffer_internal.h \
-    image_store.h
+    image_store.h \
+    unicode_tables.h
 
 libcoffer_a_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src -I$(top_srcdir)/third_party/stb
 

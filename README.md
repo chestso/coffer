@@ -337,27 +337,31 @@ make distcheck    # build, test, and verify the dist tarball is self-contained
 
 ### Regenerating Unicode tables
 
-The width and grapheme-break tables in `src/width.c` are derived from the
-Unicode Character Database. To regenerate them when upgrading the target
-Unicode version, use the generator script:
+The width and grapheme-break interval tables are UCD-derived and live in
+the generated `src/unicode_tables.h`. To regenerate and commit them when
+the target Unicode version moves:
 
 ```sh
-python3 src/scripts/gen_unicode_tables.py > /tmp/unicode_tables.c
+python3 src/scripts/gen_unicode_tables.py --out src/unicode_tables.h
 ```
 
 The script downloads the required UCD files (EastAsianWidth.txt,
 GraphemeBreakProperty.txt, emoji-data.txt, DerivedCoreProperties.txt)
-automatically from `www.unicode.org` into a temporary directory. To use a
-local UCD directory instead:
+automatically from `www.unicode.org` into memory. To use a local UCD
+directory instead:
 
 ```sh
-python3 src/scripts/gen_unicode_tables.py /path/to/UCD > /tmp/unicode_tables.c
+python3 src/scripts/gen_unicode_tables.py --ucd /path/to/UCD --out src/unicode_tables.h
 ```
 
-The generated file is not committed wholesale; the relevant tables
-(`CFR_WIDE`, `CFR_AMBIGUOUS`, `CFR_ZERO`) are adapted into `width.c` with
-the project's formatting (bare names, spaces inside braces, `ARRAY_LEN()`
-macro instead of `_LEN` defines).
+The header is data-only — sorted `{lo, hi}` ranges plus a `<NAME>_LEN`
+macro per table, nothing but `<stdint.h>` — and carries a provenance
+banner: the Unicode version and SHA-256 of every UCD file, the SHA-256 of
+the generator, and the exact command that produced it. All the width and
+grapheme logic stays in `src/width.c`, which includes the header; the
+`--prefix`/`--type` flags let another project vendor the same tables under
+its own names (boba keeps such a copy so it stays free of any dependency
+on coffer). Never hand-edit the generated header.
 
 ## cfr-debug
 

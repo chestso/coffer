@@ -78,6 +78,37 @@ static void test_invalid_utf8(void)
     ASSERT_EQ(cfr_utf8_display_width("\xE3\x00\x82", 3), -1);
 }
 
+/* Test symbol / emoji-presentation widths.
+ *
+ * UAX #11 Wide means two cells; Miscellaneous Symbols and Dingbats
+ * (0x2600-0x27BF) is NOT wide wholesale — only the Emoji_Presentation
+ * members are (U+2693, U+2705), the rest are East Asian Neutral or
+ * Ambiguous and stay one cell without a VS16. Table data comes from the
+ * generated unicode_tables.h; these assertions pin the boundaries. */
+static void test_symbol_width(void)
+{
+    /* Narrow: East Asian Neutral/Ambiguous, one cell bare */
+    ASSERT_EQ(cfr_utf8_display_width("\xE2\x9C\x93", 3), 1); /* U+2713 ✓ */
+    ASSERT_EQ(cfr_utf8_display_width("\xE2\x9C\x94", 3), 1); /* U+2714 ✔ */
+    ASSERT_EQ(cfr_utf8_display_width("\xE2\x9C\x97", 3), 1); /* U+2717 ✗ */
+    ASSERT_EQ(cfr_utf8_display_width("\xE2\x98\x85", 3), 1); /* U+2605 ★ (ambiguous, narrow by default) */
+    ASSERT_EQ(cfr_utf8_display_width("\xE2\x9C\x8F", 3), 1); /* U+270F ✏ */
+
+    /* Wide: Emoji_Presentation members of the same block */
+    ASSERT_EQ(cfr_utf8_display_width("\xE2\x9A\x93", 3), 2); /* U+2693 ⚓ */
+    ASSERT_EQ(cfr_utf8_display_width("\xE2\x9C\x85", 3), 2); /* U+2705 ✅ */
+
+    /* VS16 widens a narrow base to two cells */
+    ASSERT_EQ(cfr_utf8_display_width("\xE2\x9C\x8F\xEF\xB8\x8F", 6), 2); /* ✏️ */
+    ASSERT_EQ(cfr_utf8_display_width("\xE2\x9A\xA0\xEF\xB8\x8F", 6), 2); /* ⚠️ */
+
+    /* Skin-tone modifier is zero-width (Extend), so the emoji stays 2 */
+    ASSERT_EQ(cfr_utf8_display_width("\xF0\x9F\x91\x8D\xF0\x9F\x8F\xBD", 8), 2); /* 👍🏽 */
+
+    /* Format characters are zero-width: WORD JOINER, BOM */
+    ASSERT_EQ(cfr_utf8_display_width("\xE2\x81\xA0", 3), 0); /* U+2060 */
+}
+
 /* Test URL-like strings (primary use case) */
 static void test_url_width(void)
 {
@@ -92,6 +123,7 @@ int main(void)
     test_emoji_width();
     test_zero_width();
     test_combining_sequence();
+    test_symbol_width();
     test_invalid_utf8();
     test_url_width();
 
