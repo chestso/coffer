@@ -95,4 +95,9 @@ static int test_fail_count = 0;
 /* Provided by test_common.c — call from main() before running tests */
 void test_parse_args(int argc, char *argv[]);
 
+/* True when the cursor carries the deferred-wrap phantom (its logical
+ * column is one past the right margin). Internal cursor state; the public
+ * cfr_get_cursor() reports the clamped physical column. */
+#define PENDING_WRAP(vt) ((vt)->cursor.col >= (vt)->cols)
+
 #endif // TEST_HELPERS_H

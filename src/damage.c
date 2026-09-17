@@ -54,14 +54,16 @@ void cfr_damage_flush(CfrTerm *vt)
     /* A cursor-only move (CUP, arrows) changes no grid cell and emits no
      * damage. Fold it in by dirtying the old and new cursor cells so the
      * consumer repaints both — matching how Alacritty damages the cursor at
-     * flush time. */
+     * flush time. The cursor's logical column can be `cols` (the phantom);
+     * clamp it to the physical margin so the damage rect stays in range. */
+    int cur_col = vt->cursor.col >= vt->cols ? vt->cols - 1 : vt->cursor.col;
     if (vt->cursor.row != vt->dmg_cursor_row ||
-        vt->cursor.col != vt->dmg_cursor_col ||
+        cur_col != vt->dmg_cursor_col ||
         vt->cursor.visible != vt->dmg_cursor_visible) {
         cfr_damage_cell(vt, vt->dmg_cursor_row, vt->dmg_cursor_col);
-        cfr_damage_cell(vt, vt->cursor.row, vt->cursor.col);
+        cfr_damage_cell(vt, vt->cursor.row, cur_col);
         vt->dmg_cursor_row = vt->cursor.row;
-        vt->dmg_cursor_col = vt->cursor.col;
+        vt->dmg_cursor_col = cur_col;
         vt->dmg_cursor_visible = vt->cursor.visible;
     }
 

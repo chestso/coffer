@@ -1,26 +1,16 @@
 /*
  * coffer — grid mutation: cell write, cursor advance, scroll, erase.
  *
- * Plain ASCII printing works end-to-end here; full grapheme cluster
- * accumulation arrives once UAX #29 tables are generated. For now,
- * each codepoint becomes its own cell with width derived from
- * cfr_codepoint_width().
+ * Wrap state is represented by (a) the WRAPLINE bit on the margin cell of
+ * a row that wraps and (b) a shared nonzero lineage id on the rows of one
+ * logical line. See lines.c and docs/wrapped-lines-design.md. Row moves
+ * (scroll, IL, DL) carry both inside the same memmove as the cells; erases
+ * and overwrites rewrite the margin cell and drop the bit automatically.
  */
 
 #include "coffer_internal.h"
 
 #include <string.h>
-
-void cfr_grid_ensure(CfrTerm *vt)
-{
-    if (vt->grid)
-        return;
-    vt->grid = cfr_page_new(vt, vt->rows, vt->cols);
-    /* If allocation fails we leave grid == NULL and subsequent writes
-     * become no-ops; a caller that wants strict failure can detect via
-     * cfr_get_dimensions returning rows but cfr_get_cell returning
-     * NULL. */
-}
 
 /* Fill a range of cells with a blank template that carries only the
  * current pen's background colour (BCE — Back Color Erase).  Erased
@@ -43,10 +33,27 @@ static void erase_cells(CfrTerm *vt, CfrCell *dst, int count)
     blank.cp = 0x20; /* space */
     blank.style_id = style_id;
     blank.width = 1;
+    /* blank.flags == 0: erasing the margin cell drops the wrap edge, which
+     * is how every erase/overwrite truncates a logical line. */
     for (int i = 0; i < count; i++)
         dst[i] = blank;
 }
 
+void cfr_grid_ensure(CfrTerm *vt)
+{
+    if (vt->grid)
+        return;
+    vt->grid = cfr_page_new(vt, vt->rows, vt->cols);
+    /* If allocation fails we leave grid == NULL and subsequent writes
+     * become no-ops; a caller that wants strict failure can detect via
+     * cfr_get_dimensions returning rows but cfr_get_cell returning
+     * NULL. */
+}
+
+/* Clamp the cursor into the grid. The column is allowed to reach `cols`:
+ * that value *is* the deferred-wrap phantom, a logical position one past
+ * the right margin with no cell. Explicit moves use cfr_cursor_set()
+ * instead, which clamps the column to cols-1 and so kills the phantom. */
 static void cursor_clamp(CfrTerm *vt)
 {
     if (vt->cursor.row < 0)
@@ -55,23 +62,31 @@ static void cursor_clamp(CfrTerm *vt)
         vt->cursor.col = 0;
     if (vt->cursor.row >= vt->rows)
         vt->cursor.row = vt->rows - 1;
+    if (vt->cursor.col > vt->cols)
+        vt->cursor.col = vt->cols;
+}
+
+/* Drop the deferred phantom without moving otherwise. Used by the
+ * operations (EL, ECH, IL, DL) that resolve a pending wrap to "no join"
+ * but do not themselves reposition the cursor. */
+static void kill_phantom(CfrTerm *vt)
+{
     if (vt->cursor.col >= vt->cols)
         vt->cursor.col = vt->cols - 1;
 }
 
-/* Drop the WRAPLINE flag on `row`. Callers invoke this whenever an
- * operation removes the cell at the row's final column: a soft-wrapped row
- * only continues into the next row while its margin cell is still on
- * screen, so erasing or overwriting that cell truncates the logical line
- * and the next row stops being a continuation. */
-static void clear_wrapline(CfrTerm *vt, int row)
+void cfr_cursor_set(CfrTerm *vt, int row, int col)
 {
-    if (!vt->grid || row < 0 || row >= vt->rows)
-        return;
-    if ((vt->grid->row_flags[row] & CFR_CELL_WRAPLINE) == 0u)
-        return;
-    vt->grid->row_flags[row] &= (uint8_t)~CFR_CELL_WRAPLINE;
-    cfr_damage_row(vt, row);
+    if (row < 0)
+        row = 0;
+    if (col < 0)
+        col = 0;
+    if (row >= vt->rows)
+        row = vt->rows - 1;
+    if (col >= vt->cols)
+        col = vt->cols - 1;
+    vt->cursor.row = row;
+    vt->cursor.col = col;
 }
 
 void cfr_scroll_up(CfrTerm *vt, int lines)
@@ -99,11 +114,10 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
     if (push_to_sb) {
         for (int i = 0; i < lines; ++i) {
             const CfrCell *row = &vt->grid->cells[(size_t)(top + i) * vt->cols];
-            bool wrapline =
-                (vt->grid->row_flags[top + i] & CFR_CELL_WRAPLINE) != 0u;
-            cfr_scrollback_push(vt, row, vt->cols, wrapline);
+            uint32_t lineage = vt->grid->lineage[top + i];
+            cfr_scrollback_push(vt, row, vt->cols, lineage);
             if (vt->callbacks.sb_pushline)
-                vt->callbacks.sb_pushline(row, vt->cols, wrapline,
+                vt->callbacks.sb_pushline(row, vt->cols, lineage,
                                           vt->callback_user);
         }
         /* A full-screen scroll moves grid row 0 into history: advance the
@@ -116,15 +130,16 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
             cfr_lottie_note_scroll(vt, lines);
     }
 
-    /* Move rows up. */
+    /* Move rows up. The lineage array rides along so a join (or a
+     * non-join) survives the move without per-site bookkeeping. */
     int move_count = bot - top - lines + 1;
     if (move_count > 0) {
         memmove(&vt->grid->cells[(size_t)top * vt->cols],
                 &vt->grid->cells[(size_t)(top + lines) * vt->cols],
                 (size_t)move_count * vt->cols * sizeof(CfrCell));
-        memmove(&vt->grid->row_flags[top],
-                &vt->grid->row_flags[top + lines],
-                (size_t)move_count);
+        memmove(&vt->grid->lineage[top],
+                &vt->grid->lineage[top + lines],
+                (size_t)move_count * sizeof(uint32_t));
     }
     /* Clear the new bottom rows with DEFAULT background (not BCE).
      * Scroll-induced erasure should not inherit the current pen's
@@ -136,7 +151,7 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
         CfrCell *row_cells = &vt->grid->cells[(size_t)(clear_start + i) * vt->cols];
         memset(row_cells, 0, (size_t)vt->cols * sizeof(CfrCell));
     }
-    memset(&vt->grid->row_flags[clear_start], 0, (size_t)lines);
+    memset(&vt->grid->lineage[clear_start], 0, (size_t)lines * sizeof(uint32_t));
 
     cfr_selection_on_scroll(vt, true, lines, top, bot);
     cfr_damage_all(vt);
@@ -162,26 +177,29 @@ void cfr_scroll_down(CfrTerm *vt, int lines)
         memmove(&vt->grid->cells[(size_t)(top + lines) * vt->cols],
                 &vt->grid->cells[(size_t)top * vt->cols],
                 (size_t)move_count * vt->cols * sizeof(CfrCell));
-        memmove(&vt->grid->row_flags[top + lines],
-                &vt->grid->row_flags[top],
-                (size_t)move_count);
+        memmove(&vt->grid->lineage[top + lines],
+                &vt->grid->lineage[top],
+                (size_t)move_count * sizeof(uint32_t));
     }
     for (int i = 0; i < lines; ++i)
         erase_cells(vt,
                     &vt->grid->cells[(size_t)(top + i) * vt->cols],
                     vt->cols);
-    memset(&vt->grid->row_flags[top], 0, (size_t)lines);
+    memset(&vt->grid->lineage[top], 0, (size_t)lines * sizeof(uint32_t));
 
     cfr_selection_on_scroll(vt, false, lines, top, bot);
     cfr_damage_all(vt);
 }
 
-static void linefeed(CfrTerm *vt)
+static void linefeed_impl(CfrTerm *vt)
 {
-    if (vt->cursor.pending_wrap && vt->cursor.col == vt->cols - 1 &&
-        vt->cursor.row >= 0 && vt->cursor.row < vt->rows)
-        clear_wrapline(vt, vt->cursor.row);
-    vt->cursor.pending_wrap = false;
+    /* A pending phantom is not a committed wrap, so an LF must not leave
+     * a join behind it: tmux resolves the phantom by moving down (or
+     * scrolling) with the column reset to 0. A committed wrap is real
+     * content and is untouched here — which is the point of keeping the
+     * phantom out of the grid until a print resolves it. */
+    if (vt->cursor.col >= vt->cols)
+        vt->cursor.col = 0;
     if (vt->cursor.row == vt->scroll_bottom) {
         cfr_scroll_up(vt, 1);
     } else if (vt->cursor.row < vt->rows - 1) {
@@ -189,31 +207,48 @@ static void linefeed(CfrTerm *vt)
     }
 }
 
+void cfr_linefeed(CfrTerm *vt)
+{
+    linefeed_impl(vt);
+}
+
+void cfr_reverse_index(CfrTerm *vt)
+{
+    /* RI is an explicit cursor move, so it resolves (kills) the phantom:
+     * the logical line above is what the next print can join, and the
+     * phantom describes the row below. */
+    if (vt->cursor.row == vt->scroll_top)
+        cfr_scroll_down(vt, 1);
+    else if (vt->cursor.row > 0)
+        vt->cursor.row--;
+    if (vt->cursor.col >= vt->cols)
+        vt->cursor.col = vt->cols - 1;
+}
+
 static void carriage_return(CfrTerm *vt)
 {
-    vt->cursor.col = 0;
-    vt->cursor.pending_wrap = false;
+    cfr_cursor_set(vt, vt->cursor.row, 0);
 }
 
 static void backspace(CfrTerm *vt)
 {
-    if (vt->cursor.col > 0) {
-        vt->cursor.col--;
-    }
-    vt->cursor.pending_wrap = false;
+    cfr_cursor_set(vt, vt->cursor.row, vt->cursor.col - 1);
 }
 
 static void horizontal_tab(CfrTerm *vt)
 {
-    if (vt->cursor.col >= vt->cols - 1)
+    if (vt->cursor.col >= vt->cols - 1) {
+        /* Already on (or past) the margin: HT resolves the phantom and
+         * parks on the last column. */
+        cfr_cursor_set(vt, vt->cursor.row, vt->cols - 1);
         return;
+    }
     int c = vt->cursor.col + 1;
     while (c < vt->cols && (!vt->tabstops || !vt->tabstops[c]))
         c++;
     if (c >= vt->cols)
         c = vt->cols - 1;
-    vt->cursor.col = c;
-    vt->cursor.pending_wrap = false;
+    cfr_cursor_set(vt, vt->cursor.row, c);
 }
 
 void cfr_execute_c0(CfrTerm *vt, uint8_t b)
@@ -240,7 +275,7 @@ void cfr_execute_c0(CfrTerm *vt, uint8_t b)
     case 0x0a:  /* LF */
     case 0x0b:  /* VT */
     case 0x0c:  /* FF */
-        linefeed(vt);
+        cfr_linefeed(vt);
         /* In LNM=off (default) LF doesn't move column. Standards
          * agree; xterm follows DEC behavior. */
         return;
@@ -248,10 +283,10 @@ void cfr_execute_c0(CfrTerm *vt, uint8_t b)
         carriage_return(vt);
         return;
     case 0x84: /* IND  (C1) */
-        linefeed(vt);
+        cfr_linefeed(vt);
         return;
     case 0x85: /* NEL  (C1) */
-        linefeed(vt);
+        cfr_linefeed(vt);
         carriage_return(vt);
         return;
     case 0x88: /* HTS — set tab stop at cursor column */
@@ -259,10 +294,7 @@ void cfr_execute_c0(CfrTerm *vt, uint8_t b)
             vt->tabstops[vt->cursor.col] = 1;
         return;
     case 0x8d: /* RI — reverse index */
-        if (vt->cursor.row == vt->scroll_top)
-            cfr_scroll_down(vt, 1);
-        else if (vt->cursor.row > 0)
-            vt->cursor.row--;
+        cfr_reverse_index(vt);
         return;
     default:
         return; /* swallow unknown C0/C1 */
@@ -283,33 +315,34 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
         return;
     }
 
-    /* Deferred wrap — only when DECAWM is on. */
-    if (vt->cursor.pending_wrap) {
-        if (vt->cursor.row >= 0 && vt->cursor.row < vt->rows)
-            vt->grid->row_flags[vt->cursor.row] |= CFR_CELL_WRAPLINE;
-        vt->cursor.col = 0;
-        if (vt->cursor.row == vt->scroll_bottom)
-            cfr_scroll_up(vt, 1);
-        else if (vt->cursor.row < vt->rows - 1)
-            vt->cursor.row++;
-        vt->cursor.pending_wrap = false;
-    }
+    /* Deferred wrap — the phantom (col == cols) resolves here, and only
+     * here, into an actual wrap. DECAWM only; with auto-wrap off the
+     * phantom cannot exist. */
+    if (vt->cursor.col >= vt->cols && vt->modes[CFR_MODE_DECAWM])
+        cfr_wrap_commit(vt);
     cursor_clamp(vt);
 
-    /* Wide cluster at right margin → wrap first (DECAWM only). */
-    if (width == 2 && vt->cursor.col == vt->cols - 1 && vt->modes[CFR_MODE_DECAWM]) {
-        if (vt->cursor.row >= 0 && vt->cursor.row < vt->rows)
-            vt->grid->row_flags[vt->cursor.row] |= CFR_CELL_WRAPLINE;
-        vt->cursor.col = 0;
-        if (vt->cursor.row == vt->scroll_bottom)
-            cfr_scroll_up(vt, 1);
-        else if (vt->cursor.row < vt->rows - 1)
-            vt->cursor.row++;
+    /* Wide cluster at the right margin (or on any row too narrow to hold
+     * it) → eager wrap, DECAWM only. It cannot fit, so the wrap happens on
+     * this print rather than being deferred. */
+    if (width == 2 && vt->cursor.col + width > vt->cols &&
+        vt->modes[CFR_MODE_DECAWM]) {
+        cfr_wrap_commit(vt);
+        cursor_clamp(vt);
     }
 
     /* IRM: shift existing cells right before writing. */
     if (vt->insert_mode)
         cfr_insert_chars(vt, width);
+    cursor_clamp(vt);
+    /* With auto-wrap off a phantom cannot normally exist (DECRST ?7 kills
+     * it), but never index past the row. */
+    if (vt->cursor.col >= vt->cols)
+        vt->cursor.col = vt->cols - 1;
+
+    /* A print into a blank row claims a fresh logical-line id; a print
+     * into a row that already has one keeps it. */
+    cfr_lineage_stamp(vt, vt->cursor.row);
 
     CfrCell *cell = &vt->grid->cells[(size_t)vt->cursor.row * vt->cols + vt->cursor.col];
     cell->cp = cps[0];
@@ -337,8 +370,8 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
 
     if (vt->cursor.col + width >= vt->cols) {
         if (vt->modes[CFR_MODE_DECAWM]) {
-            vt->cursor.col = vt->cols - 1;
-            vt->cursor.pending_wrap = true;
+            /* Logical position one past the margin: the phantom. */
+            vt->cursor.col = vt->cols;
         } else {
             /* No autowrap: character at right margin overwrites
              * the last column and cursor stays put. */
@@ -436,7 +469,7 @@ void cfr_erase_in_line(CfrTerm *vt, int mode)
     int row = vt->cursor.row;
     if (row < 0 || row >= vt->rows)
         return;
-    vt->cursor.pending_wrap = false;
+    kill_phantom(vt);
     CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
     int from = 0, to = vt->cols;
     switch (mode) {
@@ -462,8 +495,8 @@ void cfr_erase_in_line(CfrTerm *vt, int mode)
     if (from >= to)
         return;
     erase_cells(vt, &line[from], to - from);
-    if (to == vt->cols)
-        clear_wrapline(vt, row);
+    /* Reaching the margin rewrites its cell, so the wrap edge is gone —
+     * no explicit clear needed. */
     cfr_damage_row(vt, row);
 }
 
@@ -471,6 +504,10 @@ void cfr_insert_chars(CfrTerm *vt, int count)
 {
     if (!vt->grid || count <= 0)
         return;
+    /* ICH does not touch the cursor, but a pending phantom resolves here
+     * (there is no cell at the phantom column to read). */
+    if (vt->cursor.col >= vt->cols)
+        vt->cursor.col = vt->cols - 1;
     int row = vt->cursor.row;
     int col = vt->cursor.col;
     if (row < 0 || row >= vt->rows || col < 0 || col >= vt->cols)
@@ -479,15 +516,24 @@ void cfr_insert_chars(CfrTerm *vt, int count)
         count = vt->cols - col;
 
     CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
+    /* ICH shifts the existing cells (including whatever sits at the
+     * margin) to the right rather than removing them, so the row's wrap
+     * edge must survive the shift. The margin cell is overwritten by the
+     * shifted content, so re-stamp the bit afterwards — this is the §4
+     * ICH/IRM policy knob, currently set to "preserve" to match xterm's
+     * ScrnInsertChar (tmux severs instead). */
+    bool had_wrap = (line[vt->cols - 1].flags & CFR_CELL_WRAPLINE) != 0u;
+    uint32_t lineage = vt->grid->lineage[row];
     int move = vt->cols - col - count;
     if (move > 0) {
         memmove(&line[col + count], &line[col],
                 (size_t)move * sizeof(CfrCell));
     }
     erase_cells(vt, &line[col], count);
-    /* ICH leaves the row's wrap state alone: it shifts the existing cells
-     * (including whatever sits at the margin) to the right, it does not
-     * remove them. */
+    if (had_wrap) {
+        line[vt->cols - 1].flags |= CFR_CELL_WRAPLINE;
+        vt->grid->lineage[row] = lineage;
+    }
     cfr_damage_row(vt, row);
 }
 
@@ -495,6 +541,10 @@ void cfr_delete_chars(CfrTerm *vt, int count)
 {
     if (!vt->grid || count <= 0)
         return;
+    /* DCH does not touch the cursor, but a pending phantom resolves here
+     * (there is no cell at the phantom column to read). */
+    if (vt->cursor.col >= vt->cols)
+        vt->cursor.col = vt->cols - 1;
     int row = vt->cursor.row;
     int col = vt->cursor.col;
     if (row < 0 || row >= vt->rows || col < 0 || col >= vt->cols)
@@ -508,9 +558,9 @@ void cfr_delete_chars(CfrTerm *vt, int count)
         memmove(&line[col], &line[col + count],
                 (size_t)move * sizeof(CfrCell));
     }
+    /* Erasing the tail blanks the margin cell too when `count` reaches
+     * it, dropping the wrap edge automatically. */
     erase_cells(vt, &line[vt->cols - count], count);
-    if (col + count >= vt->cols)
-        clear_wrapline(vt, row);
     cfr_damage_row(vt, row);
 }
 
@@ -518,7 +568,8 @@ void cfr_erase_chars(CfrTerm *vt, int count)
 {
     if (!vt->grid || count <= 0)
         return;
-    vt->cursor.pending_wrap = false;
+    if (vt->cursor.col >= vt->cols)
+        kill_phantom(vt);
     int row = vt->cursor.row;
     int col = vt->cursor.col;
     if (row < 0 || row >= vt->rows || col < 0 || col >= vt->cols)
@@ -527,8 +578,6 @@ void cfr_erase_chars(CfrTerm *vt, int count)
         count = vt->cols - col;
     CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
     erase_cells(vt, &line[col], count);
-    if (col + count >= vt->cols)
-        clear_wrapline(vt, row);
     cfr_damage_row(vt, row);
 }
 
@@ -547,18 +596,17 @@ void cfr_insert_lines(CfrTerm *vt, int count)
         memmove(&vt->grid->cells[(size_t)(row + count) * vt->cols],
                 &vt->grid->cells[(size_t)row * vt->cols],
                 (size_t)move * vt->cols * sizeof(CfrCell));
-        memmove(&vt->grid->row_flags[row + count],
-                &vt->grid->row_flags[row],
-                (size_t)move);
+        memmove(&vt->grid->lineage[row + count],
+                &vt->grid->lineage[row],
+                (size_t)move * sizeof(uint32_t));
     }
     for (int i = 0; i < count; ++i)
         erase_cells(vt,
                     &vt->grid->cells[(size_t)(row + i) * vt->cols],
                     vt->cols);
-    memset(&vt->grid->row_flags[row], 0, (size_t)count);
+    memset(&vt->grid->lineage[row], 0, (size_t)count * sizeof(uint32_t));
     cfr_damage_all(vt);
     vt->cursor.col = 0;
-    vt->cursor.pending_wrap = false;
 }
 
 void cfr_delete_lines(CfrTerm *vt, int count)
@@ -576,19 +624,18 @@ void cfr_delete_lines(CfrTerm *vt, int count)
         memmove(&vt->grid->cells[(size_t)row * vt->cols],
                 &vt->grid->cells[(size_t)(row + count) * vt->cols],
                 (size_t)move * vt->cols * sizeof(CfrCell));
-        memmove(&vt->grid->row_flags[row],
-                &vt->grid->row_flags[row + count],
-                (size_t)move);
+        memmove(&vt->grid->lineage[row],
+                &vt->grid->lineage[row + count],
+                (size_t)move * sizeof(uint32_t));
     }
     int clear_start = vt->scroll_bottom - count + 1;
     for (int i = 0; i < count; ++i)
         erase_cells(vt,
                     &vt->grid->cells[(size_t)(clear_start + i) * vt->cols],
                     vt->cols);
-    memset(&vt->grid->row_flags[clear_start], 0, (size_t)count);
+    memset(&vt->grid->lineage[clear_start], 0, (size_t)count * sizeof(uint32_t));
     cfr_damage_all(vt);
     vt->cursor.col = 0;
-    vt->cursor.pending_wrap = false;
 }
 
 void cfr_erase_in_display(CfrTerm *vt, int mode)
@@ -603,7 +650,7 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
         for (int r = row + 1; r < vt->rows; ++r) {
             erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
                         vt->cols);
-            vt->grid->row_flags[r] = 0;
+            vt->grid->lineage[r] = 0;
         }
         if (vt->images)
             cfr_img_clear_display_rows(vt, vt->images, row, vt->rows - 1);
@@ -615,7 +662,7 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
         for (int r = 0; r < row; ++r) {
             erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
                         vt->cols);
-            vt->grid->row_flags[r] = 0;
+            vt->grid->lineage[r] = 0;
         }
         if (vt->images)
             cfr_img_clear_display_rows(vt, vt->images, 0, row);
@@ -626,7 +673,7 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
         for (int r = 0; r < vt->rows; ++r)
             erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
                         vt->cols);
-        memset(vt->grid->row_flags, 0, (size_t)vt->rows);
+        memset(vt->grid->lineage, 0, (size_t)vt->rows * sizeof(uint32_t));
         if (vt->images)
             cfr_img_clear_display_rows(vt, vt->images, 0, vt->rows - 1);
         if (vt->lottie)

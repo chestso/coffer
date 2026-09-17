@@ -39,17 +39,7 @@ static bool has_intermediate(CfrTerm *vt, uint8_t b)
 
 static void cursor_to(CfrTerm *vt, int row, int col)
 {
-    if (row < 0)
-        row = 0;
-    if (col < 0)
-        col = 0;
-    if (row >= vt->rows)
-        row = vt->rows - 1;
-    if (col >= vt->cols)
-        col = vt->cols - 1;
-    vt->cursor.row = row;
-    vt->cursor.col = col;
-    vt->cursor.pending_wrap = false;
+    cfr_cursor_set(vt, row, col);
 }
 
 /* CUP/HVP/VPA destination — applies DECOM (origin mode): when on, the
@@ -65,13 +55,7 @@ static void cursor_to_origin(CfrTerm *vt, int row, int col)
         row += top;
         if (row > bot)
             row = bot;
-        if (col < 0)
-            col = 0;
-        if (col >= vt->cols)
-            col = vt->cols - 1;
-        vt->cursor.row = row;
-        vt->cursor.col = col;
-        vt->cursor.pending_wrap = false;
+        cfr_cursor_set(vt, row, col);
         return;
     }
     cursor_to(vt, row, col);
@@ -331,14 +315,12 @@ static void mode_set(CfrTerm *vt, bool on)
             vt->decom = on;
             /* Setting DECOM also homes the cursor: with origin mode
              * on, home is the top-left of the scroll region. */
-            vt->cursor.row = on ? vt->scroll_top : 0;
-            vt->cursor.col = 0;
-            vt->cursor.pending_wrap = false;
+            cfr_cursor_set(vt, on ? vt->scroll_top : 0, 0);
             break;
         case 7: /* DECAWM auto-wrap mode */
             vt->modes[CFR_MODE_DECAWM] = on;
-            if (!on)
-                vt->cursor.pending_wrap = false;
+            if (!on && vt->cursor.col >= vt->cols)
+                vt->cursor.col = vt->cols - 1; /* kill the phantom */
             break;
         case 25: /* DECTCEM cursor visible */
             vt->modes[CFR_MODE_CURSOR_VISIBLE] = on;

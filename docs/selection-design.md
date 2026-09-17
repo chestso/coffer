@@ -205,7 +205,9 @@ Word expansion logic (mirrors portty's existing `expand_word`):
 1. Read the cell at `(row, col)`.
 2. Classify it: whitespace/empty (0), word char (1), or other (2).
 3. Scan left: while the previous cell has the same class, extend
-   leftward. Cross soft-wrap boundaries (check `CFR_CELL_WRAPLINE`).
+   leftward. Cross soft-wrap boundaries (`cfr_row_continues`, which
+   checks the margin cell's `CFR_CELL_WRAPLINE` bit plus the shared
+   logical-line lineage id — see `docs/wrapped-lines-design.md`).
 4. Scan right: same, extend rightward.
 5. For the union of anchor and cursor word expansions, take the min
    start and max end.

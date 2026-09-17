@@ -226,7 +226,6 @@ static void img_advance_cursor(CfrTerm *vt, int rows_tall, int cols_wide)
         if (c > vt->cols - 1)
             c = vt->cols - 1;
         vt->cursor.col = c;
-        vt->cursor.pending_wrap = false;
         return;
     }
     int col = vt->cursor.col;
@@ -236,8 +235,7 @@ static void img_advance_cursor(CfrTerm *vt, int rows_tall, int cols_wide)
         else if (vt->cursor.row < vt->rows - 1)
             vt->cursor.row++;
     }
-    vt->cursor.col = col;
-    vt->cursor.pending_wrap = false;
+    vt->cursor.col = col >= vt->cols ? vt->cols - 1 : col;
 }
 
 /* Damage the display rows covered by a newly placed/updated image. */

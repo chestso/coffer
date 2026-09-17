@@ -46,23 +46,14 @@ void cfr_esc_dispatch(CfrTerm *vt, uint8_t final)
         vt->deckpam = false;
         break; /* DECKPNM */
     case 'D':  /* IND */
-        if (vt->cursor.row == vt->scroll_bottom)
-            cfr_scroll_up(vt, 1);
-        else if (vt->cursor.row < vt->rows - 1)
-            vt->cursor.row++;
+        cfr_linefeed(vt);
         break;
     case 'E': /* NEL */
-        if (vt->cursor.row == vt->scroll_bottom)
-            cfr_scroll_up(vt, 1);
-        else if (vt->cursor.row < vt->rows - 1)
-            vt->cursor.row++;
+        cfr_linefeed(vt);
         vt->cursor.col = 0;
         break;
     case 'M': /* RI */
-        if (vt->cursor.row == vt->scroll_top)
-            cfr_scroll_down(vt, 1);
-        else if (vt->cursor.row > 0)
-            vt->cursor.row--;
+        cfr_reverse_index(vt);
         break;
     case 'c': /* RIS — full reset */
         cfr_full_reset(vt);

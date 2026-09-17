@@ -61,17 +61,15 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
         if (vt->grid) {
             memset(vt->grid->cells, 0,
                    (size_t)vt->grid->row_capacity * vt->grid->cols * sizeof(CfrCell));
-            memset(vt->grid->row_flags, 0, (size_t)vt->grid->row_capacity);
+            memset(vt->grid->lineage, 0,
+                   (size_t)vt->grid->row_capacity * sizeof(uint32_t));
         }
 
         vt->in_altscreen = true;
         vt->modes[CFR_MODE_ALTSCREEN] = true;
         /* DECSET 1049 also moves cursor to home. */
-        if (save_restore_cursor) {
-            vt->cursor.row = 0;
-            vt->cursor.col = 0;
-            vt->cursor.pending_wrap = false;
-        }
+        if (save_restore_cursor)
+            cfr_cursor_set(vt, 0, 0);
     } else {
         CfrPage *tmp = vt->grid;
         vt->grid = vt->altgrid;
@@ -219,13 +217,16 @@ void cfr_full_reset(CfrTerm *vt)
     if (vt->grid) {
         memset(vt->grid->cells, 0,
                (size_t)vt->rows * vt->cols * sizeof(CfrCell));
-        memset(vt->grid->row_flags, 0, (size_t)vt->rows);
+        memset(vt->grid->lineage, 0, (size_t)vt->rows * sizeof(uint32_t));
     }
 
     /* Reset log-once guards so a new session gets fresh warnings. */
     vt->logged_once = 0;
     /* Reset last-printed char for REP. */
     vt->last_char = 0;
+    /* Fresh logical-line id sequence (not required for correctness —
+     * the grid was just zeroed — but keeps ids tidy across sessions). */
+    vt->next_lineage = 0;
 
     if (vt->images)
         cfr_img_clear_all(vt, vt->images);

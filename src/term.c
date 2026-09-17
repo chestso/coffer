@@ -246,14 +246,15 @@ int cfr_get_scrollback_capacity(const CfrTerm *vt)
 
 /* cfr_get_scrollback_cell, cfr_get_scrollback_wrapline are implemented
  * in scrollback.c. */
-
 CfrCursor cfr_get_cursor(const CfrTerm *vt)
 {
     CfrCursor out = { 0 };
     if (!vt)
         return out;
     out.row = vt->cursor.row;
-    out.col = vt->cursor.col;
+    /* The logical column may be `cols` (the deferred-wrap phantom); report
+     * the clamped physical column to renderers. */
+    out.col = vt->cursor.col >= vt->cols ? vt->cols - 1 : vt->cursor.col;
     out.visible = vt->cursor.visible;
     out.blink = vt->cursor.blink;
     return out;
@@ -278,26 +279,13 @@ bool cfr_get_mode(const CfrTerm *vt, CfrMode mode)
     return vt->modes[mode];
 }
 
-bool cfr_get_line_continuation(const CfrTerm *vt, int row)
-{
-    if (!vt || !vt->grid)
-        return false;
-    if (row < 0 || row >= vt->rows)
-        return false;
-    return (vt->grid->row_flags[row] & CFR_CELL_WRAPLINE) != 0u;
-}
-
+/* True when `row` (unified coordinates) continues the logical line above
+ * it: the row above's margin cell still carries the wrap edge AND the two
+ * rows share the same nonzero lineage id. Handles the visible/scrollback
+ * boundary walk so callers don't each re-implement it. */
 bool cfr_row_is_continuation(const CfrTerm *vt, int row)
 {
-    if (!vt)
-        return false;
-    int prev = row - 1;
-    int sb = cfr_get_scrollback_lines(vt);
-    if (prev < -sb)
-        return false; /* no row above `row` exists at all */
-    if (prev >= 0)
-        return cfr_get_line_continuation(vt, prev);
-    return cfr_get_scrollback_wrapline(vt, -(prev + 1));
+    return cfr_row_continues(vt, row);
 }
 
 const CfrStyle *cfr_cell_style(const CfrTerm *vt, const CfrCell *cell)

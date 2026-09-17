@@ -74,7 +74,7 @@ static void evict_to_capacity(CfrTerm *vt)
 }
 
 void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols,
-                         bool wrapline)
+                         uint32_t lineage)
 {
     if (!vt || vt->sb_capacity <= 0 || cols <= 0 || !src_cells)
         return;
@@ -92,7 +92,7 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols,
                   (void *)head);
     int row = head->row_count;
     CfrCell *dst = &head->cells[(size_t)row * head->cols];
-    head->row_flags[row] = wrapline ? (uint8_t)CFR_CELL_WRAPLINE : 0u;
+    head->lineage[row] = lineage;
 
     /* Re-intern style, grapheme, and hyperlink references into the
      * head page — page-scoped tables don't carry across pages. */
@@ -164,6 +164,12 @@ static const CfrPage *find_sb_row(const CfrTerm *vt, int sb_row,
     return NULL;
 }
 
+const CfrPage *cfr_sb_page_for_row(const CfrTerm *vt, int sb_row,
+                                   int *out_row_in_page)
+{
+    return find_sb_row(vt, sb_row, out_row_in_page);
+}
+
 const CfrCell *cfr_get_scrollback_cell(const CfrTerm *vt, int sb_row, int col)
 {
     int row_in_page = 0;
@@ -179,9 +185,12 @@ bool cfr_get_scrollback_wrapline(const CfrTerm *vt, int sb_row)
 {
     int row_in_page = 0;
     const CfrPage *p = find_sb_row(vt, sb_row, &row_in_page);
-    if (!p)
+    if (!p || p->cols <= 0)
         return false;
-    return (p->row_flags[row_in_page] & CFR_CELL_WRAPLINE) != 0u;
+    /* The scrollback row ends in a wrap when its margin cell still
+     * carries the wrap edge. */
+    const CfrCell *margin = &p->cells[(size_t)row_in_page * p->cols + (p->cols - 1)];
+    return (margin->flags & CFR_CELL_WRAPLINE) != 0u;
 }
 
 const CfrPage *cfr_find_owner_page(const CfrTerm *vt, const CfrCell *cell)

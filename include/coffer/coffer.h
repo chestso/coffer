@@ -288,8 +288,11 @@ typedef struct
      * (mouse reports, DA/DSR responses, kitty keyboard responses...) */
     void (*output)(const uint8_t *bytes, size_t len, void *user);
 
-    /* sb_pushline: a row scrolled off the top into scrollback */
-    void (*sb_pushline)(const CfrCell *cells, int cols, bool wrapline, void *user);
+    /* sb_pushline: a row scrolled off the top into scrollback. `lineage`
+     * is the row's logical-line id (0 = blank); a value equal to the id
+     * the host saw for the previous push means the two rows are fragments
+     * of one soft-wrapped logical line. */
+    void (*sb_pushline)(const CfrCell *cells, int cols, uint32_t lineage, void *user);
 
     /* sb_popline: scrollback bottommost line is popped back onto screen */
     void (*sb_popline)(CfrCell *out_cells, int cols, void *user);
@@ -417,16 +420,12 @@ CfrCursor cfr_get_cursor(const CfrTerm *vt);
 const char *cfr_get_title(const CfrTerm *vt);
 bool cfr_is_altscreen(const CfrTerm *vt);
 bool cfr_get_mode(const CfrTerm *vt, CfrMode mode);
-/* True when `row` soft-wrapped into row+1 (i.e. row+1 is a continuation
- * of `row`). NOTE: the WRAPLINE flag sits on the row that *wrapped*, so
- * this is the inverse predicate of "is row a continuation of row-1" —
- * use cfr_row_is_continuation() for that. Visible rows only. */
-bool cfr_get_line_continuation(const CfrTerm *vt, int row);
 /* True when unified `row` continues the row above it (the row above
  * soft-wrapped into it). Unified coordinates: negative rows are
- * scrollback (-1 = most recent). Handles the visible/scrollback boundary
- * walk so callers don't each re-implement the WRAPLINE direction
- * inversion. */
+ * scrollback (-1 = most recent). A join requires both ends of the
+ * handshake: the row above's margin cell still carries the wrap edge,
+ * and both rows share the same nonzero logical-line id. The inverse
+ * question ("does row r wrap into r+1?") is this predicate at r+1. */
 bool cfr_row_is_continuation(const CfrTerm *vt, int row);
 
 /* ------------------------------------------------------------------ */

@@ -5,18 +5,26 @@ on. Order is roughly priority, not strict dependency.
 
 ## Investigate
 
-- **Line feed at the bottom row while a deferred wrap is pending.** When
-  the cursor sits on the last column of the last screen row with a
-  deferred wrap (`pending_wrap`) and an LF arrives, coffer scrolls and
-  carries the phantom onto the new row, so a subsequent print joins the
-  scrolled-off row to the new one. xterm, tmux and libvterm each do
-  something different here (xterm appears to clear the wrap and print at
-  column 0 / scroll, tmux moves down and prints at column 0, libvterm
-  keeps the deferred wrap and prints at column 0 of the new row), and the
-  existing `pending_wrap` bookkeeping has no slot for "column 0 but the
-  wrap is still pending" — the phantom is represented _by_ sitting on the
-  last column. Repro: `\e[8;1H` + 20 chars + `\n` + one char on an 8x20
-  grid. Not worth chasing until a real program hits it.
+- **Wrapped-line behavioral spec + differential fuzz.** The internal
+  representation of soft wraps is now margin-cell `CFR_CELL_WRAPLINE`
+  plus per-row lineage ids, with a two-sided predicate
+  (`cfr_row_continues`, `src/lines.c`; see
+  `docs/wrapped-lines-design.md`). Open follow-ups from that work:
+  a written behavioral spec (LF column rule, phantom lifetime, the §4
+  policy knobs — ICH/IRM severance, wide-char at margin, DECAWM toggled
+  mid-phantom, DECSC/phantom), and a differential fuzzer that runs a
+  random op stream against a naive line model, asserting joins and text
+  extraction. The representation should be frozen while the spec is
+  written; a wrong policy choice can over- or under-join by one row,
+  never corrupt structure.
+
+- **Reflow does not carry lineage across the scrollback/grid split.**
+  `cfr_reflow()` rewraps only the visible grid; a logical line whose
+  earlier fragment is already in scrollback is re-emitted as separate
+  lines (the ids no longer match across the boundary). The
+  representation supports the join (ids travel inside the scrollback
+  memmove), but reflow's `line_start_row` walk needs to consult the
+  scrollback tail. See §3 step 5 of the design.
 
 - **Hoist `cfr_flush_cluster()` into `cfr_osc_dispatch`.** OSC 8 added a
   flush at the top of its handler (mirroring the csi.c / esc.c / modes.c

@@ -1260,7 +1260,7 @@ static void test_reflow_grow(void)
     cfr_set_reflow(vt, true);
     /* "abcdef" wraps at col 5: row 0 "abcde" with WRAPLINE, row 1 "f". */
     feed(vt, "abcdef");
-    ASSERT_TRUE(cfr_get_line_continuation(vt, 0));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     /* Grow to 10 cols: should unwrap to a single row "abcdef". */
     cfr_resize(vt, 2, 10);
     int rows, cols;
@@ -1269,7 +1269,7 @@ static void test_reflow_grow(void)
     ASSERT_EQ(cols, 10);
     ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'a');
     ASSERT_EQ(cfr_get_cell(vt, 0, 5)->cp, (uint32_t)'f');
-    ASSERT_FALSE(cfr_get_line_continuation(vt, 0));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
     cfr_free(vt);
 }
 
@@ -1282,7 +1282,7 @@ static void test_reflow_shrink(void)
     cfr_resize(vt, 2, 5);
     ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'a');
     ASSERT_EQ(cfr_get_cell(vt, 0, 4)->cp, (uint32_t)'e');
-    ASSERT_TRUE(cfr_get_line_continuation(vt, 0));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, (uint32_t)'f');
     ASSERT_EQ(cfr_get_cell(vt, 1, 4)->cp, (uint32_t)'j');
     cfr_free(vt);
@@ -1295,7 +1295,7 @@ static void test_reflow_overflow_to_scrollback(void)
     feed(vt, "abcdefghij"); /* fills row 0 with WRAPLINE */
     feed(vt, "klmnopqrst"); /* fills row 1 (no WRAPLINE — separate logical line because we wrote 10 chars then wrapped from row 0 to row 1) */
     /* Actually after writing 10 chars, the cursor is at col 9 with
-     * pending_wrap. Then writing more wraps. Let's just verify the
+     * pending phantom. Then writing more wraps. Let's just verify the
      * shrink behavior. */
     cfr_resize(vt, 2, 5);
     /* The first logical line "abcdefghij…klmnopqrst" if all wrapped,
@@ -1479,8 +1479,8 @@ static void test_wrap(void)
     ASSERT_EQ(c4->cp, (uint32_t)'e');
     ASSERT_EQ(c5->cp, (uint32_t)'f');
     /* Row 0 should be marked WRAPLINE. */
-    ASSERT_TRUE(cfr_get_line_continuation(vt, 0));
-    ASSERT_FALSE(cfr_get_line_continuation(vt, 1));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 2));
     cfr_free(vt);
 }
 
@@ -1492,21 +1492,21 @@ static void test_wrap(void)
  * bottom row to scroll up and corrupt the info bar. */
 
 /* DECAWM is on by default — writing past the right margin sets
- * pending_wrap and the next print wraps to the next line. */
+ * phantom and the next print wraps to the next line. */
 static void test_decawm_default_on(void)
 {
     CfrTerm *vt = make_term(3, 5);
     ASSERT_TRUE(vt->modes[CFR_MODE_DECAWM]);
-    feed(vt, "abcde"); /* fill row 0 exactly — pending_wrap set */
-    ASSERT_TRUE(vt->cursor.pending_wrap);
+    feed(vt, "abcde"); /* fill row 0 exactly — phantom set */
+    ASSERT_TRUE(PENDING_WRAP(vt));
     feed(vt, "f"); /* deferred wrap resolves: 'f' lands on row 1 */
-    ASSERT_FALSE(vt->cursor.pending_wrap);
+    ASSERT_FALSE(PENDING_WRAP(vt));
     ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, (uint32_t)'f');
     cfr_free(vt);
 }
 
 /* DECRST ?7 disables auto-wrap — writing past the right margin
- * does NOT set pending_wrap; the cursor stays at the last column
+ * does NOT set the phantom; the cursor stays at the last column
  * and subsequent prints overwrite that cell. */
 static void test_decawm_off_no_wrap(void)
 {
@@ -1514,7 +1514,7 @@ static void test_decawm_off_no_wrap(void)
     feed(vt, "\x1b[?7l"); /* DECAWM off */
     ASSERT_FALSE(vt->modes[CFR_MODE_DECAWM]);
     feed(vt, "abcde"); /* fills row 0, cursor at col 4 */
-    ASSERT_FALSE(vt->cursor.pending_wrap);
+    ASSERT_FALSE(PENDING_WRAP(vt));
     CfrCursor cur = cfr_get_cursor(vt);
     ASSERT_EQ(cur.col, 4); /* stays at last column */
     feed(vt, "X");         /* overwrites col 4 instead of wrapping */
@@ -1530,8 +1530,8 @@ static void test_decawm_reenable(void)
     feed(vt, "\x1b[?7l"); /* off */
     feed(vt, "\x1b[?7h"); /* on again */
     ASSERT_TRUE(vt->modes[CFR_MODE_DECAWM]);
-    feed(vt, "abcde"); /* fill row, pending_wrap set */
-    ASSERT_TRUE(vt->cursor.pending_wrap);
+    feed(vt, "abcde"); /* fill row, phantom set */
+    ASSERT_TRUE(PENDING_WRAP(vt));
     feed(vt, "f"); /* wraps to next line */
     ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, (uint32_t)'f');
     cfr_free(vt);
@@ -1549,15 +1549,15 @@ static void test_decawm_bottom_right_no_scroll(void)
     ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
     ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, (uint32_t)'B');
     ASSERT_EQ(cfr_get_cell(vt, 2, 0)->cp, (uint32_t)'C');
-    /* Cursor is at bottom-right (row 2, col 4) with pending_wrap. */
-    ASSERT_TRUE(vt->cursor.pending_wrap);
+    /* Cursor is at bottom-right (row 2, col 4) with the phantom. */
+    ASSERT_TRUE(PENDING_WRAP(vt));
 
     /* Bubble Tea's putCellLR sequence: disable autowrap, reposition,
      * write the cell, re-enable autowrap. */
-    feed(vt, "\x1b[?7l");                  /* DECAWM off */
-    ASSERT_FALSE(vt->cursor.pending_wrap); /* cleared by DECRST */
-    feed(vt, "\x1b[3;5H");                 /* CUP to bottom-right (row 2, col 4) */
-    feed(vt, "X");                         /* overwrites col 4 — NO scroll */
+    feed(vt, "\x1b[?7l");           /* DECAWM off */
+    ASSERT_FALSE(PENDING_WRAP(vt)); /* phantom killed by DECRST */
+    feed(vt, "\x1b[3;5H");          /* CUP to bottom-right (row 2, col 4) */
+    feed(vt, "X");                  /* overwrites col 4 — NO scroll */
     ASSERT_EQ(cfr_get_cell(vt, 2, 4)->cp, (uint32_t)'X');
     /* Row 0 must still be 'A' — the screen did NOT scroll. */
     ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
@@ -1567,14 +1567,14 @@ static void test_decawm_bottom_right_no_scroll(void)
     cfr_free(vt);
 }
 
-/* Erase-in-line (ESC[K) must clear pending_wrap, matching xterm. */
+/* Erase-in-line (ESC[K) must clear the phantom, matching xterm. */
 static void test_erase_in_line_clears_pending_wrap(void)
 {
     CfrTerm *vt = make_term(3, 5);
-    feed(vt, "abcde"); /* fill row, pending_wrap set */
-    ASSERT_TRUE(vt->cursor.pending_wrap);
+    feed(vt, "abcde"); /* fill row, phantom set */
+    ASSERT_TRUE(PENDING_WRAP(vt));
     feed(vt, "\x1b[K"); /* erase to end of line */
-    ASSERT_FALSE(vt->cursor.pending_wrap);
+    ASSERT_FALSE(PENDING_WRAP(vt));
     cfr_free(vt);
 }
 

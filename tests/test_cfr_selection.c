@@ -462,10 +462,10 @@ static void test_selection_get_text_soft_wrap(void)
     CfrTerm *vt = make_term(5, 10);
 
     feed(vt, "abc\r\n012345678901234567890123");
-    ASSERT_FALSE(cfr_get_line_continuation(vt, 0));
-    ASSERT_TRUE(cfr_get_line_continuation(vt, 1));
-    ASSERT_TRUE(cfr_get_line_continuation(vt, 2));
-    ASSERT_FALSE(cfr_get_line_continuation(vt, 3));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 2));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 3));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 4));
 
     cfr_selection_start(vt, 0, 0, CFR_SEL_CHAR);
     cfr_selection_update(vt, 3, 9);
@@ -485,7 +485,7 @@ static void test_selection_word_mode_soft_wrap(void)
 
     /* "abcdef" soft-wraps: row 0 "abcde" (WRAPLINE), row 1 "f". */
     feed(vt, "abcdef");
-    ASSERT_TRUE(cfr_get_line_continuation(vt, 0));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
 
     cfr_selection_start(vt, 1, 0, CFR_SEL_WORD);
 

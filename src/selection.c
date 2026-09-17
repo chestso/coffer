@@ -102,7 +102,6 @@ static void expand_word(const CfrTerm *vt, int row, int col,
 {
     const char *wchars =
         vt->selection_word_chars ? vt->selection_word_chars : default_word_chars;
-    int cols = vt->cols;
 
     const CfrCell *cell = read_cell_unified(vt, row, col);
     if (!cell) {
@@ -112,44 +111,53 @@ static void expand_word(const CfrTerm *vt, int row, int col,
     }
     int cls = char_class(cell->cp, wchars);
 
-    /* Scan left */
-    int scan_row = row, left = col;
-    while (left > 0 || cfr_row_is_continuation(vt, scan_row)) {
-        if (left > 0) {
-            const CfrCell *c = read_cell_unified(vt, scan_row, left - 1);
-            if (!c || char_class(c->cp, wchars) != cls)
-                break;
-            left--;
+    /* Bound the scan to the logical line: walks cross wrap boundaries via
+     * the two-sided predicate, and rows can have different widths across
+     * the scrollback boundary. */
+    int sb = cfr_get_scrollback_lines(vt);
+    int ls = row, le = row;
+    cfr_logical_line_bounds(vt, row, -sb, vt->rows - 1, &ls, &le);
+
+    int sr = row, sc = col;
+    int r = row, c = col;
+    while (r > ls || c > 0) {
+        if (c > 0) {
+            c--;
         } else {
-            /* while-condition already established the continuation. */
-            scan_row--;
-            left = cols - 1;
-            const CfrCell *c = read_cell_unified(vt, scan_row, left);
-            if (!c || char_class(c->cp, wchars) != cls)
+            r--;
+            c = cfr_row_width(vt, r) - 1;
+            if (c < 0)
                 break;
         }
+        const CfrCell *x = read_cell_unified(vt, r, c);
+        if (!x || char_class(x->cp, wchars) != cls)
+            break;
+        sr = r;
+        sc = c;
     }
 
-    /* Scan right */
-    int scan_row_r = row, right = col;
-    while (right < cols - 1 || cfr_row_is_continuation(vt, scan_row_r + 1)) {
-        if (right < cols - 1) {
-            const CfrCell *c = read_cell_unified(vt, scan_row_r, right + 1);
-            if (!c || char_class(c->cp, wchars) != cls)
-                break;
-            right++;
+    int er = row, ec = col;
+    r = row;
+    c = col;
+    for (;;) {
+        int w = cfr_row_width(vt, r);
+        if (c < w - 1) {
+            c++;
+        } else if (r < le) {
+            r++;
+            c = 0;
         } else {
-            /* while-condition already established the continuation. */
-            scan_row_r++;
-            right = 0;
-            const CfrCell *c = read_cell_unified(vt, scan_row_r, right);
-            if (!c || char_class(c->cp, wchars) != cls)
-                break;
+            break;
         }
+        const CfrCell *x = read_cell_unified(vt, r, c);
+        if (!x || char_class(x->cp, wchars) != cls)
+            break;
+        er = r;
+        ec = c;
     }
 
-    *out_start = (CfrSelectionPoint){ scan_row, left };
-    *out_end = (CfrSelectionPoint){ scan_row_r, right };
+    *out_start = (CfrSelectionPoint){ sr, sc };
+    *out_end = (CfrSelectionPoint){ er, ec };
 }
 
 void cfr_selection_start(CfrTerm *vt, int row, int col, CfrSelectionMode mode)

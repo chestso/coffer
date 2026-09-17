@@ -129,10 +129,10 @@ typedef struct CfrPage
     uint16_t row_capacity;
     uint16_t _pad;
 
-    CfrCell *cells;     /* row_capacity * cols */
-    uint8_t *row_flags; /* per-row flags (currently: WRAPLINE on last cell of row) */
+    CfrCell *cells;    /* row_capacity * cols */
+    uint32_t *lineage; /* per-row logical-line id; 0 = blank/unwritten */
 
-    /* `cells` and `row_flags` are a trailing flexible array off the
+    /* `cells` and `lineage` are a trailing flexible array off the
      * `CfrPage` header, allocated in one block by cfr_page_new and
      * freed with the header in cfr_page_free. The tables below are
      * kept as separate sub-allocations because they grow across the
@@ -208,10 +208,9 @@ typedef struct
 
 typedef struct
 {
-    int row, col;
+    int row, col; /* col ∈ [0..cols]; == cols is the deferred-wrap phantom */
     bool visible;
     bool blink;
-    bool pending_wrap;     /* "deferred wrap" — DEC behavior at right margin */
     CfrStyle pen;          /* current SGR pen */
     uint16_t hyperlink_id; /* OSC 8 active link, 0 = none */
     /* Pending grapheme cluster — codepoints accumulated since the last
@@ -347,6 +346,10 @@ struct CfrTerm
     /* Last printed codepoint for REP (CSI Ps b). 0 = nothing printed yet. */
     uint32_t last_char;
 
+    /* Monotonic logical-line id source (lines.c). Wraps at 2^32, skipping
+     * 0 — the blank/unwritten sentinel. */
+    uint32_t next_lineage;
+
     /* One-time log guards. See should_log_once() above. */
     uint32_t logged_once;
 
@@ -463,6 +466,46 @@ void cfr_scroll_down(CfrTerm *vt, int lines);
 void cfr_erase_in_line(CfrTerm *vt, int mode);
 void cfr_erase_in_display(CfrTerm *vt, int mode);
 
+/* Cursor normalizer (print.c). */
+void cfr_cursor_set(CfrTerm *vt, int row, int col);
+
+/* Line-feed / reverse-index (print.c). IND, LF/VT/FF and NEL all share
+ * linefeed; RI (ESC M, C1 0x8D) is cfr_reverse_index. */
+void cfr_linefeed(CfrTerm *vt);
+void cfr_reverse_index(CfrTerm *vt);
+
+/* Wrap bookkeeping (lines.c). cfr_wrap_commit() is the single point that
+ * creates a wrap: it stamps the wrap edge on the margin cell of the row
+ * being left, moves the cursor to column 0 of the next row (scrolling the
+ * region if needed), and propagates the row's lineage onto the row the
+ * print lands on. Called for the deferred phantom and for the eager
+ * wide-char-at-the-margin wrap. */
+bool cfr_wrap_commit(CfrTerm *vt);
+
+/* Lineage helpers (lines.c). cfr_lineage_stamp() assigns a fresh
+ * logical-line id when a print first writes into a blank row;
+ * cfr_lineage_next() mints an id (used by reflow).
+ * cfr_lineage_at()/cfr_lineage_set() address unified rows. */
+void cfr_lineage_stamp(CfrTerm *vt, int row);
+uint32_t cfr_lineage_next(CfrTerm *vt);
+uint32_t cfr_lineage_at(const CfrTerm *vt, int unified_row);
+void cfr_lineage_set(CfrTerm *vt, int row, uint32_t id);
+
+/* Logical-line predicate (lines.c). True when unified `row` continues
+ * the row above it: the row above's margin cell carries the wrap edge
+ * AND both rows share the same nonzero lineage. */
+bool cfr_row_continues(const CfrTerm *vt, int unified_row);
+
+/* Bounds of the logical line containing unified `row`. Both outputs are
+ * inclusive unified row coordinates; the line never extends past
+ * `lo_limit`/`hi_limit` (the caller passes the scrollback/visible
+ * extents it wants to consider). */
+void cfr_logical_line_bounds(const CfrTerm *vt, int row, int lo_limit,
+                             int hi_limit, int *out_start, int *out_end);
+
+/* Page width for a unified row (any page in sb/grid/altgrid). */
+int cfr_row_width(const CfrTerm *vt, int unified_row);
+
 /* Width / grapheme break (width.c). */
 bool cfr_grapheme_break_before(uint32_t prev, uint32_t cur, void *state);
 
@@ -535,8 +578,11 @@ void cfr_damage_row(CfrTerm *vt, int row);
 void cfr_damage_all(CfrTerm *vt);
 
 /* Scrollback (scrollback.c). */
-void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols, bool wrapline);
+void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols, uint32_t lineage);
 void cfr_scrollback_clear(CfrTerm *vt);
+/* Reader helpers used by lines.c. */
+const CfrPage *cfr_sb_page_for_row(const CfrTerm *vt, int sb_row, int *out_row_in_page);
+uint32_t cfr_lineage_in_page(const CfrPage *page, int row_in_page);
 
 /* Selection (selection.c). Internal functions called inline during
  * scroll, draw, erase, resize, and altscreen transitions. */

@@ -15,6 +15,7 @@ libcoffer_a_SOURCES = \
     style.c \
     grid.c \
     damage.c \
+    lines.c \
     modes.c \
     palette.c \
     osc.c \

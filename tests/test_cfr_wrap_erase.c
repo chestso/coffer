@@ -37,7 +37,7 @@ static void test_wrapped_pair_baseline(void)
 {
     CfrTerm *vt = make_term(8, 20);
     prime_wrapped_pair(vt);
-    ASSERT_TRUE(cfr_get_line_continuation(vt, 0));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     cfr_free(vt);
 }
@@ -54,7 +54,7 @@ static void test_el0_at_wrapped_row_start_clears_wrap(void)
     feed(vt, "\x1b[1;1H\x1b[K");
     ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
     /* Row 0 itself is also no longer a wrap of an empty line. */
-    ASSERT_FALSE(cfr_get_line_continuation(vt, 0));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
     cfr_free(vt);
 }
 
@@ -103,7 +103,7 @@ static void test_rewrite_after_erase_restores_wrap(void)
     prime_wrapped_pair(vt);
     feed(vt, "\x1b[1;1H\x1b[2K");
     feed(vt, "YYYYYYYYYYYYYYYYYYYYYYYYY"); /* 25 chars -> wraps into row 1 */
-    ASSERT_TRUE(cfr_get_line_continuation(vt, 0));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     cfr_free(vt);
 }
@@ -126,24 +126,58 @@ static void test_ed3_leaves_grid_and_wrap(void)
     CfrTerm *vt = make_term(8, 20);
     prime_wrapped_pair(vt);
     feed(vt, "\x1b[2;1H\x1b[3J");
-    ASSERT_TRUE(cfr_get_line_continuation(vt, 0));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
     cfr_free(vt);
 }
 
-/* A line feed while the cursor sits on the last column with a deferred wrap
- * (the cell at the margin was just written) resolves the wrap as "no join":
- * the next row is not a continuation. xterm clears the phantom here rather
- * than wrapping, and the wrapped row must lose its WRAPLINE flag. */
-static void test_linefeed_clears_deferred_wrap(void)
+/* A line feed while the cursor carries a deferred phantom (the margin cell
+ * was just written) resolves the wrap as "no join": the phantom is not a
+ * committed wrap, so no edge was ever stamped and the next row is not a
+ * continuation. tmux moves down (here scrolling, since the cursor is on the
+ * bottom row) with the column reset to 0. */
+static void test_linefeed_resolves_phantom_without_join(void)
 {
     CfrTerm *vt = make_term(8, 20);
     feed(vt, "AAAAAAAAAAAAAAAAAAAA");
-    ASSERT_TRUE(vt->cursor.pending_wrap);
+    ASSERT_TRUE(PENDING_WRAP(vt));
     feed(vt, "\n");
-    ASSERT_FALSE(vt->cursor.pending_wrap);
-    ASSERT_FALSE(cfr_get_line_continuation(vt, 0));
+    ASSERT_FALSE(PENDING_WRAP(vt));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
+    cfr_free(vt);
+}
+
+/* A line feed must not sever a *committed* wrap elsewhere on screen: the
+ * phantom is not a wrap, and a real wrap is grid content the LF never
+ * touches. This is the conflation bug the representation removes (the old
+ * clear_wrapline() call in linefeed() killed a genuine 0→1 join whenever
+ * the cursor happened to carry a phantom on the wrapping row). */
+static void test_linefeed_preserves_committed_wrap(void)
+{
+    CfrTerm *vt = make_term(8, 20);
+    /* 21 chars: row 0 fills and wraps 'A' onto row 1 — a committed join. */
+    feed(vt, "AAAAAAAAAAAAAAAAAAAAA");
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    /* The cursor is now on row 1. Print into the interior of the
+     * continuation row and LF: neither may break the 0→1 join. */
+    feed(vt, "B");
+    feed(vt, "\n");
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    cfr_free(vt);
+}
+
+/* Overwriting the margin cell of a wrapped row truncates the logical line:
+ * the wrap edge lives on that cell, so the rewrite severs the join with no
+ * explicit clear-call (the §2.2 table in the design). */
+static void test_overwrite_margin_severs_wrap(void)
+{
+    CfrTerm *vt = make_term(8, 20);
+    feed(vt, "AAAAAAAAAAAAAAAAAAAAA"); /* row 0 wraps 'A' onto row 1 */
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    feed(vt, "\x1b[1;20HZ"); /* overwrite the margin cell of row 0 */
     ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
     cfr_free(vt);
 }
@@ -154,7 +188,7 @@ static void test_print_through_deferred_wrap_keeps_wrap(void)
     CfrTerm *vt = make_term(8, 20);
     feed(vt, "AAAAAAAAAAAAAAAAAAAA");
     feed(vt, "B");
-    ASSERT_TRUE(cfr_get_line_continuation(vt, 0));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     cfr_free(vt);
 }
@@ -187,8 +221,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_ech_last_cell_clears_wrap);
     RUN_TEST(test_ed0_on_wrapped_row_clears_wrap);
     RUN_TEST(test_ed3_leaves_grid_and_wrap);
-    RUN_TEST(test_linefeed_clears_deferred_wrap);
+    RUN_TEST(test_linefeed_resolves_phantom_without_join);
+    RUN_TEST(test_linefeed_preserves_committed_wrap);
     RUN_TEST(test_print_through_deferred_wrap_keeps_wrap);
+    RUN_TEST(test_overwrite_margin_severs_wrap);
     RUN_TEST(test_rewrite_after_erase_restores_wrap);
     RUN_TEST(test_overwrite_interior_keeps_wrap);
     RUN_TEST(test_ich_keeps_wrap_dch_to_margin_clears);

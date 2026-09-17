@@ -1,14 +1,15 @@
 /*
- * coffer — WRAPLINE-tagged reflow on resize.
+ * coffer — wrapped-line reflow on resize.
  *
  * Algorithm (Alacritty / foot lineage):
  *   1. Walk the active grid top-to-bottom, collecting cells into a flat
  *      buffer. Continuation cells (width=0) and uninitialized cells are
  *      skipped — the rewrapper rebuilds continuations and trailing
  *      blanks from cell width.
- *   2. Logical lines are sequences of grid rows linked by the WRAPLINE
- *      flag; ends accumulate into `line_ends`. Each entry is the
- *      cell index where the next logical line begins.
+ *   2. Logical lines are sequences of grid rows linked by the wrap
+ *      predicate (cfr_row_continues: margin-cell WRAPLINE bit plus a
+ *      shared nonzero lineage id); ends accumulate into `line_ends`.
+ *      Each entry is the cell index where the next logical line begins.
  *   3. Cursor position is captured as `cursor_offset` — the index of
  *      the cell at-or-after which the cursor sits in the flat buffer.
  *   4. Re-wrap: for each logical line, lay cells into rows of width
@@ -16,7 +17,9 @@
  *      early (logical line continues). Cursor placement falls out of
  *      tracking the row that contains `cursor_offset`.
  *   5. Distribute: the oldest rows beyond `new_rows` are pushed to
- *      scrollback; the last new_rows land in the new active grid.
+ *      scrollback; the last new_rows land in the new active grid. Rows
+ *      emitted for one logical line share its lineage id, and every row
+ *      but the line's last gets the wrap edge on its new margin cell.
  *
  * Scope: this first cut reflows only the active grid. Pre-existing
  * scrollback stays at its original column widths (mixed-cols sb pages
@@ -40,8 +43,9 @@ typedef struct
 
 typedef struct
 {
-    uint32_t start; /* inclusive index into cells[] */
-    uint32_t end;   /* exclusive */
+    uint32_t start;   /* inclusive index into cells[] */
+    uint32_t end;     /* exclusive */
+    uint32_t lineage; /* logical-line id shared by the line's rows */
     bool wraps;
 } NewRow;
 
@@ -116,7 +120,8 @@ void cfr_resize_clamp(CfrTerm *vt, int new_rows, int new_cols)
                 }
                 new_grid->cells[(size_t)r * new_cols + c] = src;
             }
-            new_grid->row_flags[r] = old_grid->row_flags[r];
+            /* Keep the lineage id; a clamp resize preserves row identity. */
+            new_grid->lineage[r] = old_grid->lineage[r];
         }
         cfr_page_free(vt, old_grid);
     }
@@ -126,15 +131,7 @@ void cfr_resize_clamp(CfrTerm *vt, int new_rows, int new_cols)
     vt->cols = new_cols;
     vt->scroll_top = 0;
     vt->scroll_bottom = new_rows - 1;
-    if (vt->cursor.row >= new_rows)
-        vt->cursor.row = new_rows - 1;
-    if (vt->cursor.col >= new_cols)
-        vt->cursor.col = new_cols - 1;
-    if (vt->cursor.row < 0)
-        vt->cursor.row = 0;
-    if (vt->cursor.col < 0)
-        vt->cursor.col = 0;
-    vt->cursor.pending_wrap = false;
+    cfr_cursor_set(vt, vt->cursor.row, vt->cursor.col);
 
     /* Resize tabstops. */
     uint8_t *new_tabs = cfr_alloc(vt, (size_t)new_cols);
@@ -186,6 +183,17 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
     int32_t cursor_line = -1;
     bool cursor_line_pending = false;
 
+    /* Lineage ids (one per pre-reflow logical line), so the two-sided
+     * handshake survives the rewrap: each output row of a logical line
+     * gets the same id, and a wrap edge is stamped on the row that
+     * wrapped into the next one. */
+    uint32_t *lineage_vals = NULL;
+    uint32_t lineage_count = 0, lineage_cap = 0;
+    int line_start_row = 0; /* first grid row of the line being collected */
+
+    if (!grow_cells(vt, &c, (uint32_t)(old_rows * old_cols + 1)))
+        goto fail;
+
     for (int r = 0; r < old_rows; ++r) {
         uint32_t row_start_idx = c.cells_count;
         int32_t cursor_in_row = -1;
@@ -200,6 +208,10 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
             if (cell->width == 0)
                 continue;
             c.cells[c.cells_count].cell = *cell;
+            /* Wrap edges are re-stamped on the new margin cells below; a
+             * stale bit carried in the flat buffer could land on an
+             * interior cell and spuriously join. */
+            c.cells[c.cells_count].cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
             c.cells[c.cells_count].src_page = old_grid;
             c.cells_count++;
         }
@@ -210,8 +222,10 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
             cursor_line_pending = true;
         }
 
-        bool wrap = (old_grid->row_flags[r] & CFR_CELL_WRAPLINE) != 0u;
-        if (!wrap) {
+        /* Row r continues into r+1 when the two-sided predicate says so. */
+        bool wraps = (r + 1 < old_rows) && cfr_row_continues(vt, r + 1);
+        if (!wraps) {
+            /* The logical line starting at `line_start_row` ends here. */
             if (!grow_lines(vt, &c))
                 goto fail;
             c.line_ends[c.lines_count++] = c.cells_count;
@@ -219,14 +233,39 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
                 cursor_line = (int32_t)(c.lines_count - 1);
                 cursor_line_pending = false;
             }
+            if (lineage_count == lineage_cap) {
+                uint32_t nc = lineage_cap ? lineage_cap * 2 : 32;
+                uint32_t *np = cfr_realloc(vt, lineage_vals,
+                                           (size_t)nc * sizeof(uint32_t));
+                if (!np)
+                    goto fail;
+                lineage_vals = np;
+                lineage_cap = nc;
+            }
+            uint32_t id = old_grid->lineage[line_start_row];
+            if (id == 0)
+                id = cfr_lineage_next(vt);
+            lineage_vals[lineage_count++] = id;
+            line_start_row = r + 1;
         }
     }
-    /* Force-close any unclosed final line. */
+    /* Force-close any unclosed final line. Only reachable when the grid
+     * had no rows at all (every real row closes its own line above). */
     if (c.lines_count == 0 ||
         c.line_ends[c.lines_count - 1] != c.cells_count) {
         if (!grow_lines(vt, &c))
             goto fail;
         c.line_ends[c.lines_count++] = c.cells_count;
+        if (lineage_count == lineage_cap) {
+            uint32_t nc = lineage_cap ? lineage_cap * 2 : 32;
+            uint32_t *np = cfr_realloc(vt, lineage_vals,
+                                       (size_t)nc * sizeof(uint32_t));
+            if (!np)
+                goto fail;
+            lineage_vals = np;
+            lineage_cap = nc;
+        }
+        lineage_vals[lineage_count++] = cfr_lineage_next(vt);
         if (cursor_line_pending) {
             cursor_line = (int32_t)(c.lines_count - 1);
             cursor_line_pending = false;
@@ -276,6 +315,7 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
         uint32_t line_end = c.line_ends[li];
         bool is_cursor_line = ((int32_t)li == cursor_line);
         uint32_t i = line_start;
+        uint32_t line_id = lineage_vals[li];
 
         bool emitted_any = false;
         while (i < line_end) {
@@ -307,6 +347,7 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
             }
             new_rows_arr[new_rows_count].start = row_start;
             new_rows_arr[new_rows_count].end = i;
+            new_rows_arr[new_rows_count].lineage = line_id;
             new_rows_arr[new_rows_count].wraps = (i < line_end);
 
             if (!cursor_placed && is_cursor_line) {
@@ -343,6 +384,7 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
             }
             new_rows_arr[new_rows_count].start = line_start;
             new_rows_arr[new_rows_count].end = line_start;
+            new_rows_arr[new_rows_count].lineage = line_id;
             new_rows_arr[new_rows_count].wraps = false;
             if (!cursor_placed && is_cursor_line) {
                 new_cursor_row = (int32_t)new_rows_count;
@@ -412,6 +454,8 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
             if (col + w > new_cols)
                 break;
             row_buf[col] = ref->cell;
+            /* The wrap edge belongs to the new geometry's margin cell only. */
+            row_buf[col].flags &= (uint8_t)~CFR_CELL_WRAPLINE;
             if (w == 2 && col + 1 < new_cols) {
                 CfrCell cont = (CfrCell){ 0 };
                 cont.width = 0;
@@ -420,7 +464,9 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
             }
             col += w;
         }
-        cfr_scrollback_push(vt, row_buf, new_cols, nr.wraps);
+        if (nr.wraps)
+            row_buf[new_cols - 1].flags |= CFR_CELL_WRAPLINE;
+        cfr_scrollback_push(vt, row_buf, new_cols, nr.lineage);
     }
     cfr_dealloc(vt, row_buf);
 
@@ -450,6 +496,7 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
             CfrCell new_cell = ref->cell;
             new_cell.style_id = new_style_id;
             new_cell.grapheme_id = new_grapheme_id;
+            new_cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
             new_grid->cells[(size_t)i * new_cols + col] = new_cell;
             if (w == 2 && col + 1 < new_cols) {
                 CfrCell cont = (CfrCell){ 0 };
@@ -459,8 +506,11 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
             }
             col += w;
         }
+        /* A wrapped row keeps its wrap edge on the new margin cell. */
         if (nr.wraps)
-            new_grid->row_flags[i] |= CFR_CELL_WRAPLINE;
+            new_grid->cells[(size_t)i * new_cols + (new_cols - 1)].flags |=
+                CFR_CELL_WRAPLINE;
+        new_grid->lineage[i] = nr.lineage;
     }
 
     /* Install new grid + free old. */
@@ -474,17 +524,10 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
 
     /* Cursor mapping. */
     int target_visible_row = (int)new_cursor_row - sb_count;
-    if (target_visible_row < 0) {
-        vt->cursor.row = 0;
-        vt->cursor.col = 0;
-    } else {
-        if (target_visible_row >= new_rows)
-            target_visible_row = new_rows - 1;
-        vt->cursor.row = target_visible_row;
-        vt->cursor.col =
-            (new_cursor_col >= new_cols) ? new_cols - 1 : new_cursor_col;
-    }
-    vt->cursor.pending_wrap = false;
+    if (target_visible_row < 0)
+        cfr_cursor_set(vt, 0, 0);
+    else
+        cfr_cursor_set(vt, target_visible_row, new_cursor_col);
 
     /* Tabstops. */
     uint8_t *new_tabs = cfr_alloc(vt, (size_t)new_cols);
@@ -500,6 +543,7 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
     cfr_dealloc(vt, c.cells);
     cfr_dealloc(vt, c.line_ends);
     cfr_dealloc(vt, new_rows_arr);
+    cfr_dealloc(vt, lineage_vals);
     return;
 
 fail2:
@@ -507,6 +551,7 @@ fail2:
 fail:
     cfr_dealloc(vt, c.cells);
     cfr_dealloc(vt, c.line_ends);
+    cfr_dealloc(vt, lineage_vals);
     /* On failure we fall through to clamp resize so the user isn't
      * left with a broken geometry. */
     cfr_resize_clamp(vt, new_rows, new_cols);
