@@ -466,8 +466,14 @@ void cfr_scroll_down(CfrTerm *vt, int lines);
 void cfr_erase_in_line(CfrTerm *vt, int mode);
 void cfr_erase_in_display(CfrTerm *vt, int mode);
 
-/* Cursor normalizer (print.c). */
+/* Cursor normalizer (print.c). cfr_cursor_set() clamps into the grid and
+ * in doing so resolves the deferred phantom (col == cols). */
 void cfr_cursor_set(CfrTerm *vt, int row, int col);
+
+/* Resolve a deferred phantom in place without moving the cursor. Used by
+ * operations that must not carry the phantom (EL/ECH/IL/DL, image cursor
+ * advance, DECAWM off). */
+void cfr_cursor_kill_phantom(CfrTerm *vt);
 
 /* Line-feed / reverse-index (print.c). IND, LF/VT/FF and NEL all share
  * linefeed; RI (ESC M, C1 0x8D) is cfr_reverse_index. */
@@ -483,13 +489,11 @@ void cfr_reverse_index(CfrTerm *vt);
 bool cfr_wrap_commit(CfrTerm *vt);
 
 /* Lineage helpers (lines.c). cfr_lineage_stamp() assigns a fresh
- * logical-line id when a print first writes into a blank row;
- * cfr_lineage_next() mints an id (used by reflow).
- * cfr_lineage_at()/cfr_lineage_set() address unified rows. */
+ * logical-line id when a print first writes into a blank row (0 = blank);
+ * cfr_lineage_next() mints an id for callers that assign it themselves
+ * (reflow's lineage propagation, wrap commit). */
 void cfr_lineage_stamp(CfrTerm *vt, int row);
 uint32_t cfr_lineage_next(CfrTerm *vt);
-uint32_t cfr_lineage_at(const CfrTerm *vt, int unified_row);
-void cfr_lineage_set(CfrTerm *vt, int row, uint32_t id);
 
 /* Logical-line predicate (lines.c). True when unified `row` continues
  * the row above it: the row above's margin cell carries the wrap edge
@@ -503,7 +507,8 @@ bool cfr_row_continues(const CfrTerm *vt, int unified_row);
 void cfr_logical_line_bounds(const CfrTerm *vt, int row, int lo_limit,
                              int hi_limit, int *out_start, int *out_end);
 
-/* Page width for a unified row (any page in sb/grid/altgrid). */
+/* Page width for a unified row (any page in sb/grid/altgrid; rows can
+ * differ across the scrollback boundary). Used by the word-scan walk. */
 int cfr_row_width(const CfrTerm *vt, int unified_row);
 
 /* Width / grapheme break (width.c). */
@@ -580,9 +585,9 @@ void cfr_damage_all(CfrTerm *vt);
 /* Scrollback (scrollback.c). */
 void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols, uint32_t lineage);
 void cfr_scrollback_clear(CfrTerm *vt);
-/* Reader helpers used by lines.c. */
+/* Page/row lookup for a scrollback row, used by lines.c's unified-row
+ * resolver. */
 const CfrPage *cfr_sb_page_for_row(const CfrTerm *vt, int sb_row, int *out_row_in_page);
-uint32_t cfr_lineage_in_page(const CfrPage *page, int row_in_page);
 
 /* Selection (selection.c). Internal functions called inline during
  * scroll, draw, erase, resize, and altscreen transitions. */

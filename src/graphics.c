@@ -266,8 +266,7 @@ static void k_advance_cursor(CfrTerm *vt, int start_col, int cols, int rows)
     if (vt->cursor.row < target)
         vt->cursor.row = target;
     /* The advance is an explicit cursor move, so it kills the phantom. */
-    if (vt->cursor.col >= vt->cols)
-        vt->cursor.col = vt->cols - 1;
+    cfr_cursor_kill_phantom(vt);
 }
 
 /* ------------------------------------------------------------------ */

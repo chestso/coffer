@@ -452,9 +452,10 @@ static void test_selection_word_mode(void)
 }
 
 /* Regression: soft-wrapped lines must copy as one logical line with no
- * padding spaces, and hard newlines must survive. The WRAPLINE flag sits
- * on the row that wrapped into the next row — get_text used to read it
- * off-by-one, gluing hard-broken rows together and splitting soft wraps. */
+ * padding spaces, and hard newlines must survive. The wrap edge sits on
+ * the margin cell of the row that wrapped into the next row — get_text
+ * used to read the old row flag off-by-one, gluing hard-broken rows
+ * together and splitting soft wraps. */
 static void test_selection_get_text_soft_wrap(void)
 {
     /* 10 cols: row 0 "abc" (hard break), rows 1-3 one 24-char word that

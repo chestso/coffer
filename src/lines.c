@@ -45,7 +45,7 @@ static const CfrPage *unified_page(const CfrTerm *vt, int unified_row,
     return cfr_sb_page_for_row(vt, sb_row, out_row_in_page);
 }
 
-uint32_t cfr_lineage_in_page(const CfrPage *page, int row_in_page)
+static uint32_t lineage_in_page(const CfrPage *page, int row_in_page)
 {
     if (!page || row_in_page < 0 || row_in_page >= page->row_capacity)
         return 0;
@@ -57,15 +57,6 @@ int cfr_row_width(const CfrTerm *vt, int unified_row)
     int r = 0;
     const CfrPage *p = unified_page(vt, unified_row, &r);
     return p ? p->cols : 0;
-}
-
-uint32_t cfr_lineage_at(const CfrTerm *vt, int unified_row)
-{
-    int r = 0;
-    const CfrPage *p = unified_page(vt, unified_row, &r);
-    if (!p)
-        return 0;
-    return cfr_lineage_in_page(p, r);
 }
 
 /* Assign a fresh logical-line id. Ids start at 1; 0 means blank. A
@@ -176,8 +167,8 @@ bool cfr_row_continues(const CfrTerm *vt, int unified_row)
         return false;
 
     /* End two: the row below is still the same logical line. */
-    uint32_t lp = cfr_lineage_in_page(pp, pr);
-    uint32_t lc = cfr_lineage_in_page(cp, cr);
+    uint32_t lp = lineage_in_page(pp, pr);
+    uint32_t lc = lineage_in_page(cp, cr);
     return lp != 0 && lp == lc;
 }
 

@@ -1258,7 +1258,7 @@ static void test_reflow_grow(void)
 {
     CfrTerm *vt = make_term(2, 5);
     cfr_set_reflow(vt, true);
-    /* "abcdef" wraps at col 5: row 0 "abcde" with WRAPLINE, row 1 "f". */
+    /* "abcdef" wraps at col 5: row 0 "abcde" wraps into row 1 "f". */
     feed(vt, "abcdef");
     ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     /* Grow to 10 cols: should unwrap to a single row "abcdef". */
@@ -1278,7 +1278,7 @@ static void test_reflow_shrink(void)
     CfrTerm *vt = make_term(2, 10);
     cfr_set_reflow(vt, true);
     feed(vt, "abcdefghij");
-    /* Shrink to 5 cols: "abcde" with WRAPLINE, row 1 "fghij". */
+    /* Shrink to 5 cols: "abcde" wraps into row 1 "fghij". */
     cfr_resize(vt, 2, 5);
     ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'a');
     ASSERT_EQ(cfr_get_cell(vt, 0, 4)->cp, (uint32_t)'e');
@@ -1292,8 +1292,8 @@ static void test_reflow_overflow_to_scrollback(void)
 {
     CfrTerm *vt = make_term(2, 10);
     cfr_set_reflow(vt, true);
-    feed(vt, "abcdefghij"); /* fills row 0 with WRAPLINE */
-    feed(vt, "klmnopqrst"); /* fills row 1 (no WRAPLINE — separate logical line because we wrote 10 chars then wrapped from row 0 to row 1) */
+    feed(vt, "abcdefghij"); /* fills row 0, wrapping into row 1 */
+    feed(vt, "klmnopqrst"); /* fills row 1 (a separate logical line because we wrote 10 chars then wrapped from row 0 to row 1) */
     /* Actually after writing 10 chars, the cursor is at col 9 with
      * pending phantom. Then writing more wraps. Let's just verify the
      * shrink behavior. */
@@ -1478,7 +1478,7 @@ static void test_wrap(void)
     ASSERT_EQ(c0->cp, (uint32_t)'a');
     ASSERT_EQ(c4->cp, (uint32_t)'e');
     ASSERT_EQ(c5->cp, (uint32_t)'f');
-    /* Row 0 should be marked WRAPLINE. */
+    /* Row 0 wraps into row 1. */
     ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     ASSERT_FALSE(cfr_row_is_continuation(vt, 2));
     cfr_free(vt);
@@ -1568,7 +1568,7 @@ static void test_decawm_bottom_right_no_scroll(void)
 }
 
 /* Erase-in-line (ESC[K) must clear the phantom, matching xterm. */
-static void test_erase_in_line_clears_pending_wrap(void)
+static void test_erase_in_line_clears_phantom(void)
 {
     CfrTerm *vt = make_term(3, 5);
     feed(vt, "abcde"); /* fill row, phantom set */
@@ -1746,7 +1746,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_decawm_off_no_wrap);
     RUN_TEST(test_decawm_reenable);
     RUN_TEST(test_decawm_bottom_right_no_scroll);
-    RUN_TEST(test_erase_in_line_clears_pending_wrap);
+    RUN_TEST(test_erase_in_line_clears_phantom);
     RUN_TEST(test_decawm_off_wide_at_margin);
     RUN_TEST(test_irm_insert_char);
     RUN_TEST(test_irm_off_restores_replace);

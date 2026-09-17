@@ -319,8 +319,8 @@ static void mode_set(CfrTerm *vt, bool on)
             break;
         case 7: /* DECAWM auto-wrap mode */
             vt->modes[CFR_MODE_DECAWM] = on;
-            if (!on && vt->cursor.col >= vt->cols)
-                vt->cursor.col = vt->cols - 1; /* kill the phantom */
+            if (!on)
+                cfr_cursor_kill_phantom(vt);
             break;
         case 25: /* DECTCEM cursor visible */
             vt->modes[CFR_MODE_CURSOR_VISIBLE] = on;

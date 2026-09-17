@@ -235,7 +235,8 @@ static void img_advance_cursor(CfrTerm *vt, int rows_tall, int cols_wide)
         else if (vt->cursor.row < vt->rows - 1)
             vt->cursor.row++;
     }
-    vt->cursor.col = col >= vt->cols ? vt->cols - 1 : col;
+    vt->cursor.col = col;
+    cfr_cursor_kill_phantom(vt);
 }
 
 /* Damage the display rows covered by a newly placed/updated image. */

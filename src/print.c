@@ -66,10 +66,11 @@ static void cursor_clamp(CfrTerm *vt)
         vt->cursor.col = vt->cols;
 }
 
-/* Drop the deferred phantom without moving otherwise. Used by the
- * operations (EL, ECH, IL, DL) that resolve a pending wrap to "no join"
- * but do not themselves reposition the cursor. */
-static void kill_phantom(CfrTerm *vt)
+/* Drop the deferred phantom without moving otherwise: the operations
+ * (EL, ECH, IL, DL) that resolve a pending wrap to "no join" need it, as
+ * do the cursor advances that follow an image placement and DECAWM's
+ * off transition. */
+void cfr_cursor_kill_phantom(CfrTerm *vt)
 {
     if (vt->cursor.col >= vt->cols)
         vt->cursor.col = vt->cols - 1;
@@ -221,8 +222,7 @@ void cfr_reverse_index(CfrTerm *vt)
         cfr_scroll_down(vt, 1);
     else if (vt->cursor.row > 0)
         vt->cursor.row--;
-    if (vt->cursor.col >= vt->cols)
-        vt->cursor.col = vt->cols - 1;
+    cfr_cursor_kill_phantom(vt);
 }
 
 static void carriage_return(CfrTerm *vt)
@@ -469,7 +469,7 @@ void cfr_erase_in_line(CfrTerm *vt, int mode)
     int row = vt->cursor.row;
     if (row < 0 || row >= vt->rows)
         return;
-    kill_phantom(vt);
+    cfr_cursor_kill_phantom(vt);
     CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
     int from = 0, to = vt->cols;
     switch (mode) {
@@ -569,7 +569,7 @@ void cfr_erase_chars(CfrTerm *vt, int count)
     if (!vt->grid || count <= 0)
         return;
     if (vt->cursor.col >= vt->cols)
-        kill_phantom(vt);
+        cfr_cursor_kill_phantom(vt);
     int row = vt->cursor.row;
     int col = vt->cursor.col;
     if (row < 0 || row >= vt->rows || col < 0 || col >= vt->cols)
