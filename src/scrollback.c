@@ -183,14 +183,14 @@ const CfrCell *cfr_get_scrollback_cell(const CfrTerm *vt, int sb_row, int col)
 
 bool cfr_get_scrollback_wrapline(const CfrTerm *vt, int sb_row)
 {
-    int row_in_page = 0;
-    const CfrPage *p = find_sb_row(vt, sb_row, &row_in_page);
-    if (!p || p->cols <= 0)
+    if (!vt || sb_row < 0)
         return false;
-    /* The scrollback row ends in a wrap when its margin cell still
-     * carries the wrap edge. */
-    const CfrCell *margin = &p->cells[(size_t)row_in_page * p->cols + (p->cols - 1)];
-    return (margin->flags & CFR_CELL_WRAPLINE) != 0u;
+    /* Unified row -(sb_row) is "sb_row rows below the most recent"; the
+     * row it would wrap into is the row above it in unified coords. Funnel
+     * through the single predicate rather than reading the margin bit, so
+     * the lineage handshake applies here too. */
+    int unified = -(sb_row + 1);
+    return cfr_row_continues(vt, unified + 1);
 }
 
 const CfrPage *cfr_find_owner_page(const CfrTerm *vt, const CfrCell *cell)
