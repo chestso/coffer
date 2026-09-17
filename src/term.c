@@ -199,9 +199,10 @@ size_t cfr_input_write(CfrTerm *vt, const uint8_t *bytes, size_t len)
     if (!vt || !bytes || len == 0)
         return 0;
     cfr_parser_feed(vt, bytes, len);
-    /* Commit any in-flight grapheme cluster. Real PTY frames almost
-     * never split clusters across writes; for the rare exception
-     * callers can chain writes without intervening reads. */
+    /* Commit any in-flight grapheme cluster so the grid is consistent
+     * at every write boundary. A write can still split a base from its
+     * modifiers (VS16, combining marks); print.c re-attaches those to
+     * the previously printed cell, so chunked writes lose nothing. */
     cfr_flush_cluster(vt);
     return len;
 }

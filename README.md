@@ -20,7 +20,8 @@ compositing. See the portty README for renderer-side details.
   cluster widths computed at insertion time and stored on each cell.
   ZWJ sequences, regional indicators, skin-tone modifiers, and VS16
   emoji presentation all carry the right cell width without
-  per-renderer peek-ahead. An optional `ambiguous_wide` flag renders
+  per-renderer peek-ahead (when a cluster carries both VS16 and VS15,
+  the last selector decides). An optional `ambiguous_wide` flag renders
   East Asian Ambiguous codepoints (Greek, Cyrillic, box-drawing, etc.)
   as 2 cells for CJK-locale compatibility.
 - **Grapheme arena** — full clusters are interned; cells reference them

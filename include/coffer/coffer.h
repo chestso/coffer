@@ -618,9 +618,14 @@ bool cfr_have_lottie(void);
  * Narrow codepoints, 2 for East Asian Wide (CJK, emoji), 0 for zero-width
  * codepoints (combining marks, variation selectors, ZWJ, etc.).
  *
- * This is a per-codepoint width calculation and does NOT handle grapheme
- * clusters (emoji ZWJ sequences, regional indicator pairs). For cluster-
- * aware width, decode to codepoints and use cfr_cluster_width().
+ * Cluster-aware: codepoints are grouped with the same grapheme-break
+ * predicate and cluster width rule the grid uses, so an emoji
+ * presentation sequence (base + U+FE0F) measures 2 cells, a regional
+ * indicator pair 2, and a VS15 (text presentation) sequence falls back
+ * to the base width. East Asian Ambiguous codepoints are always narrow
+ * here — ambiguous width is a per-terminal setting (CfrConfig
+ * .ambiguous_wide); with it enabled, measure through a CfrTerm instead
+ * (the grid cells carry the effective widths).
  *
  * @param utf8  UTF-8 string (need not be NUL-terminated)
  * @param len   Length in bytes

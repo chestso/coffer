@@ -302,6 +302,88 @@ void cfr_execute_c0(CfrTerm *vt, uint8_t b)
 }
 
 /* Commit one cell from the codepoint sequence `cps[len]`. */
+static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len);
+
+/* A cluster made purely of joiners (variation selector, combining mark,
+ * ZWJ) reaches a flush with no base of its own when a write boundary or
+ * a control sequence split it from the base printed just before it.
+ * Dropping it silently loses a VS16 — the row then wraps one cell early
+ * — so instead reload the last printed cluster in this row, append the
+ * joiners, and re-commit the combined sequence through the normal path
+ * (the width, and any wrap the new width forces, is recomputed).
+ *
+ * Joins are not re-attached across rows: the row above is a different
+ * print context and the modifier is dropped there, as before. */
+static void attach_stray_joiners(CfrTerm *vt, const uint32_t *cps, uint32_t len)
+{
+    if (!vt->grid || len == 0 || len >= CFR_CLUSTER_MAX)
+        return;
+    if (!cfr_is_grapheme_joiner(cps[0]))
+        return; /* a zero-width separator (e.g. ZWSP) is not a modifier */
+    int row = vt->cursor.row;
+    if (row < 0 || row >= vt->rows)
+        return;
+
+    /* The cell before the cursor; the phantom means the row's margin. */
+    int col = vt->cursor.col;
+    int lead = (col >= vt->cols) ? vt->cols - 1 : col - 1;
+    if (lead < 0)
+        return; /* start of row: the previous content is another row */
+
+    CfrCell *cells = vt->grid->cells;
+    while (lead > 0 && cells[(size_t)row * vt->cols + lead].width == 0)
+        lead--; /* step off a continuation onto its lead cell */
+    CfrCell *lead_cell = &cells[(size_t)row * vt->cols + lead];
+    if (lead_cell->width == 0 || lead_cell->cp == 0u || lead_cell->cp == 0x20u)
+        return; /* never printed, or an erase blank — nothing to attach to */
+
+    uint32_t combined[CFR_CLUSTER_MAX];
+    size_t n;
+    if (lead_cell->grapheme_id != 0u)
+        n = cfr_grapheme_read(vt->grid, lead_cell->grapheme_id, combined,
+                              CFR_CLUSTER_MAX);
+    else {
+        combined[0] = lead_cell->cp;
+        n = 1;
+    }
+    if (n == 0 || n + len > CFR_CLUSTER_MAX)
+        return;
+    for (uint32_t i = 0; i < len; ++i)
+        combined[n + i] = cps[i];
+
+    /* Blank the span the old cluster occupied. The re-commit rewrites it
+     * when the combined cluster still fits, and leaves clean blanks when
+     * its new width forces an eager wrap to the next row. Erasing first
+     * also means a narrower re-commit never strands a continuation. */
+    uint32_t new_len = (uint32_t)(n + len);
+    int new_w = cfr_cluster_width(vt, combined, new_len);
+    int span = (lead + lead_cell->width <= vt->cols) ? lead_cell->width
+                                                     : vt->cols - lead;
+    /* The wrap edge rides the margin cell; carry it across the rewrite so
+     * the attach is invisible to the join predicate. Only when the
+     * combined cluster lands back over the old span: if it wraps away,
+     * cfr_wrap_commit() re-stamps the edge itself. */
+    CfrCell *margin = &cells[(size_t)row * vt->cols + (vt->cols - 1)];
+    bool had_wrap = (lead + span >= vt->cols) &&
+                    ((margin->flags & CFR_CELL_WRAPLINE) != 0u) &&
+                    (new_w > 0) && (lead + new_w <= vt->cols);
+
+    bool insert_mode = vt->insert_mode;
+    vt->insert_mode = false; /* an attach overwrites in place */
+
+    erase_cells(vt, &cells[(size_t)row * vt->cols + lead], span);
+    for (int i = 0; i < span; ++i)
+        cfr_damage_cell(vt, row, lead + i);
+
+    vt->cursor.col = lead; /* retracts (and so resolves) any phantom */
+    commit_cluster(vt, combined, new_len);
+
+    vt->insert_mode = insert_mode;
+    if (had_wrap)
+        margin->flags |= CFR_CELL_WRAPLINE;
+}
+
+/* Commit one cell from the codepoint sequence `cps[len]`. */
 static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
 {
     cfr_grid_ensure(vt);
@@ -309,9 +391,14 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
         return;
 
     int width = cfr_cluster_width(vt, cps, len);
-    if (width <= 0) {
-        /* Stray combining mark with no preceding base. Discard rather
-         * than write a width-0 cell that would confuse the renderer. */
+    /* A cluster whose first codepoint is a modifier (VS16, combining
+     * mark, ZWJ) has no base: it only exists because a flush split it
+     * from the base printed before it (a write boundary or a control
+     * sequence in between). Attach it to that base; with no base to
+     * attach to, discard rather than write a baseless cell — a bare
+     * VS16 would otherwise land as a phantom width-2 cell. */
+    if (width <= 0 || cfr_is_grapheme_joiner(cps[0])) {
+        attach_stray_joiners(vt, cps, len);
         return;
     }
 
@@ -345,6 +432,9 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
     cfr_lineage_stamp(vt, vt->cursor.row);
 
     CfrCell *cell = &vt->grid->cells[(size_t)vt->cursor.row * vt->cols + vt->cursor.col];
+    /* Width of the cluster this print replaces: a width-2 lead leaves a
+     * continuation behind when a narrow cluster overwrites it. */
+    int old_width = cell->width;
     cell->cp = cps[0];
     cell->grapheme_id = (len > 1) ? cfr_grapheme_intern(vt, vt->grid, cps, len) : 0;
     cell->style_id = cfr_style_intern(vt, vt->grid, &vt->cursor.pen);
@@ -363,6 +453,20 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
         cont->width = 0;
         cont->flags = 0;
         cont->hyperlink_id = cell->hyperlink_id;
+        /* The pair covers two columns; damage both or a partial-redraw
+         * consumer keeps whatever previously sat in the second. */
+        cfr_damage_cell(vt, vt->cursor.row, vt->cursor.col + 1);
+    } else if (width == 1 && old_width == 2 && vt->cursor.col + 1 < vt->cols) {
+        /* A narrow print over the lead cell of a wide cluster (ambiguous
+         * emoji without VS16, a CJK ideograph, …) leaves the old
+         * continuation behind: a width-0 cell with no lead, which
+         * renderers skip — a hole in the row. Blank it so the column
+         * renders as an ordinary space. Rewriting the cell also drops
+         * any wrap edge on it — the margin-cell rule (the same §2.2
+         * table entry as any other print that reaches the margin). */
+        CfrCell *next = cell + 1;
+        erase_cells(vt, next, 1);
+        cfr_damage_cell(vt, vt->cursor.row, vt->cursor.col + 1);
     }
 
     cfr_selection_on_draw(vt, vt->cursor.row);

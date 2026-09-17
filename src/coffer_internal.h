@@ -456,6 +456,13 @@ void cfr_parser_feed(CfrTerm *vt, const uint8_t *bytes, size_t len);
 int cfr_codepoint_width(CfrTerm *vt, uint32_t cp);
 int cfr_cluster_width(CfrTerm *vt, const uint32_t *cps, uint32_t len);
 
+/* True when `cp` extends a pending cluster instead of starting a new
+ * one (GCB Extend ∪ ZWJ ∪ SpacingMark: combining marks, variation
+ * selectors, joiners). print.c re-attaches stray joiners whose base was
+ * committed by an earlier flush — a write boundary can split a base
+ * from its VS16. */
+bool cfr_is_grapheme_joiner(uint32_t cp);
+
 /* Grid mutators (print.c). */
 void cfr_grid_ensure(CfrTerm *vt);
 void cfr_print_codepoint(CfrTerm *vt, uint32_t cp);

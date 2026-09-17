@@ -15,7 +15,9 @@
  *
  * Cluster width handles the user's primary goal: VS16 forces a 1-cell
  * emoji to 2 cells, RI pairs are 2 cells, combining marks attach
- * without widening.
+ * without widening. When a cluster carries both VS16 and VS15, the
+ * last selector in the cluster decides the presentation (UTS #51);
+ * VS15 cancels the doubling but never narrows a Wide base.
  */
 
 #include "coffer_internal.h"
@@ -1476,22 +1478,6 @@ static bool is_regional_indicator(uint32_t cp)
     return cp >= 0x1F1E6u && cp <= 0x1F1FFu;
 }
 
-static bool has_vs16(const uint32_t *cps, uint32_t len)
-{
-    for (uint32_t i = 0; i < len; ++i)
-        if (cps[i] == 0xFE0Fu)
-            return true;
-    return false;
-}
-
-static bool has_vs15(const uint32_t *cps, uint32_t len)
-{
-    for (uint32_t i = 0; i < len; ++i)
-        if (cps[i] == 0xFE0Eu)
-            return true;
-    return false;
-}
-
 int cfr_cluster_width(CfrTerm *vt, const uint32_t *cps, uint32_t len)
 {
     if (len == 0)
@@ -1499,15 +1485,36 @@ int cfr_cluster_width(CfrTerm *vt, const uint32_t *cps, uint32_t len)
     /* Regional indicator pair → 2 cells (a flag). */
     if (len >= 2 && is_regional_indicator(cps[0]) && is_regional_indicator(cps[1]))
         return 2;
-    /* VS16 forces emoji presentation → 2 cells. The base codepoint
-     * may be width-1 in UAX #11 (ambiguous); VS16 widens it. */
-    if (has_vs16(cps, len))
-        return 2;
-    /* VS15 forces text presentation → 1 cell. */
-    if (has_vs15(cps, len))
-        return 1;
+    /* Presentation selectors, scanned from the END: the last variation
+     * selector in the cluster wins. A base may carry both FE0E and FE0F
+     * (with or without intervening ZWJ), and the trailing one is the
+     * effective request:
+     *   VS16 (emoji presentation) → 2 cells, even when the base is
+     *     UAX #11 Narrow or Ambiguous — this is the shift libvterm
+     *     cannot express without a lookahead hack.
+     *   VS15 (text presentation) → the base's East Asian width: it
+     *     cancels VS16's doubling but never narrows a Wide base — CJK
+     *     and emoji-presentation codepoints have no 1-cell glyph, and
+     *     collapsing them to one cell would corrupt the column grid.
+     *     Ambiguous bases keep the ambiguous_wide setting. */
+    for (uint32_t i = len; i-- > 0;) {
+        if (cps[i] == 0xFE0Fu)
+            return 2;
+        if (cps[i] == 0xFE0Eu)
+            return cfr_codepoint_width(vt, cps[0]);
+    }
     /* Otherwise: width of base codepoint. */
     return cfr_codepoint_width(vt, cps[0]);
+}
+
+/* True for a codepoint that would extend a pending cluster rather than
+ * start a new one: GCB Extend ∪ ZWJ (combining marks, variation
+ * selectors, joiners) or SpacingMark. print.c uses this to re-attach a
+ * stray modifier whose base was already committed by an earlier flush
+ * (the base and its VS16 arrived in separate input writes). */
+bool cfr_is_grapheme_joiner(uint32_t cp)
+{
+    return is_extend(cp) || is_spacing_mark(cp);
 }
 
 bool cfr_grapheme_break_before(uint32_t prev, uint32_t cur, void *state_in)
@@ -1560,6 +1567,16 @@ bool cfr_grapheme_break_before(uint32_t prev, uint32_t cur, void *state_in)
 
 #include <stddef.h>
 
+/* Grid-equivalent width of one decoded cluster for the public measuring
+ * helper: a cluster with no base (a leading modifier) is dropped by
+ * commit_cluster(), so it measures 0 here too. */
+static int measurable_cluster_width(const uint32_t *cps, uint32_t len)
+{
+    if (len == 0 || cfr_is_grapheme_joiner(cps[0]))
+        return 0;
+    return cfr_cluster_width(NULL, cps, len);
+}
+
 int cfr_utf8_display_width(const char *utf8, size_t len)
 {
     if (!utf8 || len == 0)
@@ -1568,6 +1585,16 @@ int cfr_utf8_display_width(const char *utf8, size_t len)
     int width = 0;
     const uint8_t *s = (const uint8_t *)utf8;
     const uint8_t *end = s + len;
+
+    /* Cluster-aware: codepoints are grouped with the same grapheme
+     * break predicate and cluster width rule the grid uses, so the
+     * measurement matches what cfr_input_write would lay out — an
+     * emoji presentation sequence (base + VS16) measures 2 cells, a
+     * regional indicator pair 2, combining marks 0. There is no
+     * CfrTerm* here, so East Asian Ambiguous codepoints are always
+     * narrow (ambiguous width is a per-terminal setting). */
+    uint32_t cluster[CFR_CLUSTER_MAX];
+    uint32_t clen = 0;
 
     while (s < end && *s) {
         uint32_t cp;
@@ -1598,15 +1625,18 @@ int cfr_utf8_display_width(const char *utf8, size_t len)
             cp = (cp << 6) | (s[i] & 0x3F);
         }
 
-        /* cfr_codepoint_width needs a CfrTerm for ambiguous-wide support.
-         * This function has no CfrTerm*, so ambiguous codepoints are
-         * always treated as width 1 (narrow) here. */
-        int w = cfr_codepoint_width(NULL, cp);
-        if (w < 0)
-            w = 0;
-        width += w;
+        if (clen > 0 && cfr_grapheme_break_before(cluster[clen - 1], cp, NULL)) {
+            width += measurable_cluster_width(cluster, clen);
+            clen = 0;
+        }
+        /* Same cap as the grid: a cluster past CFR_CLUSTER_MAX drops
+         * further joiners instead of overflowing the stack buffer. */
+        if (clen < CFR_CLUSTER_MAX)
+            cluster[clen++] = cp;
         s += char_len;
     }
+    if (clen > 0)
+        width += measurable_cluster_width(cluster, clen);
 
     return width;
 }
