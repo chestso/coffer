@@ -180,6 +180,95 @@ static void test_reflow_preserves_line_identity(void)
     cfr_free(vt);
 }
 
+/* -------- Reflow round trip: shrink (with scroll) then grow back --------
+ *
+ * Fill the screen with wrapped lines, shrink to half width so content
+ * scrolls into history, then grow back. This pins two behaviors:
+ *
+ *  1. The visible portion round-trips losslessly. Content that stays on
+ *     screen across the shrink is re-expanded to the original width, and
+ *     its joins are intact.
+ *  2. Content pushed into scrollback during the shrink does NOT
+ *     re-expand on grow-back. Scrollback pages keep the column width
+ *     they were written at (design §5: reflow scope is the active grid
+ *     only), the scrollback line count is unchanged by the grow, and
+ *     reflow does not carry lineage across the scrollback/grid split.
+ *
+ * If the FOLLOWUPS "carry lineage across the scrollback/grid split" item
+ * is implemented, part 2 starts failing — which is the intended signal
+ * that this test needs updating.
+ *
+ * Setup: 8x20 grid, four 40-char lines (A/B/C/D), each a soft-wrapped
+ * pair of rows. Shrinking to 10 cols makes each line four rows (16
+ * total), so A and B scroll off; C and D remain visible.
+ */
+static void test_reflow_roundtrip_shrink_grow(void)
+{
+    CfrTerm *vt = make_term(8, 20, true);
+    const char *lines[4] = { "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                             "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                             "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+                             "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD" };
+    for (int i = 0; i < 4; ++i) {
+        feed(vt, lines[i]);
+        if (i < 3)
+            feed(vt, "\r\n");
+    }
+
+    /* Initial: four wrapped pairs, everything visible, no scrollback. */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 0));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1)); /* A pair */
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 2));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 3)); /* B pair */
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
+
+    /* Shrink to half width: each line becomes four 10-col rows, A and B
+     * scroll into history, C and D stay on screen. */
+    cfr_resize(vt, 8, 10);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 8); /* A + B, four rows each */
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'C');
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 2));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 3));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 4));
+    ASSERT_EQ(cfr_get_cell(vt, 4, 0)->cp, (uint32_t)'D');
+
+    /* Scrollback keeps the wraps it was pushed with. */
+    ASSERT_FALSE(cfr_row_is_continuation(vt, -8)); /* A's first fragment */
+    ASSERT_TRUE(cfr_row_is_continuation(vt, -7));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, -6));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, -5));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, -4)); /* B's first fragment */
+    ASSERT_TRUE(cfr_row_is_continuation(vt, -3));
+
+    /* Grow back to 20 cols. */
+    cfr_resize(vt, 8, 20);
+
+    /* Part 1 — the visible lines are restored to their full 40-char,
+     * two-row form with joins intact. */
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'C');
+    ASSERT_EQ(cfr_get_cell(vt, 0, 19)->cp, (uint32_t)'C');
+    ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, (uint32_t)'C');
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 2));
+    ASSERT_EQ(cfr_get_cell(vt, 2, 0)->cp, (uint32_t)'D');
+    ASSERT_EQ(cfr_get_cell(vt, 3, 0)->cp, (uint32_t)'D');
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 3));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 4));
+
+    /* Part 2 — scrollback is left untouched at the old column width: the
+     * line count is unchanged, its joins survive, and the pages are still
+     * 10 columns wide (cell 9 readable, cell 10 out of range). */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 8);
+    ASSERT_FALSE(cfr_row_is_continuation(vt, -8));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, -7));
+    ASSERT_NOT_NULL(cfr_get_scrollback_cell(vt, 0, 9));
+    ASSERT_NULL(cfr_get_scrollback_cell(vt, 0, 10));
+
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -192,5 +281,6 @@ int main(int argc, char *argv[])
     RUN_TEST(test_join_into_scrollback);
     RUN_TEST(test_dl_inside_line_known_join);
     RUN_TEST(test_reflow_preserves_line_identity);
+    RUN_TEST(test_reflow_roundtrip_shrink_grow);
     TEST_SUMMARY();
 }
