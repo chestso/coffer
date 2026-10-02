@@ -295,7 +295,10 @@ typedef struct
     int disp_rows; /* r= from the first chunk (display rows) */
     int has_disp_cols;
     int has_disp_rows;
+    int z_index; /* z= from the first chunk (placement z-order) */
+    int has_z_index;
     int no_cursor_move; /* C= from the first chunk (1 = leave cursor) */
+    int has_no_cursor_move;
 } KChunk;
 
 static KChunk g_chunk = { 0 };
@@ -439,7 +442,10 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
             g_chunk.disp_rows = p->disp_rows;
             g_chunk.has_disp_cols = p->has_disp_cols;
             g_chunk.has_disp_rows = p->has_disp_rows;
+            g_chunk.z_index = p->z_index;
+            g_chunk.has_z_index = p->has_z_index;
             g_chunk.no_cursor_move = p->no_cursor_move;
+            g_chunk.has_no_cursor_move = p->has_no_cursor_move;
         }
         if (cfr_buf_append((uint8_t **)&g_chunk.b64, &g_chunk.len,
                            &g_chunk.cap, payload, payload_len) != 0)
@@ -491,8 +497,14 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
             p->disp_rows = g_chunk.disp_rows;
             p->has_disp_rows = g_chunk.has_disp_rows;
         }
-        if (p->no_cursor_move == 0)
+        if (!p->has_z_index) {
+            p->z_index = g_chunk.z_index;
+            p->has_z_index = g_chunk.has_z_index;
+        }
+        if (!p->has_no_cursor_move) {
             p->no_cursor_move = g_chunk.no_cursor_move;
+            p->has_no_cursor_move = g_chunk.has_no_cursor_move;
+        }
 
         size_t need = g_chunk.len + payload_len + 1;
         tmp_b64 = malloc(need);

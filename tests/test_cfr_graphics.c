@@ -882,6 +882,52 @@ static void test_transmit_no_cursor_move(void)
     cfr_free(vt);
 }
 
+/* 14d-2. C=1 and z= survive a CHUNKED a=T: the continuation chunks
+ * carry no control keys, so the placement must be built from the
+ * FIRST chunk's stash — including its has_ flags. Dropping the flag
+ * (but keeping the value) made the cursor advance by rows-1 anyway,
+ * which showed up as ~image-height blank rows below every chunked
+ * image (boba's images are always chunked: > 3 KiB payloads). */
+static void test_chunked_transmit_no_cursor_move(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Park the cursor away from the origin. */
+    feed(vt, "\x1b[5;10H");
+
+    uint8_t rgba[16] = { 255, 0, 0, 255, 255, 0, 0, 255,
+                         255, 0, 0, 255, 255, 0, 0, 255 };
+    char full[64];
+    b64_encode(rgba, sizeof(rgba), full);
+    size_t half = strlen(full) / 2;
+    char first[64], second[64];
+    memcpy(first, full, half);
+    first[half] = '\0';
+    strcpy(second, full + half);
+
+    char seq[512];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=2,v=2,i=7,C=1,z=3,m=1;%s\x1b\\", first);
+    feed(vt, seq);
+    snprintf(seq, sizeof(seq), "\x1b_Gm=1;%s\x1b\\", second);
+    feed(vt, seq);
+    snprintf(seq, sizeof(seq), "\x1b_Gm=0\x1b\\");
+    feed(vt, seq);
+
+    /* Placement created at (4,9), cursor untouched, z-order kept. */
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ(pls[0].row, 4);
+    ASSERT_EQ(pls[0].col, 9);
+    ASSERT_EQ(pls[0].z_index, 3);
+    ASSERT_EQ(vt->cursor.row, 4);
+    ASSERT_EQ(vt->cursor.col, 9);
+
+    cfr_free(vt);
+}
+
 /* 14e. The cursor advance uses rows - 1, so a near-full-height image
  * leaves the cursor one row above the bottom and a trailing newline
  * moves to the bottom-left without scrolling the grid.
@@ -1213,6 +1259,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_transmit_and_place_cursor_advance);
     RUN_TEST(test_transmit_chunked_keeps_display_size);
     RUN_TEST(test_transmit_no_cursor_move);
+    RUN_TEST(test_chunked_transmit_no_cursor_move);
     RUN_TEST(test_transmit_full_width_no_extra_scroll);
     RUN_TEST(test_transmit_taller_than_screen_no_spin);
     RUN_TEST(test_transmit_no_id_creates_new_image);
