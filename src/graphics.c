@@ -414,6 +414,29 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
     return id;
 }
 
+/* An omitted f= key is not "unknown format": kitty's default is 32
+ * (raw RGBA), so normalize it before anything reads p->format. */
+static void k_default_format(KittyParams *p)
+{
+    if (!p->has_format) {
+        p->format = 32;
+        p->has_format = 1;
+    }
+}
+
+/* The raw formats carry no size of their own — their payload length is
+ * derived from s/v, so the pair is REQUIRED there (kitty: "Zero
+ * width/height not allowed"). f=100 (PNG) is exempt: the size lives in
+ * the container, which the protocol's own PNG example shows ("ESC _ G
+ * f=100 ; <payload> ESC \", and its minimal chunked sender puts only
+ * "a=T,f=100," on the first chunk), and kitty reads the dimensions from
+ * the decoded PNG. Demanding s/v for f=100 rejected spec-conformant
+ * clients outright — silently, since q=2 suppresses the error reply. */
+static bool k_needs_dimensions(const KittyParams *p)
+{
+    return p->format != 100;
+}
+
 static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
                               const uint8_t *payload, size_t payload_len,
                               bool is_frame, bool place_at_cursor)
@@ -425,7 +448,9 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
     if (p->has_more && p->more == 1) {
         if (!g_chunk.active) {
             /* First chunk must carry the metadata for the decode. */
-            if (!p->has_format || !p->has_width || !p->has_height) {
+            k_default_format(p);
+            if (k_needs_dimensions(p) &&
+                (!p->has_width || !p->has_height)) {
                 if (!p->quiet)
                     k_emit_error(vt, p->image_id, "EINVAL:missing format/dimensions");
                 return;
@@ -522,8 +547,11 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         memset(&g_chunk, 0, sizeof(g_chunk));
     }
 
-    /* Single-shot transmit must carry the metadata itself. */
-    if (!p->has_format || !p->has_width || !p->has_height) {
+    /* Single-shot transmit must carry the metadata itself. The format
+     * defaults to RGBA when f= is omitted (kitty's rule); the s/v pair
+     * is required only for the raw formats (see k_needs_dimensions). */
+    k_default_format(p);
+    if (k_needs_dimensions(p) && (!p->has_width || !p->has_height)) {
         if (!p->quiet)
             k_emit_error(vt, p->image_id, "EINVAL:missing format/dimensions");
         return;

@@ -1225,6 +1225,115 @@ static void test_scroll_culls_kitty_only(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 17. PNG (f=100) carries its size — s/v are not required         */
+/* --------------------------------------------------------------- */
+
+/* A 2x2 RGBA PNG (r=128, g=64, b=32, a=128), base64-encoded. */
+static const char *PNG_2X2_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGNocFBoAGEGGAMAMdIFgRA3teIAAAAASUVORK5CYII=";
+
+/* The protocol's PNG form is "ESC _ G f=100 ; <payload> ESC \": no s/v,
+ * because the size is read from the PNG data itself, and its minimal
+ * chunked sender puts only "a=T,f=100," on the first chunk. Requiring
+ * the pair rejected both — silently, since q=2 suppresses the error
+ * reply — so a spec-conformant client saw nothing placed where kitty
+ * renders the image. */
+static void test_png_transmit_without_dimensions(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    char seq[512];
+    snprintf(seq, sizeof(seq), "\x1b_Ga=T,f=100,i=7;%s\x1b\\", PNG_2X2_B64);
+    feed(vt, seq);
+
+    /* Valid without s/v: no EINVAL. */
+    ASSERT_TRUE(strstr(g_output, "EINVAL") == NULL);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].source, IMG_SRC_KITTY);
+    ASSERT_EQ(imgs[0].width_px, 2);
+    ASSERT_EQ(imgs[0].height_px, 2);
+    ASSERT_EQ(imgs[0].rgba[0], 128);
+    ASSERT_EQ(imgs[0].rgba[3], 128);
+
+    /* a=T placed it, sized from the decoded pixels (2x2 px in a 10x6
+     * cell is one cell). */
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ((long long)pls[0].image_id, 7);
+    ASSERT_EQ(pls[0].cols, 1);
+    ASSERT_EQ(pls[0].rows, 1);
+
+    cfr_free(vt);
+}
+
+/* The same in the protocol's minimal chunked form: the control data
+ * (here a=T,f=100) rides the first chunk only, continuations carry m=. */
+static void test_png_chunked_without_dimensions(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    size_t half = strlen(PNG_2X2_B64) / 2;
+    char first[128], second[128];
+    memcpy(first, PNG_2X2_B64, half);
+    first[half] = '\0';
+    strcpy(second, PNG_2X2_B64 + half);
+
+    char seq[512];
+    snprintf(seq, sizeof(seq), "\x1b_Ga=T,f=100,i=9,m=1;%s\x1b\\", first);
+    feed(vt, seq);
+    snprintf(seq, sizeof(seq), "\x1b_Gm=1;%s\x1b\\", second);
+    feed(vt, seq);
+    snprintf(seq, sizeof(seq), "\x1b_Gm=0\x1b\\");
+    feed(vt, seq);
+
+    ASSERT_TRUE(strstr(g_output, "EINVAL") == NULL);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].width_px, 2);
+    ASSERT_EQ(imgs[0].height_px, 2);
+    ASSERT_EQ(imgs[0].rgba[0], 128);
+
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ((long long)pls[0].image_id, 9);
+
+    cfr_free(vt);
+}
+
+/* The exemption is PNG's alone: a raw format's payload length is derived
+ * from s/v, so an s/v-less f=32 transfer is still invalid. */
+static void test_raw_transmit_still_needs_dimensions(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,i=5;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    ASSERT_TRUE(strstr(g_output, "EINVAL") != NULL);
+
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 0);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* main                                                           */
 /* --------------------------------------------------------------- */
 
@@ -1267,6 +1376,9 @@ int main(int argc, char *argv[])
     RUN_TEST(test_frame_keeps_placements);
     RUN_TEST(test_clear_on_ed_kitty_only);
     RUN_TEST(test_scroll_culls_kitty_only);
+    RUN_TEST(test_png_transmit_without_dimensions);
+    RUN_TEST(test_png_chunked_without_dimensions);
+    RUN_TEST(test_raw_transmit_still_needs_dimensions);
 
     TEST_SUMMARY();
 }
