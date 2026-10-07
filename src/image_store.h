@@ -34,7 +34,7 @@
 typedef struct
 {
     uint64_t id;
-    uint32_t version;
+    uint32_t version; /* pixel generation from version_seq; never repeats */
     uint8_t layer;    /* 0 = foreground, 1 = background */
     uint8_t source;   /* IMG_SRC_* */
     long abs_line;    /* absolute line index of the image's top row */
@@ -82,6 +82,11 @@ typedef struct CfrImgStore
     CfrImg *imgs;
     int img_count, img_cap;
     uint64_t next_id;
+    /* Pixel-generation counter: every store or replace of pixel data
+     * stamps the record with ++version_seq, so an (id, version) pair
+     * never repeats for different pixels — even when a named image is
+     * removed and re-added under the same id (kitty re-transmit). */
+    uint32_t version_seq;
     size_t live_bytes;
 
     /* Tier 1b: placement records (for 1:N systems) */

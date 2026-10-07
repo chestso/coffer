@@ -460,9 +460,12 @@ uint32_t cfr_default_palette_rgb(uint8_t index);
  *
  * `id` is stable across frames for the same image (use it as a texture
  * cache key); `version` bumps whenever the pixels at that id change
- * (animation / in-place frame replacement), so the host re-uploads only
- * when it must. `layer` is 0 for foreground (drawn over text); layer 1
- * (background, drawn behind text) is reserved for a future extension.
+ * (animation / in-place frame replacement / kitty same-id re-transmit),
+ * so the host re-uploads only when it must. Versions come from a
+ * store-global monotonic counter, so a removed-and-re-added id never
+ * reuses a version for different pixels. `layer` is 0 for foreground
+ * (drawn over text); layer 1 (background, drawn behind text) is
+ * reserved for a future extension.
  */
 /* Image source identifiers for the `source` field on CfrImage. */
 enum

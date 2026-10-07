@@ -312,7 +312,7 @@ int cfr_img_add(void *vt, CfrImgStore *st,
             st->live_bytes += cap;
         }
         memcpy(r->rgba, rgba, need);
-        r->version++;
+        r->version = ++st->version_seq;
         r->w = disp_w;
         r->h = disp_h;
         r->buf_w = w;
@@ -347,7 +347,7 @@ int cfr_img_add(void *vt, CfrImgStore *st,
 
     CfrImg *r = &st->imgs[st->img_count++];
     r->id = st->next_id++;
-    r->version = 1;
+    r->version = ++st->version_seq;
     r->layer = layer;
     r->source = source;
     r->abs_line = abs_line;
@@ -401,6 +401,7 @@ int cfr_img_add_named(void *vt, CfrImgStore *st,
         r->h = h;
         r->layer = layer;
         r->source = source;
+        r->version = ++st->version_seq;
         return existing;
     }
 
@@ -426,7 +427,7 @@ int cfr_img_add_named(void *vt, CfrImgStore *st,
 
     CfrImg *r = &st->imgs[st->img_count++];
     r->id = id;
-    r->version = 1;
+    r->version = ++st->version_seq;
     r->layer = layer;
     r->source = source;
     r->abs_line = 0;
@@ -499,7 +500,7 @@ int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
 
     CfrImg *r = &st->imgs[st->img_count++];
     r->id = id;
-    r->version = 1;
+    r->version = ++st->version_seq;
     r->layer = layer;
     r->source = source;
     r->abs_line = 0;
@@ -520,7 +521,7 @@ void cfr_img_mark_dirty(CfrImgStore *st, int idx)
 {
     if (idx < 0 || idx >= st->img_count)
         return;
-    st->imgs[idx].version++;
+    st->imgs[idx].version = ++st->version_seq;
 }
 
 void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
@@ -548,7 +549,7 @@ void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
     r->h = h;
     r->buf_w = w;
     r->buf_h = h;
-    r->version++;
+    r->version = ++st->version_seq;
 
     int cell_h = ((CfrTerm *)vt)->cell_h_px;
     int cell_w = ((CfrTerm *)vt)->cell_w_px;

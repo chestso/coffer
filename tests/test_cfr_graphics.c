@@ -1112,6 +1112,59 @@ static void test_retransmit_id_drops_placements(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 15bb. Re-transmitting an id bumps the image version               */
+/* --------------------------------------------------------------- */
+
+/* Hosts cache textures keyed on (id, version): the version must change
+ * whenever the pixels at an id change, even though a re-transmit
+ * deletes the image record and stores a fresh one under the same id —
+ * otherwise the host keeps serving the previous image's pixels. */
+static void test_retransmit_id_bumps_version(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba1[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba1, sizeof(rgba1), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    uint32_t v0 = imgs[0].version;
+
+    /* Same id, same dimensions, new pixels. */
+    uint8_t rgba2[4] = { 0, 255, 0, 255 };
+    b64_encode(rgba2, sizeof(rgba2), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_TRUE(imgs[0].version > v0); /* host cache must re-upload */
+    ASSERT_EQ(imgs[0].rgba[1], 255);   /* new pixels */
+
+    /* Once more: versions must never repeat for an id whose pixels
+     * changed. */
+    uint32_t v1 = imgs[0].version;
+    b64_encode(rgba1, sizeof(rgba1), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_TRUE(imgs[0].version > v1);
+    ASSERT_EQ(imgs[0].rgba[0], 255);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* 15c. a=f animation frame keeps placements                        */
 /* --------------------------------------------------------------- */
 
@@ -1373,6 +1426,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_transmit_taller_than_screen_no_spin);
     RUN_TEST(test_transmit_no_id_creates_new_image);
     RUN_TEST(test_retransmit_id_drops_placements);
+    RUN_TEST(test_retransmit_id_bumps_version);
     RUN_TEST(test_frame_keeps_placements);
     RUN_TEST(test_clear_on_ed_kitty_only);
     RUN_TEST(test_scroll_culls_kitty_only);

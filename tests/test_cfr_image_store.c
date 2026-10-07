@@ -236,6 +236,32 @@ static void test_img_replace(void)
     cfr_free(vt);
 }
 
+/* Storing new pixels under an existing named id must bump the version,
+ * exactly like cfr_img_replace does — hosts key their texture cache on
+ * (id, version) and re-upload only when the version changes. */
+static void test_img_add_named_replace_bumps_version(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba1 = make_rgba(4, 4, 255, 0, 0, 255);
+    int idx = cfr_img_add_named(vt, st, 42, rgba1, 4, 4, 0, IMG_SRC_KITTY);
+    free(rgba1);
+    ASSERT_TRUE(idx >= 0);
+    uint32_t v1 = st->imgs[idx].version;
+
+    /* Same id, same dimensions, new pixels. */
+    uint8_t *rgba2 = make_rgba(4, 4, 0, 255, 0, 255);
+    int idx2 = cfr_img_add_named(vt, st, 42, rgba2, 4, 4, 0, IMG_SRC_KITTY);
+    free(rgba2);
+    ASSERT_EQ(idx2, idx);
+    ASSERT_TRUE(st->imgs[idx].version > v1);
+    ASSERT_EQ(st->imgs[idx].rgba[1], 255); /* G */
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
 /* --------------------------------------------------------------- */
 /* 3. Eviction: oldest abs_line first under budget                */
 /* --------------------------------------------------------------- */
@@ -640,6 +666,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_img_add_advances_cursor);
     RUN_TEST(test_img_find_at);
     RUN_TEST(test_img_replace);
+    RUN_TEST(test_img_add_named_replace_bumps_version);
     RUN_TEST(test_img_evict_oldest_first);
     RUN_TEST(test_img_scroll_cull);
     RUN_TEST(test_img_clear_display_rows);
