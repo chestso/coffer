@@ -363,6 +363,30 @@ grapheme logic stays in `src/width.c`, which includes the header; the
 its own names (boba keeps such a copy so it stays free of any dependency
 on coffer). Never hand-edit the generated header.
 
+### Regenerating the emoji ZWJ sequence fixture
+
+`tests/zwj_sequences.h` holds every `RGI_Emoji_ZWJ_Sequence` from
+`emoji-zwj-sequences.txt`; `tests/test_cfr_zwj.c` walks all of them and
+asserts each one clusters into a single 2-cell cell. To regenerate and
+commit the fixture when the target Emoji version moves:
+
+```sh
+python3 src/scripts/gen_zwj_sequences.py --out tests/zwj_sequences.h
+```
+
+The script downloads the file from `www.unicode.org` into memory. To use a
+local copy instead:
+
+```sh
+python3 src/scripts/gen_zwj_sequences.py --ucd /path/to/emoji --out tests/zwj_sequences.h
+```
+
+The header is data-only — one sequence per line, space-separated, with ZWJ
+and the variation selectors escaped as `\uXXXX` so the joiners stay visible
+— and carries the same provenance banner as `unicode_tables.h`: the Emoji
+version, the SHA-256 of the data file and of the generator, and the exact
+command that produced it. Never hand-edit it.
+
 ## cfr-debug
 
 A headless PTY inspector tool (`contrib/cfr-debug/`) that spawns a child

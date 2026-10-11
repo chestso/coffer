@@ -12,6 +12,7 @@ EXTRA_DIST = \
     build-aux/git-version.sh \
     scripts \
     src/scripts/gen_unicode_tables.py \
+    src/scripts/gen_zwj_sequences.py \
     docs \
     third_party/stb/stb_image.h \
     README.md \
