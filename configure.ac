@@ -43,7 +43,15 @@ esac
 AM_CONDITIONAL([HOST_WINDOWS], [test "x$host_windows" = "xyes"])
 
 dnl Programs
-user_cflags="$CFLAGS"
+dnl Whether the caller supplied CFLAGS, asked of the environment rather than
+dnl read off $CFLAGS: AC_USE_SYSTEM_EXTENSIONS above AC_REQUIREs AC_PROG_CC,
+dnl so autoconf hoists the compiler probe — and with it the "-g -O2" CFLAGS
+dnl default — above this line. $CFLAGS is therefore already non-empty here,
+dnl which used to disable the default ASan mode below without a word.
+dnl ac_cv_env_CFLAGS_set is computed at the top of configure, before any of
+dnl this. Note the distinction: an empty-but-exported CFLAGS counts as
+dnl supplied, and the mode below is left to the caller.
+user_cflags_set="$ac_cv_env_CFLAGS_set"
 AC_PROG_CC
 AM_PROG_AR
 AC_PROG_RANLIB
@@ -67,7 +75,7 @@ if test "x$enable_release" = "xyes"; then
 elif test "x$enable_debug" = "xyes"; then
   CFLAGS="-O0 -g3"
   AC_MSG_NOTICE([Debug mode: CFLAGS set to -O0 -g3])
-elif test "x$user_cflags" = "x"; then
+elif test "x$user_cflags_set" = "x"; then
   dnl ASan/UBSan is not available on Windows/MinGW. Fall back to
   dnl unsanitized debug when building natively on Windows (MinGW
   dnl does not ship libasan/libubsan).
