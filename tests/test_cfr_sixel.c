@@ -133,7 +133,9 @@ static void test_hls_hue(void)
     cfr_free(vt);
 }
 
-/* Cursor advances below the image by ceil(height/cell_h) rows. */
+/* The text cursor lands on the image's LAST row (VT340 ch14, "Sixel
+ * Scrolling Mode": the cursor is set to the sixel cursor position). The
+ * app prints its own break to get below the image. */
 static void test_cursor_advance(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -147,7 +149,31 @@ static void test_cursor_advance(void)
     ASSERT_EQ(s[0].height_px, 12);
 
     CfrCursor cur = cfr_get_cursor(vt);
-    ASSERT_EQ(cur.row, 2); /* advanced two rows */
+    ASSERT_EQ(cur.row, 1); /* the image's last row (2 rows tall) */
+    ASSERT_EQ(cur.col, 0);
+    cfr_free(vt);
+}
+
+/* A sixel anchored on the bottom margin scrolls into view and leaves the
+ * cursor on its last row — the same spec landing, one row short of the
+ * iTerm2 "below" behavior. */
+static void test_cursor_advance_at_bottom_margin(void)
+{
+    CfrTerm *vt = make_term(4, 20);
+    cfr_set_cell_pixels(vt, 10, 6);
+    feed(vt, "\x1b[4;1H"); /* CUP to the bottom-left */
+    /* Two bands tall → 2 cells; the second row needs a scroll. */
+    feed(vt, "\x1bPq#1;2;0;100;0#1~-#1~\x1b\\");
+
+    int n = -1;
+    const CfrImage *s = cfr_get_images(vt, &n);
+    ASSERT_EQ(n, 1);
+    ASSERT_EQ(s[0].height_px, 12);
+
+    /* The image scrolled up one line; the cursor sits on its last row. */
+    ASSERT_EQ(s[0].row, vt->rows - 2);
+    CfrCursor cur = cfr_get_cursor(vt);
+    ASSERT_EQ(cur.row, vt->rows - 1);
     ASSERT_EQ(cur.col, 0);
     cfr_free(vt);
 }
@@ -359,6 +385,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_rle);
     RUN_TEST(test_hls_hue);
     RUN_TEST(test_cursor_advance);
+    RUN_TEST(test_cursor_advance_at_bottom_margin);
     RUN_TEST(test_inplace_animation);
     RUN_TEST(test_scroll_into_scrollback);
     RUN_TEST(test_clear_on_ed);

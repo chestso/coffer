@@ -174,12 +174,30 @@ static void test_img_add_advances_cursor(void)
     CfrTerm *vt = make_term(24, 80);
     CfrImgStore *st = cfr_img_store_new(vt);
 
-    /* Image is 10px wide, 10px tall, cell is 10x6 → 1 col, 2 rows */
+    /* Image is 10px wide, 10px tall, cell is 10x6 → 1 col, 2 rows.
+     * Sixel lands the cursor on the image's LAST row (VT340 spec). */
     uint8_t *rgba = make_rgba(10, 10, 0, 255, 0, 255);
     cfr_img_add(vt, st, rgba, 10, 10, 0, 0, 0, IMG_SRC_SIXEL);
     free(rgba);
 
-    /* Cursor should have advanced 2 rows down */
+    ASSERT_EQ(vt->cursor.row, 1);
+    ASSERT_EQ(vt->cursor.col, 0);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* iTerm2 1337 keeps the "cursor below the image" landing. */
+static void test_img_add_iterm2_advances_below(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 10, 0, 255, 0, 255);
+    cfr_img_add(vt, st, rgba, 10, 10, 0, 0, 0, IMG_SRC_ITERM);
+    free(rgba);
+
+    /* 10px tall in a 6px cell → 2 rows; the cursor goes below both. */
     ASSERT_EQ(vt->cursor.row, 2);
     ASSERT_EQ(vt->cursor.col, 0);
 
@@ -283,7 +301,10 @@ static void test_img_evict_oldest_first(void)
         uint8_t *rgba = make_rgba(10, 6, (uint8_t)(i & 0xff), 0, 0, 255);
         cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
         free(rgba);
-        /* Move cursor down so each image gets a different abs_line */
+        /* Move the cursor down so each image gets a different abs_line
+         * (the sixel landing leaves a 1-row image's cursor ON its own
+         * row — same-anchor images coalesce, by design). */
+        feed(vt, "\n");
     }
 
     /* Should be capped at IMG_MAX_IMAGES */
@@ -359,6 +380,7 @@ static void test_img_clear_all(void)
         uint8_t *rgba = make_rgba(10, 6, 0, 0, 255, 255);
         cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
         free(rgba);
+        feed(vt, "\n"); /* distinct anchors (see test_img_evict_oldest_first) */
     }
     ASSERT_EQ(st->img_count, 3);
 
@@ -664,6 +686,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_buf_pool_overflow_frees);
     RUN_TEST(test_img_add_basic);
     RUN_TEST(test_img_add_advances_cursor);
+    RUN_TEST(test_img_add_iterm2_advances_below);
     RUN_TEST(test_img_find_at);
     RUN_TEST(test_img_replace);
     RUN_TEST(test_img_add_named_replace_bumps_version);
