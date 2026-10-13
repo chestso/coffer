@@ -8,6 +8,7 @@ Emits a data-only header — sorted, non-overlapping {lo, hi} ranges and a
     UAX #11 East Asian Width     classes W/F (wide), class A (ambiguous)
     UAX #29 Grapheme Cluster     GCB Extend, ZWJ, SpacingMark, Prepend
     UTS #51 emoji-data           Extended_Pictographic
+    UTS #51 variation sequences  text-presentation (VS15) bases
     DerivedCoreProperties        Default_Ignorable_Code_Point
 
 The output carries a provenance banner: the Unicode version and SHA-256 of
@@ -42,6 +43,7 @@ from collections import defaultdict
 from typing import Iterable
 
 CP_RANGE = re.compile(r"^([0-9A-Fa-f]+)(?:\.\.([0-9A-Fa-f]+))?\s*;\s*([^#\s]+)")
+VS15_SEQ = re.compile(r"^([0-9A-Fa-f]{4,6})\s+FE0E\s*;")
 UCD_VERSION = re.compile(r"^#\s+(\S+)-(\d+\.\d+\.\d+)\.txt")
 UCD_VERSION_LINE = re.compile(r"^#\s+Version:\s*(\d+\.\d+\.\d+)")
 
@@ -51,6 +53,7 @@ UCD_FILES = [
     "EastAsianWidth.txt",
     "auxiliary/GraphemeBreakProperty.txt",
     "emoji/emoji-data.txt",
+    "emoji/emoji-variation-sequences.txt",
     "DerivedCoreProperties.txt",
 ]
 
@@ -100,6 +103,24 @@ def parse_props(data: bytes) -> dict[str, list[tuple[int, int]]]:
         lo = int(m.group(1), 16)
         hi = int(m.group(2), 16) if m.group(2) else lo
         out[m.group(3)].append((lo, hi))
+    return out
+
+
+def parse_vs15_bases(data: bytes) -> list[tuple[int, int]]:
+    """Bases with a text-presentation sequence, i.e. `BASE FE0E` in
+    emoji-variation-sequences.txt. A base is here only if UTS #51 defines
+    a *text* glyph for it, which is exactly the set a VS15 request can
+    narrow to one cell — the CJK ideographs and the text-glyph-less SMP
+    emoji are absent, so they keep their East Asian width."""
+    out: list[tuple[int, int]] = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        m = VS15_SEQ.match(line)
+        if m:
+            cp = int(m.group(1), 16)
+            out.append((cp, cp))
     return out
 
 
@@ -217,6 +238,11 @@ def main(argv: list[str]) -> int:
             "EXT_PICT",
             "Extended_Pictographic — GB11's ZWJ-suppression test",
             coalesce(emo.get("Extended_Pictographic", [])),
+        ),
+        (
+            "TEXT_PRES",
+            "UTS #51 text-presentation bases — a VS15 (U+FE0E) cluster over these is one cell",
+            coalesce(parse_vs15_bases(ucd["emoji/emoji-variation-sequences.txt"])),
         ),
     ]
 

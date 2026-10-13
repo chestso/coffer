@@ -9,12 +9,17 @@
  *   CFR_WIDE      UAX #11 W/F — always two cells.
  *   CFR_ZERO      Extend ∪ Control ∪ ZWJ ∪ Default_Ignorable — no cells.
  *   CFR_AMBIGUOUS UAX #11 A — two cells only when vt->ambiguous_wide.
+ *   CFR_TEXT_PRES UTS #51 bases with a text-presentation (VS15) sequence.
  *
  * Cluster width handles the user's primary goal: VS16 forces a 1-cell
  * emoji to 2 cells, RI pairs are 2 cells, combining marks attach
  * without widening. When a cluster carries both VS16 and VS15, the
- * last selector in the cluster decides the presentation (UTS #51);
- * VS15 cancels the doubling but never narrows a Wide base.
+ * last selector in the cluster decides the presentation (UTS #51).
+ * VS15 requests the TEXT presentation, so it takes one cell whenever
+ * UTS #51 defines a text glyph for the base (CFR_TEXT_PRES); a base
+ * with no text glyph — a CJK ideograph, an SMP emoji like U+1F600 —
+ * keeps its East Asian width, because collapsing those to one cell
+ * would drift every following column.
  */
 
 #include "coffer_internal.h"
@@ -109,16 +114,21 @@ int cfr_cluster_width(CfrTerm *vt, const uint32_t *cps, uint32_t len)
      *   VS16 (emoji presentation) → 2 cells, even when the base is
      *     UAX #11 Narrow or Ambiguous — this is the shift libvterm
      *     cannot express without a lookahead hack.
-     *   VS15 (text presentation) → the base's East Asian width: it
-     *     cancels VS16's doubling but never narrows a Wide base — CJK
-     *     and emoji-presentation codepoints have no 1-cell glyph, and
-     *     collapsing them to one cell would corrupt the column grid.
-     *     Ambiguous bases keep the ambiguous_wide setting. */
+     *   VS15 (text presentation) → 1 cell when UTS #51 defines a text
+     *     glyph for the base (CFR_TEXT_PRES), which is the whole point
+     *     of the selector: the terminal is being asked for the narrow
+     *     monochrome form of what the bare codepoint presents as a
+     *     two-cell emoji. A base with no text sequence — CJK, an SMP
+     *     emoji like U+1F600 — has no one-cell glyph to fall back to,
+     *     so it keeps its East Asian width (and an Ambiguous base keeps
+     *     the ambiguous_wide setting). */
     for (uint32_t i = len; i-- > 0;) {
         if (cps[i] == 0xFE0Fu)
             return 2;
         if (cps[i] == 0xFE0Eu)
-            return cfr_codepoint_width(vt, cps[0]);
+            return range_lookup(CFR_TEXT_PRES, CFR_TEXT_PRES_LEN, cps[0])
+                       ? 1
+                       : cfr_codepoint_width(vt, cps[0]);
     }
     /* Otherwise: width of base codepoint. */
     return cfr_codepoint_width(vt, cps[0]);

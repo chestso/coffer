@@ -27,15 +27,6 @@ on. Order is roughly priority, not strict dependency.
   boundary split them) re-attaches to that cell in the same row and
   re-commits the combined cluster — cross-row re-attach stays a drop.
 
-- **VS15 keeps the base's East Asian width (no collapse).** A cluster
-  ending in U+FE0E takes the base's UAX #11 width instead of 1 cell:
-  CJK and other Wide bases stay 2 cells (no narrow glyph exists —
-  collapsing them would drift every following column), Ambiguous bases
-  keep the `ambiguous_wide` setting, and VS15 still cancels VS16's
-  doubling when both appear (the last selector wins, UTS #51). Revisit
-  only if the ecosystem settles on different text-presentation
-  semantics.
-
 - **Reflow does not carry lineage across the scrollback/grid split.**
   `cfr_reflow()` rewraps only the visible grid; a logical line whose
   earlier fragment is already in scrollback is re-emitted as separate

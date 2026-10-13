@@ -46,6 +46,7 @@ static void feed(CfrTerm *vt, const char *s)
 /* UTF-8 literals:
  *   "\xE2\x96\xB6"                   U+25B6 ▶  (Ambiguous)
  *   "\xE2\x9A\xA0"                   U+26A0 ⚠  (Neutral, narrow)
+ *   "\xE2\x9A\xA1"                   U+26A1 ⚡  (Wide, has a text sequence)
  *   "\xE2\x9D\xA4"                   U+2764 ❤  (Neutral, narrow)
  *   "\xEF\xB8\x8F"                   U+FE0F VS16
  *   "\xEF\xB8\x8E"                   U+FE0E VS15
@@ -75,10 +76,41 @@ static void test_cluster_width_presentation_selectors(void)
     ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x2764, 0xFE0F, 0x200D, 0x1F525 }, 4), 2);
 }
 
-static void test_vs15_never_narrows_wide_base(void)
+static void test_vs15_narrows_a_text_presentation_base(void)
 {
-    /* U+4E2D and U+1F600 are Wide; a stray VS15 must not collapse them
-     * to 1 cell or every following column shifts. */
+    /* U+26A1 ⚡ is Wide — the bare codepoint and the VS16 form are two
+     * cells — but UTS #51 defines a text-presentation sequence for it,
+     * so a VS15 request takes the one-cell text glyph. That is what the
+     * selector is FOR: asking for the narrow monochrome form of what the
+     * bare codepoint presents as a two-cell emoji. */
+    ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x26A1 }, 1), 2);
+    ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x26A1, 0xFE0F }, 2), 2);
+    ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x26A1, 0xFE0E }, 2), 1);
+    /* Both selectors: the LAST one wins, either way round. */
+    ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x26A1, 0xFE0F, 0xFE0E }, 3), 1);
+    ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x26A1, 0xFE0E, 0xFE0F }, 3), 2);
+    /* ⭐ U+2B50 is Wide with a text sequence too. */
+    ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x2B50 }, 1), 2);
+    ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x2B50, 0xFE0E }, 2), 1);
+
+    /* Grid form: the one-cell bolt leaves its neighbour alone — the next
+     * character lands in column 1, and column 0 is a whole cell with no
+     * continuation behind it. */
+    CfrTerm *vt = make_term(4, 8, false, false);
+    feed(vt, "\xE2\x9A\xA1\xEF\xB8\x8E"
+             "A");
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, 0x26A1u);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->width, 1);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 1)->cp, (uint32_t)'A');
+    ASSERT_EQ(cfr_get_cell(vt, 0, 1)->width, 1);
+    cfr_free(vt);
+}
+
+static void test_vs15_keeps_a_base_without_a_text_glyph_wide(void)
+{
+    /* U+4E2D and U+1F600 are Wide and have no text-presentation sequence
+     * — there is no one-cell glyph to ask for — so a stray VS15 must not
+     * collapse them to 1 cell or every following column shifts. */
     ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x4E2D }, 1), 2);
     ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x4E2D, 0xFE0E }, 2), 2);
     ASSERT_EQ(cfr_cluster_width(NULL, (uint32_t[]){ 0x1F600, 0xFE0E }, 2), 2);
@@ -97,8 +129,10 @@ static void test_vs15_never_narrows_wide_base(void)
 
 static void test_vs15_ambiguous_base_keeps_setting(void)
 {
-    /* U+25B6 is East Asian Ambiguous. VS15 leaves the width decision to
-     * the ambiguous policy; VS16 doubles unconditionally. */
+    /* U+25B6 ▶ is East Asian Ambiguous AND has a text-presentation
+     * sequence. VS16 doubles unconditionally; VS15 is an explicit
+     * request for the text glyph, so it narrows to one cell even under
+     * ambiguous_wide — the request beats the class default. */
     CfrTerm *vt = make_term(4, 8, false, false);
     ASSERT_EQ(cfr_cluster_width(vt, (uint32_t[]){ 0x25B6 }, 1), 1);
     ASSERT_EQ(cfr_cluster_width(vt, (uint32_t[]){ 0x25B6, 0xFE0E }, 2), 1);
@@ -107,7 +141,7 @@ static void test_vs15_ambiguous_base_keeps_setting(void)
 
     vt = make_term(4, 8, true, false);
     ASSERT_EQ(cfr_cluster_width(vt, (uint32_t[]){ 0x25B6 }, 1), 2);
-    ASSERT_EQ(cfr_cluster_width(vt, (uint32_t[]){ 0x25B6, 0xFE0E }, 2), 2);
+    ASSERT_EQ(cfr_cluster_width(vt, (uint32_t[]){ 0x25B6, 0xFE0E }, 2), 1);
     ASSERT_EQ(cfr_cluster_width(vt, (uint32_t[]){ 0x25B6, 0xFE0F }, 2), 2);
     cfr_free(vt);
 }
@@ -185,15 +219,18 @@ static void test_vs15_stays_narrow_at_margin(void)
     cfr_free(vt);
 }
 
-static void test_vs15_ambiguous_wide_wraps(void)
+static void test_vs15_ambiguous_wide_stays_narrow_at_margin(void)
 {
-    /* Under ambiguous_wide, ▶︎ keeps its (wide) base width, so it still
-     * wraps eagerly at the margin — VS15 cancels only VS16's doubling. */
+    /* Under ambiguous_wide, ▶︎ still narrows to 1 cell: VS15 is an
+     * explicit request for the text glyph and beats the class default,
+     * so the cluster fills the margin like any narrow character instead
+     * of wrapping eagerly. */
     CfrTerm *vt = make_term(4, 4, true, false);
     feed(vt, "abc\xE2\x96\xB6\xEF\xB8\x8E");
-    ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, 0x25B6u);
-    ASSERT_EQ(cfr_get_cell(vt, 1, 0)->width, 2);
-    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    ASSERT_EQ(cfr_get_cell(vt, 0, 3)->cp, 0x25B6u);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 3)->width, 1);
+    ASSERT_TRUE(PENDING_WRAP(vt));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
     cfr_free(vt);
 }
 
@@ -574,14 +611,15 @@ int main(int argc, char *argv[])
     test_parse_args(argc, argv);
 
     RUN_TEST(test_cluster_width_presentation_selectors);
-    RUN_TEST(test_vs15_never_narrows_wide_base);
+    RUN_TEST(test_vs15_narrows_a_text_presentation_base);
+    RUN_TEST(test_vs15_keeps_a_base_without_a_text_glyph_wide);
     RUN_TEST(test_vs15_ambiguous_base_keeps_setting);
     RUN_TEST(test_ambiguous_narrow_fits_margin);
     RUN_TEST(test_ambiguous_wide_eager_wrap);
     RUN_TEST(test_vs16_eager_wrap);
     RUN_TEST(test_vs16_fits_exactly);
     RUN_TEST(test_vs15_stays_narrow_at_margin);
-    RUN_TEST(test_vs15_ambiguous_wide_wraps);
+    RUN_TEST(test_vs15_ambiguous_wide_stays_narrow_at_margin);
     RUN_TEST(test_vs16_no_autowrap_overwrites_margin);
     RUN_TEST(test_ambiguous_wide_pure_line_wraps);
     RUN_TEST(test_multi_emoji_line_wraps_and_joins);

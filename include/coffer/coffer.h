@@ -624,9 +624,10 @@ bool cfr_have_lottie(void);
  * Cluster-aware: codepoints are grouped with the same grapheme-break
  * predicate and cluster width rule the grid uses, so an emoji
  * presentation sequence (base + U+FE0F) measures 2 cells, a regional
- * indicator pair 2, and a VS15 (text presentation) sequence falls back
- * to the base width. East Asian Ambiguous codepoints are always narrow
- * here — ambiguous width is a per-terminal setting (CfrConfig
+ * indicator pair 2, and a VS15 (text presentation) sequence measures 1
+ * cell when UTS #51 defines a text glyph for the base (the base's East
+ * Asian width otherwise). East Asian Ambiguous codepoints are always
+ * narrow here — ambiguous width is a per-terminal setting (CfrConfig
  * .ambiguous_wide); with it enabled, measure through a CfrTerm instead
  * (the grid cells carry the effective widths).
  *
