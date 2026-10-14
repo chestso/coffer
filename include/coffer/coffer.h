@@ -429,6 +429,32 @@ bool cfr_get_mode(const CfrTerm *vt, CfrMode mode);
 bool cfr_row_is_continuation(const CfrTerm *vt, int row);
 
 /* ------------------------------------------------------------------ */
+/* Introspection (row text + unified-buffer search)                    */
+/* ------------------------------------------------------------------ */
+
+/* Flatten one unified row into UTF-8 text: erased/printed blanks become
+ * spaces, continuation cells of wide clusters are skipped,
+ * multi-codepoint graphemes are encoded whole. Cells that were never
+ * written carry no content at all (cp == 0, width == 0,
+ * indistinguishable from continuation cells by design — reflow drops
+ * them too) and are collapsed: a cursor-positioned gap does not flatten
+ * to spaces. Unified coordinates: `row` >= 0 is a visible row,
+ * `row` < 0 is scrollback depth (-1 = the line most recently scrolled
+ * off). Returns the number of bytes written, excluding the NUL
+ * terminator; the output is NUL-terminated whenever `cap` > 0.
+ * Out-of-range rows produce an empty string. */
+size_t cfr_row_text(const CfrTerm *vt, int row, char *buf, size_t cap);
+
+/* Search the unified buffer — scrollback (oldest first), then the
+ * visible rows — for `needle` (matched as UTF-8). With `line_end` a
+ * row matches only when it ends with the needle (trailing blanks
+ * trimmed). A NULL or empty needle is an immediate match with
+ * *out_row = 0. On a match returns true and reports the unified row
+ * via *out_row (< 0 = scrollback depth). */
+bool cfr_find_text(CfrTerm *vt, const char *needle, bool line_end,
+                   int *out_row);
+
+/* ------------------------------------------------------------------ */
 /* Palette and default colors                                          */
 /* ------------------------------------------------------------------ */
 

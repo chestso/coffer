@@ -956,40 +956,6 @@ static void utf8_put(uint32_t cp)
     }
 }
 
-/* Encode one codepoint into buf; returns the bytes written (0 when it
- * does not fit). */
-static size_t utf8_encode(uint32_t cp, char *buf, size_t cap)
-{
-    if (cp < 0x80) {
-        if (cap < 1)
-            return 0;
-        buf[0] = (char)cp;
-        return 1;
-    }
-    if (cp < 0x800) {
-        if (cap < 2)
-            return 0;
-        buf[0] = (char)(0xC0 | (cp >> 6));
-        buf[1] = (char)(0x80 | (cp & 0x3F));
-        return 2;
-    }
-    if (cp < 0x10000) {
-        if (cap < 3)
-            return 0;
-        buf[0] = (char)(0xE0 | (cp >> 12));
-        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
-        buf[2] = (char)(0x80 | (cp & 0x3F));
-        return 3;
-    }
-    if (cap < 4)
-        return 0;
-    buf[0] = (char)(0xF0 | (cp >> 18));
-    buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
-    buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
-    buf[3] = (char)(0x80 | (cp & 0x3F));
-    return 4;
-}
-
 static void render_row_text(CfrTerm *vt, int row, int cols)
 {
     for (int c = 0; c < cols; c++) {
@@ -1081,100 +1047,12 @@ static void render_grid(CfrTerm *vt, int rows, int cols,
 }
 
 /* ================================================================ */
-/* Unified-buffer search                                            */
+/* Unified-buffer search (cfr_row_text / cfr_find_text in the library) */
 /* ================================================================ */
 
 /* Bytes reserved per cell when flattening a row: a grapheme cluster
  * holds at most CFR_CLUSTER_MAX (16) codepoints, 4 bytes each. */
 #define ROW_UTF8_PER_CELL 64
-
-/* Flatten one unified row (>= 0 visible, < 0 scrollback, -1 = most
- * recent) into UTF-8 text: spaces for blanks, continuation cells
- * skipped, graphemes encoded whole. Returns the byte length. */
-static size_t row_text(CfrTerm *vt, int row, int cols, char *buf, size_t cap)
-{
-    size_t n = 0;
-    for (int c = 0; c < cols; c++) {
-        const CfrCell *cell = (row >= 0)
-                                  ? cfr_get_cell(vt, row, c)
-                                  : cfr_get_scrollback_cell(vt, -row - 1, c);
-        if (!cell)
-            break;
-        if (cell->width == 0)
-            continue; /* continuation of a wide cluster */
-        if (n + 8 >= cap)
-            break;
-        if (cell->cp == 0 || cell->cp == 0x20) {
-            buf[n++] = ' ';
-            continue;
-        }
-        uint32_t cps[32];
-        size_t nc = cfr_cell_get_grapheme(vt, cell, cps, 32);
-        if (nc == 0) {
-            buf[n++] = ' ';
-            continue;
-        }
-        for (size_t i = 0; i < nc && n + 8 < cap; i++)
-            n += utf8_encode(cps[i], buf + n, cap - n);
-    }
-    buf[n] = '\0';
-    return n;
-}
-
-static int row_matches(const char *row, const char *needle, int line_end)
-{
-    if (!line_end)
-        return strstr(row, needle) != NULL;
-    size_t len = strlen(row);
-    while (len > 0 && row[len - 1] == ' ')
-        len--; /* trim trailing blanks */
-    size_t nlen = strlen(needle);
-    if (nlen > len)
-        return 0;
-    return memcmp(row + (len - nlen), needle, nlen) == 0;
-}
-
-/* Search the unified buffer — scrollback (oldest first) then the
- * visible rows — for `needle`. With `line_end` a row matches only when
- * it ends with the needle. Returns 1 on a match and reports the unified
- * row (*out_row < 0 = scrollback depth). */
-static int unified_find(CfrTerm *vt, const char *needle, int line_end,
-                        int *out_row)
-{
-    if (!vt || !needle || !*needle)
-        return 1;
-    int rows = 0, cols = 0;
-    cfr_get_dimensions(vt, &rows, &cols);
-    if (cols <= 0)
-        return 0;
-    size_t cap = (size_t)cols * ROW_UTF8_PER_CELL + 1;
-    char *buf = malloc(cap);
-    if (!buf)
-        return 0;
-
-    int found = 0;
-    int sb_lines = cfr_get_scrollback_lines(vt);
-    for (int sb = sb_lines - 1; sb >= 0 && !found; sb--) {
-        int unified = -(sb + 1);
-        row_text(vt, unified, cols, buf, cap);
-        found = row_matches(buf, needle, line_end);
-        if (found && out_row)
-            *out_row = unified;
-    }
-    for (int r = 0; r < rows && !found; r++) {
-        row_text(vt, r, cols, buf, cap);
-        found = row_matches(buf, needle, line_end);
-        if (found && out_row)
-            *out_row = r;
-    }
-    free(buf);
-    return found;
-}
-
-static int grid_contains(CfrTerm *vt, const char *needle)
-{
-    return unified_find(vt, needle, 0, NULL);
-}
 
 /* ================================================================ */
 /* Escape expansion                                                 */
@@ -1243,7 +1121,7 @@ static void render_scrollback(CfrTerm *vt, int cols)
     if (!buf)
         return;
     for (int sb = lines - 1; sb >= 0; sb--) {
-        row_text(vt, -(sb + 1), cols, buf, cap);
+        cfr_row_text(vt, -(sb + 1), buf, cap);
         printf("%2d|%s\n", -(sb + 1), buf);
     }
     free(buf);
@@ -1260,7 +1138,7 @@ static int wait_for(CfrTerm *vt, PtyCtx *pty, const char *needle,
     int row = 0;
 
     for (;;) {
-        if (unified_find(vt, needle, line_end, &row)) {
+        if (cfr_find_text(vt, needle, line_end, &row)) {
             if (row < 0)
                 fprintf(stderr,
                         "[%d] wait-for \"%s\": found at scrollback row %d "
@@ -1459,7 +1337,7 @@ static int run_script(ScriptCtx *ctx, const char *script_path)
             fprintf(stderr, "[%d] raw: %d bytes\n", line_num, n);
             pty_write(pty, (const char *)bytes, (size_t)n);
         } else if (strcmp(cmd, "assert-contains") == 0) {
-            if (!grid_contains(vt, args)) {
+            if (!cfr_find_text(vt, args, false, NULL)) {
                 fprintf(stderr, "[%d] FAIL: buffer does not contain \"%s\"\n",
                         line_num, args);
                 rc = 1;
@@ -1468,7 +1346,7 @@ static int run_script(ScriptCtx *ctx, const char *script_path)
             fprintf(stderr, "[%d] OK: buffer contains \"%s\"\n", line_num,
                     args);
         } else if (strcmp(cmd, "assert-not-contains") == 0) {
-            if (grid_contains(vt, args)) {
+            if (cfr_find_text(vt, args, false, NULL)) {
                 fprintf(stderr, "[%d] FAIL: buffer contains \"%s\"\n",
                         line_num, args);
                 rc = 1;

@@ -32,6 +32,7 @@ libcoffer_a_SOURCES = \
     hyperlink.c \
     log.c \
     selection.c \
+    introspect.c \
     coffer_internal.h \
     image_store.h \
     unicode_tables.h
