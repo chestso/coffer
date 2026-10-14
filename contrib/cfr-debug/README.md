@@ -49,24 +49,76 @@ cfr-debug [options] [-- command args...]
 | `-o`, `--output FILE`  | Save raw PTY output to file                   |
 | `-s`, `--show-row ROW` | Dump specific row (repeatable, default: all)  |
 | `-d`, `--cell-data`    | Dump raw cell data alongside text             |
+| `-S`, `--style-data`   | Dump style info (underline, colors)           |
 | `-q`, `--quiet`        | Only dump rows specified with `-s`            |
+| `--env KEY=VAL`        | Set a child env var (repeatable)              |
 | `-h`, `--help`         | Show help                                     |
-| `--help-spec`          | Emit machine-readable flag listing            |
+| `--help-spec`          | Emit machine-readable flag + command listing  |
+
+`--env` is applied after the built-ins (`TERM`, `COLORTERM`,
+`TERM_PROGRAM`), and an empty value unsets the variable — including a
+built-in, which is how a test pins a color tier:
+
+```sh
+cfr-debug --env COLORTERM= -- my-tui
+```
 
 ### Script file
 
 The `-f`/`--script FILE` option reads a script with one command per line:
 
-| Command                    | Description                                                                  |
-| -------------------------- | ---------------------------------------------------------------------------- |
-| `wait SECONDS`             | Drain PTY for N seconds (accepts decimals)                                   |
-| `send TEXT`                | Send text to PTY input (child's stdin). `\n`=LF, `\r`=CR, `\e`=ESC, `\t`=TAB |
-| `raw HEX [HEX ...]`        | Send literal bytes to PTY input (e.g. `raw ff fc 01` for IAC WONT ECHO)      |
-| `assert-contains TEXT`     | Fail (exit 1) if rendered grid does not contain TEXT                         |
-| `assert-not-contains TEXT` | Fail (exit 1) if rendered grid contains TEXT                                 |
-| `render`                   | Dump current grid to stdout                                                  |
-| `cursor`                   | Dump cursor state (row, col, visible, blink)                                 |
-| `# comment`                | Skipped                                                                      |
+| Command                                | Description                                                                   |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| `wait SECONDS`                         | Drain PTY for N seconds (accepts decimals)                                    |
+| `wait-for "TEXT" [TIMEOUT] [line-end]` | Drain until TEXT appears (unified buffer); TIMEOUT (default 600) is a failure |
+| `send TEXT`                            | Send text to PTY input (child's stdin). `\n`=LF, `\r`=CR, `\e`=ESC, `\t`=TAB  |
+| `raw HEX [HEX ...]`                    | Send literal bytes to PTY input (e.g. `raw ff fc 01` for IAC WONT ECHO)       |
+| `assert-contains TEXT`                 | Fail (exit 1) if the unified buffer lacks TEXT                                |
+| `assert-not-contains TEXT`             | Fail (exit 1) if the unified buffer contains TEXT                             |
+| `await-exit [TIMEOUT]`                 | Drain until the child exits (default 10 s), recording its status              |
+| `assert-exit STATUS`                   | Fail (exit 1) unless `await-exit` recorded STATUS                             |
+| `resize COLS ROWS`                     | Resize the PTY and the grid (the child gets SIGWINCH on POSIX)                |
+| `render [visible\|scrollback\|all]`    | Dump the grid (default: `visible`; `scrollback` = oldest first, unified rows) |
+| `cursor`                               | Dump cursor state (row, col, visible, blink)                                  |
+| `# comment`                            | Skipped                                                                       |
+
+`wait-for` is the synchronization primitive: `wait 3` guesses, `wait-for`
+waits on a fact and fails loudly on timeout, so a script has no fixed
+sleeps to tune. Its options are trailing tokens (a bare number, the
+keyword `line-end`), trimmed right to left — the same grammar portty's
+`-S` scripts use:
+
+```
+wait-for "ready>" 10          # needle, 10 s budget
+wait-for "done" 10 line-end   # ... and the row must END with it
+```
+
+#### The unified buffer
+
+`assert-contains`, `assert-not-contains` and `wait-for` search the
+**unified buffer**: the scrollback (oldest first) followed by the
+visible rows. A full-screen TUI whose transcript has scrolled off the
+screen is therefore still assertable. Needles are matched as UTF-8, so
+a prompt glyph like `❯` (U+276F) matches.
+
+That is a change from earlier releases, where the search covered the
+visible grid only: `assert-contains` is now more permissive and
+`assert-not-contains` stricter. `render` keeps dumping the visible rows
+by default; `render scrollback` prints the scrollback with unified row
+numbers (negative = scrollback depth), `render all` prints both.
+
+#### Feature detection
+
+`--help-spec` prints one `FLAG` line per option and one `CMD` line per
+script command:
+
+```
+CMD	wait-for	"TEXT" [TIMEOUT] [line-end]	Drain until TEXT appears; ...
+```
+
+A driver that needs a command greps for `CMD	<name>` and skips (77)
+when the installed binary predates it, instead of guessing from a
+version number.
 
 If no `-f`/`--script` is given, cfr-debug waits `-w`/`--wait` seconds, then renders the
 grid once and exits.
@@ -150,25 +202,38 @@ Where `test.script` contains:
 
 ```
 # Wait for mudlark to connect and render
-wait 3
-
-# Verify the welcome banner appeared
-assert-contains "Carrion Fields"
+wait-for "Carrion Fields" 10
 
 # Send a name and wait
 send "guest\n"
-wait 2
+wait-for "Welcome" 10
 
 # Check we got past the banner
 assert-not-contains "mourned"
 
+# Wait for the client to exit and pin its status
+send "/quit\n"
+await-exit 10
+assert-exit 0
+
 render
 ```
 
-Exit code 0 = all assertions passed, 1 = assertion failed.
+Exit code 0 = all assertions passed, 1 = assertion failed. A script that
+never reaches its `wait-for` needle fails on the timeout instead of
+hanging, so the budgets are the only timing a script states.
+
+Resize mid-run (the child sees `SIGWINCH` and the grid follows):
+
+```
+wait-for "started" 10
+resize 120 40
+wait-for "120 columns" 10
+```
 
 `cfr-debug --help` shows all options with descriptions.
-`cfr-debug --help-spec` emits a tab-separated flag listing for downstream tooling.
+`cfr-debug --help-spec` emits a tab-separated flag + command listing for
+downstream tooling.
 
 ## Man page
 
@@ -190,7 +255,18 @@ Exit code 0 = all assertions passed, 1 = assertion failed.
    receives DA/DSR/kitty-keyboard responses
 6. Executes the script file (if any), then renders the coffer grid
 
+`resize` sets `TIOCSWINSZ` on the slave's tty (opened by name for the
+ioctl and closed at once). An ioctl on the master alone is not enough:
+it signals `SIGWINCH` and makes the resize look applied while the
+child's own `stty size` still reports the old geometry.
+
 ## Limitations
 
 - No interactive input — all input is scripted via `-f` script file
 - No mouse support
+- `resize` on Windows needs `ResizePseudoConsole` (Windows 10 1809+);
+  wine returns `E_NOTIMPL`, so the command fails loudly there (the
+  HRESULT is printed)
+- A `wait-for` needle is matched against a row's text; a match spanning
+  a soft wrap is two rows' text and will not be found (use the shorter
+  needle)

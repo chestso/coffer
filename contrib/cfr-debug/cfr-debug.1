@@ -1,4 +1,4 @@
-.TH Cfr-Debug 1 "2026-07-11" "coffer" "User Commands"
+.TH Cfr-Debug 1 "2026-10-14" "coffer" "User Commands"
 .SH NAME
 cfr-debug \- headless coffer PTY inspector
 .SH SYNOPSIS
@@ -10,6 +10,13 @@ spawns a child process on a pseudo-terminal, pipes its output through
 coffer, and renders the resulting grid as plain text.
 The coffer output callback is wired back to the PTY, so terminal
 queries (DA, DSR, kitty keyboard protocol) receive proper replies.
+.PP
+Script assertions and
+.B wait\-for
+search the
+.B unified buffer
+\(em the scrollback (oldest first) followed by the visible rows \(em so
+a TUI whose transcript scrolls off the screen is still assertable.
 .SH OPTIONS
 .TP
 \fB\-\-rows\fR, \fB\-r\fR \fIROWS\fR
@@ -38,15 +45,35 @@ only specified rows are shown.
 \fB\-\-cell\-data\fR, \fB\-d\fR
 Dump raw cell data (codepoint, width) alongside rendered text.
 .TP
+\fB\-\-style\-data\fR, \fB\-S\fR
+Dump style information (underline, colors) alongside rendered text.
+.TP
 \fB\-\-quiet\fR, \fB\-q\fR
 Suppress rendering of rows not selected with
 .BR \-\-show\-row .
+.TP
+\fB\-\-env\fR \fIKEY=VALUE\fR
+Set an environment variable for the child (repeatable). Applied after
+the built-in
+.B TERM
+/
+.B COLORTERM
+/
+.BR TERM_PROGRAM ;
+an empty
+.I VALUE
+unsets the variable, including a built-in.
 .TP
 \fB\-\-help\fR, \fB\-h\fR
 Show help and exit.
 .TP
 \fB\-\-help\-spec\fR
-Emit a machine-readable tab-separated flag listing for downstream tooling.
+Emit a machine-readable tab-separated listing for downstream tooling:
+.B FLAG
+lines for the options, and
+.B CMD
+lines naming every script command (the feature-detection seam for a
+driver that needs a command this build may not have).
 .SH SCRIPT FILE
 When run with
 .BR \-\-script ,
@@ -57,12 +84,21 @@ Drain PTY output for
 .I SECONDS
 seconds (accepts decimals).
 .TP
+.BI "wait\-for " "\"TEXT\" [TIMEOUT] [line-end]"
+Drain until
+.I TEXT
+appears in the unified buffer (default timeout: 600 seconds; a timeout
+is a failure). The needle is matched as UTF-8. The optional trailing
+.B line-end
+keyword anchors the match to a row that ends with
+.IR TEXT .
+.TP
 .BI "send " TEXT
 Send
 .I TEXT
 to the PTY. Backslash escapes are expanded:
 .B \en
-= CR,
+= LF,
 .B \er
 = CR,
 .B \ee
@@ -78,15 +114,44 @@ Send literal bytes specified as space-separated hex pairs
 .BR "raw ff fc 01" ).
 .TP
 .BI "assert\-contains " TEXT
-Fail with exit code 1 if the rendered grid does not contain
+Fail with exit code 1 if the unified buffer does not contain
 .IR TEXT .
 .TP
 .BI "assert\-not\-contains " TEXT
-Fail with exit code 1 if the rendered grid contains
+Fail with exit code 1 if the unified buffer contains
 .IR TEXT .
 .TP
-.B render
-Dump the current grid to stdout.
+.BI "await\-exit " "[TIMEOUT]"
+Drain until the child exits (default timeout: 10 seconds; a timeout is
+a failure) and record its exit status.
+.TP
+.BI "assert\-exit " STATUS
+Fail with exit code 1 unless
+.B await\-exit
+recorded
+.IR STATUS .
+.TP
+.BI "resize " "COLS ROWS"
+Resize the PTY and the grid. On POSIX the child's terminal is resized
+with
+.BR TIOCSWINSZ ,
+so it receives
+.BR SIGWINCH ;
+on Windows
+.B ResizePseudoConsole
+is used.
+.TP
+.BI "render " "[visible|scrollback|all]"
+Dump the grid (default:
+.BR visible ).
+.B scrollback
+prints the scrollback, oldest first, with unified row numbers (negative
+= scrollback depth); 
+.B all
+prints both.
+.TP
+.B cursor
+Dump the cursor state (row, col, visible, blink).
 .TP
 .BI "# " comment
 Lines starting with
@@ -102,6 +167,21 @@ cfr-debug \-c 68 \-r 20 \-w 5 \-\- crush
 Scripted CI test with assertions:
 .EX
 cfr-debug \-r 24 \-c 80 \-f test.script \-\- sh \-c "echo hello world"
+.EE
+where
+.I test.script
+might be:
+.EX
+wait\-for "hello world" 5
+assert\-contains "hello world"
+await\-exit 5
+assert\-exit 0
+.EE
+.TP
+Pin a color tier by unsetting the built-in
+.BR COLORTERM :
+.EX
+cfr-debug \-\-env COLORTERM= \-\- my-tui
 .EE
 .SH EXIT STATUS
 .TP
@@ -119,9 +199,23 @@ The child process sees
 .B COLORTERM
 The child process sees
 .BR truecolor .
+.TP
+.B TERM_PROGRAM
+The child process sees
+.BR ghostty .
+.PP
+All three can be overridden with
+.BR \-\-env .
 .SH SEE ALSO
 .BR coffer (7)
 .SH BUGS
 No interactive input \(em all input is scripted via
 .BR \-\-script .
 No mouse support.
+.PP
+.B assert\-contains
+and
+.B assert\-not\-contains
+search the whole unified buffer (scrollback included), not just the
+visible screen; that is a change from the visible-only search of
+earlier releases.

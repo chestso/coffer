@@ -68,8 +68,39 @@ static const FlagDef OPTIONS[] = {
     { "--cell-data", "-d", 0, NULL, "Dump raw cell data alongside text" },
     { "--style-data", "-S", 0, NULL, "Dump style info (underline, colors)" },
     { "--quiet", "-q", 0, NULL, "Only dump specified rows" },
+    { "--env", NULL, 1, "KEY=VAL",
+      "Set a child env var (repeatable; applied after the built-ins; "
+      "an empty value unsets it)" },
     { "--help", "-h", 0, NULL, "Show this help" },
     { NULL, NULL, 0, NULL, NULL }
+};
+
+/* Script vocabulary, printed by --help-spec as machine-readable CMD
+ * lines (one per command) and by --help as the human listing. A driver
+ * that needs `wait-for` greps the spec for "CMD\twait-for" instead of
+ * guessing from a version number. */
+typedef struct
+{
+    const char *name;
+    const char *args; /* NULL for no arguments */
+    const char *desc;
+} ScriptCmdDef;
+
+static const ScriptCmdDef SCRIPT_COMMANDS[] = {
+    { "wait", "SECONDS", "Drain PTY for N seconds" },
+    { "wait-for", "\"TEXT\" [TIMEOUT] [line-end]",
+      "Drain until TEXT appears; TIMEOUT (default 600) => fail" },
+    { "send", "TEXT", "Write text to the child's stdin (escapes: \\n \\r \\t \\e \\\\)" },
+    { "raw", "HEX [HEX ...]", "Write raw bytes to the child's stdin" },
+    { "assert-contains", "TEXT", "Fail if the unified buffer lacks TEXT" },
+    { "assert-not-contains", "TEXT", "Fail if the unified buffer contains TEXT" },
+    { "await-exit", "[TIMEOUT]",
+      "Drain until the child exits (default 10s); timeout => fail; records status" },
+    { "assert-exit", "STATUS", "Fail unless await-exit recorded STATUS" },
+    { "resize", "COLS ROWS", "Resize the PTY and the grid (SIGWINCH on POSIX)" },
+    { "render", "[visible|scrollback|all]", "Dump the grid (default: visible rows)" },
+    { "cursor", NULL, "Dump cursor state (row, col, visible, blink)" },
+    { NULL, NULL, NULL }
 };
 
 static int matches_flag(const char *arg, const FlagDef *def)
@@ -115,23 +146,20 @@ static void print_help(void)
         printf("  %-22s  %s\n", label, OPTIONS[i].desc);
     }
     printf("\nScript file commands (via --script):\n");
-    printf("  wait SECONDS              Drain PTY for N seconds\n");
-    printf("  send TEXT                 Send text to PTY input (child's stdin).\n");
-    printf("                            Escapes: \\n=LF \\r=CR \\e=ESC \\t=TAB \\\\=backslash.\n");
-    printf("                            Text is written verbatim; the shell must execute it.\n");
-    printf("                            Tip: append \\n to execute a shell command, e.g.\n");
-    printf("                              send printf '\\\\033[?12l'\\n\n");
-    printf("                            To send escape sequences the terminal will process,\n");
-    printf("                            have the child output them (e.g. via printf); raw\n");
-    printf("                            writes to stdin, not the terminal output side.\n");
-    printf("  raw HEX [HEX ...]         Write raw bytes to PTY input (e.g. raw 1b 5b 6d).\n");
-    printf("                            Bytes reach the child's stdin, not coffer's parser.\n");
-    printf("                            Use send with printf to emit sequences coffer parses.\n");
-    printf("  assert-contains TEXT      Fail if grid does not contain TEXT\n");
-    printf("  assert-not-contains TEXT  Fail if grid contains TEXT\n");
-    printf("  render                    Dump current grid to stdout\n");
-    printf("  cursor                    Dump cursor state (row, col, visible, blink)\n");
-    printf("  # comment                 Skipped\n");
+    for (int i = 0; SCRIPT_COMMANDS[i].name; i++) {
+        char label[80];
+        if (SCRIPT_COMMANDS[i].args)
+            snprintf(label, sizeof(label), "%s %s", SCRIPT_COMMANDS[i].name,
+                     SCRIPT_COMMANDS[i].args);
+        else
+            snprintf(label, sizeof(label), "%s", SCRIPT_COMMANDS[i].name);
+        printf("  %-30s  %s\n", label, SCRIPT_COMMANDS[i].desc);
+    }
+    printf("\n  send/raw write to the PTY INPUT (the child's stdin), never to\n"
+           "  coffer's parser. To emit escape sequences the terminal processes,\n"
+           "  have the child print them (e.g. printf '\\033[?12l').\n"
+           "  assert-* and wait-for search the UNIFIED buffer: scrollback\n"
+           "  (oldest first) then the visible rows.\n");
     printf("\nExamples:\n");
     printf("  cfr-debug -- bash -l\n");
     printf("  cfr-debug -c 68 -r 20 -w 5 -- crush\n");
@@ -148,6 +176,11 @@ static void print_help_spec(void)
                OPTIONS[i].name, alias, OPTIONS[i].takes_value,
                param, OPTIONS[i].desc);
     }
+    for (int i = 0; SCRIPT_COMMANDS[i].name; i++) {
+        const char *args = SCRIPT_COMMANDS[i].args ? SCRIPT_COMMANDS[i].args : "-";
+        printf("CMD\t%s\t%s\t%s\n", SCRIPT_COMMANDS[i].name, args,
+               SCRIPT_COMMANDS[i].desc);
+    }
 }
 
 /* ================================================================ */
@@ -156,11 +189,21 @@ static void print_help_spec(void)
 
 typedef struct PtyCtx PtyCtx;
 
-PtyCtx *pty_spawn(int rows, int cols, char *const argv[]);
+PtyCtx *pty_spawn(int rows, int cols, char *const argv[], char *const env[],
+                  int n_env);
 void pty_kill(PtyCtx *p);
 ssize_t pty_write(PtyCtx *p, const char *data, size_t len);
 ssize_t pty_read(PtyCtx *p, char *buf, size_t bufsize);
 int pty_get_fd(PtyCtx *p);
+/* Resize the PTY (the child's window size); the grid is resized by the
+ * caller. POSIX: TIOCSWINSZ, which also SIGWINCHes the foreground group.
+ * Windows: ResizePseudoConsole. Returns 0 on success. */
+int pty_resize(PtyCtx *p, int rows, int cols);
+/* Non-blocking child check. Returns 1 when the child has exited (with
+ * *out_status set: the exit code, or 128+signal on POSIX), 0 while it
+ * still runs, -1 on error. A reaped child stays "exited" for later
+ * calls. */
+int pty_poll_exit(PtyCtx *p, int *out_status);
 #ifdef _WIN32
 void *pty_get_data_event(PtyCtx *p);
 int pty_is_eof(PtyCtx *p);
@@ -173,11 +216,32 @@ int pty_is_eof(PtyCtx *p);
 struct PtyCtx
 {
     int master_fd;
-    pid_t child_pid;
+    char slave_name[256]; /* the slave's /dev path, for resize ioctls */
+    pid_t child_pid;      /* 0 once reaped */
     int rows, cols;
 };
 
-PtyCtx *pty_spawn(int rows, int cols, char *const argv[])
+/* Apply a `KEY=VALUE` override in the child (empty VALUE unsets). The
+ * override strings are the caller's; this copies the key out. */
+static void apply_env_override(const char *kv)
+{
+    const char *eq = strchr(kv, '=');
+    if (!eq)
+        return;
+    char key[256];
+    size_t klen = (size_t)(eq - kv);
+    if (klen == 0 || klen >= sizeof(key))
+        return;
+    memcpy(key, kv, klen);
+    key[klen] = '\0';
+    if (eq[1] == '\0')
+        unsetenv(key);
+    else
+        setenv(key, eq + 1, 1);
+}
+
+PtyCtx *pty_spawn(int rows, int cols, char *const argv[], char *const env[],
+                  int n_env)
 {
     PtyCtx *p = calloc(1, sizeof(*p));
     if (!p)
@@ -188,7 +252,7 @@ PtyCtx *pty_spawn(int rows, int cols, char *const argv[])
         .ws_row = (unsigned short)rows,
         .ws_col = (unsigned short)cols,
     };
-    pid_t pid = forkpty(&p->master_fd, NULL, NULL, &ws);
+    pid_t pid = forkpty(&p->master_fd, p->slave_name, NULL, &ws);
     if (pid < 0) {
         perror("forkpty");
         free(p);
@@ -198,6 +262,8 @@ PtyCtx *pty_spawn(int rows, int cols, char *const argv[])
         setenv("TERM", "xterm-256color", 1);
         setenv("COLORTERM", "truecolor", 1);
         setenv("TERM_PROGRAM", "ghostty", 1);
+        for (int i = 0; i < n_env; i++)
+            apply_env_override(env[i]);
         if (argv && argv[0])
             execvp(argv[0], argv);
         else
@@ -243,6 +309,50 @@ int pty_get_fd(PtyCtx *p)
     return p ? p->master_fd : -1;
 }
 
+int pty_resize(PtyCtx *p, int rows, int cols)
+{
+    if (!p || p->master_fd < 0)
+        return -1;
+    struct winsize ws = {
+        .ws_row = (unsigned short)rows,
+        .ws_col = (unsigned short)cols,
+    };
+    /* TIOCSWINSZ must land on the SLAVE's tty — the child's `stty size`
+     * reads that one. The master is a different tty struct: an ioctl on
+     * it still signals SIGWINCH, which makes a master-only resize look
+     * like it worked while the child keeps the old size. Open the slave
+     * by name for the ioctl and close it immediately: holding it open
+     * would suppress the master's EOF when the child exits. */
+    int fd = open(p->slave_name, O_RDWR | O_NOCTTY);
+    if (fd < 0)
+        return -1;
+    int r = ioctl(fd, TIOCSWINSZ, &ws);
+    close(fd);
+    if (r != 0)
+        return -1;
+    p->rows = rows;
+    p->cols = cols;
+    return 0;
+}
+
+int pty_poll_exit(PtyCtx *p, int *out_status)
+{
+    if (!p)
+        return -1;
+    if (p->child_pid <= 0)
+        return 1; /* already reaped */
+    int st = 0;
+    pid_t r = waitpid(p->child_pid, &st, WNOHANG);
+    if (r == 0)
+        return 0;
+    if (r < 0)
+        return -1;
+    if (out_status)
+        *out_status = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
+    p->child_pid = 0;
+    return 1;
+}
+
 #endif /* !_WIN32 */
 
 /* ---- Windows PTY (ConPTY) ---- */
@@ -264,6 +374,7 @@ struct PtyCtx
     char buf[65536];
     size_t buf_len;
     int buf_eof;
+    int reaped; /* child status already collected */
     int rows, cols;
 };
 
@@ -320,7 +431,8 @@ static DWORD WINAPI pty_reader_thread(LPVOID param)
     return 0;
 }
 
-PtyCtx *pty_spawn(int rows, int cols, char *const argv[])
+PtyCtx *pty_spawn(int rows, int cols, char *const argv[], char *const env[],
+                  int n_env)
 {
     PtyCtx *ctx = calloc(1, sizeof(*ctx));
     if (!ctx)
@@ -434,38 +546,103 @@ PtyCtx *pty_spawn(int rows, int cols, char *const argv[])
         MultiByteToWideChar(CP_UTF8, 0, comspec, -1, cmdline, MAX_PATH * 2);
     }
 
-    /* Build environment block with terminal overrides */
+    /* Build the environment block. First occurrence wins in a Windows
+     * environment block, so the order is: --env overrides (empty value =
+     * unset), the built-ins an override did not name, then the parent's
+     * variables minus every key already decided above. */
+    enum
+    {
+        MAX_OV = 32,
+        OV_KEY_MAX = 128,
+        OV_VAL_MAX = 512
+    };
+    WCHAR ov_key[MAX_OV][OV_KEY_MAX]; /* the KEY of each --env override */
+    WCHAR ov_val[MAX_OV][OV_VAL_MAX]; /* its value ("" = unset) */
+    int n_ov = 0;
+    for (int i = 0; i < n_env && n_ov < MAX_OV; i++) {
+        const char *eq = strchr(env[i], '=');
+        if (!eq)
+            continue;
+        size_t klen = (size_t)(eq - env[i]);
+        if (klen == 0 || klen >= OV_KEY_MAX)
+            continue;
+        int n = MultiByteToWideChar(CP_UTF8, 0, env[i], (int)klen,
+                                    ov_key[n_ov], OV_KEY_MAX);
+        if (n <= 0)
+            continue;
+        ov_key[n_ov][n] = L'\0';
+        ov_val[n_ov][0] = L'\0';
+        if (eq[1] != '\0' &&
+            MultiByteToWideChar(CP_UTF8, 0, eq + 1, -1, ov_val[n_ov],
+                                OV_VAL_MAX) <= 0)
+            continue; /* conversion failure: drop the override */
+        n_ov++;
+    }
+
+    static const WCHAR *builtins[] = { L"TERM=xterm-256color",
+                                       L"COLORTERM=truecolor",
+                                       L"TERM_PROGRAM=ghostty" };
+    const int n_builtins = 3;
+
+    /* Does `entry` ("KEY=...") name `key`? (Windows env names are
+     * case-insensitive.) */
+#define ENV_KEY_IS(entry, key)                                   \
+    (wcslen(key) == (size_t)(wcschr((entry), L'=') - (entry)) && \
+     _wcsnicmp((entry), (key), wcslen(key)) == 0)
+
     LPWCH parent_env = GetEnvironmentStringsW();
     WCHAR envBlock[65536];
     WCHAR *ep = envBlock;
 
-    {
-        static const WCHAR *overrides[] = {
-            L"TERM=xterm-256color",
-            L"COLORTERM=truecolor",
-        };
-        for (int i = 0; i < 2; i++) {
-            size_t len = wcslen(overrides[i]);
-            if (ep + len + 1 >= envBlock + 65536)
-                break;
-            wmemcpy(ep, overrides[i], len + 1);
-            ep += len + 1;
-        }
+    /* 1. The overrides that set a value. */
+    for (int i = 0; i < n_ov; i++) {
+        if (ov_val[i][0] == L'\0')
+            continue;
+        size_t len = wcslen(ov_key[i]) + 1 + wcslen(ov_val[i]);
+        if (ep + len + 1 >= envBlock + 65536)
+            break;
+        wcscpy(ep, ov_key[i]);
+        wcscat(ep, L"=");
+        wcscat(ep, ov_val[i]);
+        ep += len + 1;
     }
 
+    /* 2. The built-ins an override did not name. */
+    for (int i = 0; i < n_builtins; i++) {
+        int decided = 0;
+        for (int j = 0; j < n_ov && !decided; j++)
+            decided = ENV_KEY_IS(builtins[i], ov_key[j]);
+        if (decided)
+            continue;
+        size_t len = wcslen(builtins[i]);
+        if (ep + len + 1 >= envBlock + 65536)
+            break;
+        wmemcpy(ep, builtins[i], len + 1);
+        ep += len + 1;
+    }
+
+    /* 3. The parent's variables minus every key decided above. */
     if (parent_env) {
         LPWCH p = parent_env;
         while (*p) {
             size_t len = wcslen(p);
-            if (ep + len + 1 >= envBlock + 65536)
-                break;
-            wmemcpy(ep, p, len + 1);
-            ep += len + 1;
+            int decided = 0;
+            for (int i = 0; i < n_ov && !decided; i++)
+                decided = ENV_KEY_IS(p, ov_key[i]);
+            for (int i = 0; i < n_builtins && !decided; i++)
+                decided = ENV_KEY_IS(p, builtins[i]);
+            if (!decided) {
+                if (ep + len + 1 >= envBlock + 65536)
+                    break;
+                wmemcpy(ep, p, len + 1);
+                ep += len + 1;
+            }
             p += len + 1;
         }
         FreeEnvironmentStringsW(parent_env);
     }
     *ep = L'\0';
+#undef ENV_KEY_IS
 
     PROCESS_INFORMATION pi;
     ZeroMemory(&pi, sizeof(pi));
@@ -537,7 +714,8 @@ void pty_kill(PtyCtx *ctx)
     }
 
     if (ctx->process != INVALID_HANDLE_VALUE) {
-        if (WaitForSingleObject(ctx->process, 500) != WAIT_OBJECT_0) {
+        if (!ctx->reaped &&
+            WaitForSingleObject(ctx->process, 500) != WAIT_OBJECT_0) {
             TerminateProcess(ctx->process, 1);
             WaitForSingleObject(ctx->process, 1000);
         }
@@ -618,6 +796,43 @@ int pty_get_fd(PtyCtx *ctx)
     return -1;
 }
 
+int pty_resize(PtyCtx *ctx, int rows, int cols)
+{
+    if (!ctx || ctx->hpc == INVALID_HANDLE_VALUE)
+        return -1;
+    COORD size;
+    size.X = (SHORT)cols;
+    size.Y = (SHORT)rows;
+    HRESULT hr = ResizePseudoConsole(ctx->hpc, size);
+    if (FAILED(hr)) {
+        /* wine returns E_NOTIMPL (0x80004001) here; real Windows
+         * (10 1809+) resizes the console. */
+        fprintf(stderr, "resize: ResizePseudoConsole failed: 0x%08lx\n",
+                (unsigned long)hr);
+        return -1;
+    }
+    ctx->rows = rows;
+    ctx->cols = cols;
+    return 0;
+}
+
+int pty_poll_exit(PtyCtx *ctx, int *out_status)
+{
+    if (!ctx)
+        return -1;
+    if (ctx->reaped)
+        return 1;
+    if (ctx->process == INVALID_HANDLE_VALUE)
+        return -1;
+    if (WaitForSingleObject(ctx->process, 0) != WAIT_OBJECT_0)
+        return 0;
+    DWORD code = 0;
+    if (GetExitCodeProcess(ctx->process, &code) && out_status)
+        *out_status = (int)code;
+    ctx->reaped = 1;
+    return 1;
+}
+
 #endif /* _WIN32 */
 
 /* ================================================================ */
@@ -640,15 +855,6 @@ static double now_sec(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec / 1e9;
-#endif
-}
-
-static void sleep_sec(double seconds)
-{
-#ifdef _WIN32
-    Sleep((DWORD)(seconds * 1000));
-#else
-    usleep((useconds_t)(seconds * 1e6));
 #endif
 }
 
@@ -750,6 +956,40 @@ static void utf8_put(uint32_t cp)
     }
 }
 
+/* Encode one codepoint into buf; returns the bytes written (0 when it
+ * does not fit). */
+static size_t utf8_encode(uint32_t cp, char *buf, size_t cap)
+{
+    if (cp < 0x80) {
+        if (cap < 1)
+            return 0;
+        buf[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        if (cap < 2)
+            return 0;
+        buf[0] = (char)(0xC0 | (cp >> 6));
+        buf[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        if (cap < 3)
+            return 0;
+        buf[0] = (char)(0xE0 | (cp >> 12));
+        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    if (cap < 4)
+        return 0;
+    buf[0] = (char)(0xF0 | (cp >> 18));
+    buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    buf[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
 static void render_row_text(CfrTerm *vt, int row, int cols)
 {
     for (int c = 0; c < cols; c++) {
@@ -841,42 +1081,99 @@ static void render_grid(CfrTerm *vt, int rows, int cols,
 }
 
 /* ================================================================ */
-/* Grid search                                                      */
+/* Unified-buffer search                                            */
 /* ================================================================ */
 
-static int grid_contains(CfrTerm *vt, int rows, int cols, const char *needle)
-{
-    int needle_len = (int)strlen(needle);
-    if (needle_len == 0)
-        return 1;
+/* Bytes reserved per cell when flattening a row: a grapheme cluster
+ * holds at most CFR_CLUSTER_MAX (16) codepoints, 4 bytes each. */
+#define ROW_UTF8_PER_CELL 64
 
-    for (int r = 0; r < rows; r++) {
-        for (int c = 0; c < cols; c++) {
-            const CfrCell *cell = cfr_get_cell(vt, r, c);
-            if (!cell || cell->cp == 0)
-                continue;
-            if (cell->width == 2) {
-                c++;
-                continue;
-            }
-            int ci = c;
-            const char *np = needle;
-            while (*np && ci < cols) {
-                cell = cfr_get_cell(vt, r, ci);
-                if (!cell)
-                    break;
-                if ((char)cell->cp != *np)
-                    break;
-                np++;
-                ci++;
-                if (cell->width == 2)
-                    ci++;
-            }
-            if (*np == '\0')
-                return 1;
+/* Flatten one unified row (>= 0 visible, < 0 scrollback, -1 = most
+ * recent) into UTF-8 text: spaces for blanks, continuation cells
+ * skipped, graphemes encoded whole. Returns the byte length. */
+static size_t row_text(CfrTerm *vt, int row, int cols, char *buf, size_t cap)
+{
+    size_t n = 0;
+    for (int c = 0; c < cols; c++) {
+        const CfrCell *cell = (row >= 0)
+                                  ? cfr_get_cell(vt, row, c)
+                                  : cfr_get_scrollback_cell(vt, -row - 1, c);
+        if (!cell)
+            break;
+        if (cell->width == 0)
+            continue; /* continuation of a wide cluster */
+        if (n + 8 >= cap)
+            break;
+        if (cell->cp == 0 || cell->cp == 0x20) {
+            buf[n++] = ' ';
+            continue;
         }
+        uint32_t cps[32];
+        size_t nc = cfr_cell_get_grapheme(vt, cell, cps, 32);
+        if (nc == 0) {
+            buf[n++] = ' ';
+            continue;
+        }
+        for (size_t i = 0; i < nc && n + 8 < cap; i++)
+            n += utf8_encode(cps[i], buf + n, cap - n);
     }
-    return 0;
+    buf[n] = '\0';
+    return n;
+}
+
+static int row_matches(const char *row, const char *needle, int line_end)
+{
+    if (!line_end)
+        return strstr(row, needle) != NULL;
+    size_t len = strlen(row);
+    while (len > 0 && row[len - 1] == ' ')
+        len--; /* trim trailing blanks */
+    size_t nlen = strlen(needle);
+    if (nlen > len)
+        return 0;
+    return memcmp(row + (len - nlen), needle, nlen) == 0;
+}
+
+/* Search the unified buffer — scrollback (oldest first) then the
+ * visible rows — for `needle`. With `line_end` a row matches only when
+ * it ends with the needle. Returns 1 on a match and reports the unified
+ * row (*out_row < 0 = scrollback depth). */
+static int unified_find(CfrTerm *vt, const char *needle, int line_end,
+                        int *out_row)
+{
+    if (!vt || !needle || !*needle)
+        return 1;
+    int rows = 0, cols = 0;
+    cfr_get_dimensions(vt, &rows, &cols);
+    if (cols <= 0)
+        return 0;
+    size_t cap = (size_t)cols * ROW_UTF8_PER_CELL + 1;
+    char *buf = malloc(cap);
+    if (!buf)
+        return 0;
+
+    int found = 0;
+    int sb_lines = cfr_get_scrollback_lines(vt);
+    for (int sb = sb_lines - 1; sb >= 0 && !found; sb--) {
+        int unified = -(sb + 1);
+        row_text(vt, unified, cols, buf, cap);
+        found = row_matches(buf, needle, line_end);
+        if (found && out_row)
+            *out_row = unified;
+    }
+    for (int r = 0; r < rows && !found; r++) {
+        row_text(vt, r, cols, buf, cap);
+        found = row_matches(buf, needle, line_end);
+        if (found && out_row)
+            *out_row = r;
+    }
+    free(buf);
+    return found;
+}
+
+static int grid_contains(CfrTerm *vt, const char *needle)
+{
+    return unified_find(vt, needle, 0, NULL);
 }
 
 /* ================================================================ */
@@ -932,10 +1229,153 @@ static int parse_hex_bytes(const char *s, unsigned char *out, int max)
 /* Script file processing                                           */
 /* ================================================================ */
 
-static int run_script(CfrTerm *vt, PtyCtx *pty, int rows, int cols,
-                      const char *script_path, const int *show_rows,
-                      int n_show, int show_cells, int show_styles, int quiet)
+/* Dump the scrollback, oldest first. Unified rows are negative
+ * (-1 = the line most recently scrolled off). */
+static void render_scrollback(CfrTerm *vt, int cols)
 {
+    int lines = cfr_get_scrollback_lines(vt);
+    if (lines <= 0) {
+        printf("(scrollback empty)\n");
+        return;
+    }
+    size_t cap = (size_t)cols * ROW_UTF8_PER_CELL + 1;
+    char *buf = malloc(cap);
+    if (!buf)
+        return;
+    for (int sb = lines - 1; sb >= 0; sb--) {
+        row_text(vt, -(sb + 1), cols, buf, cap);
+        printf("%2d|%s\n", -(sb + 1), buf);
+    }
+    free(buf);
+}
+
+/* Poll the unified buffer until `needle` appears or the timeout
+ * expires. Bounded by the real clock; returns 0 on a match, -1 on
+ * timeout. */
+static int wait_for(CfrTerm *vt, PtyCtx *pty, const char *needle,
+                    double timeout, int line_end, int line_num)
+{
+    double start = now_sec();
+    double deadline = start + timeout;
+    int row = 0;
+
+    for (;;) {
+        if (unified_find(vt, needle, line_end, &row)) {
+            if (row < 0)
+                fprintf(stderr,
+                        "[%d] wait-for \"%s\": found at scrollback row %d "
+                        "after %.1fs\n",
+                        line_num, needle, row, now_sec() - start);
+            else
+                fprintf(stderr,
+                        "[%d] wait-for \"%s\": found at row %d after %.1fs\n",
+                        line_num, needle, row, now_sec() - start);
+            return 0;
+        }
+        double left = deadline - now_sec();
+        if (left <= 0) {
+            fprintf(stderr,
+                    "[%d] FAIL: wait-for \"%s\": TIMEOUT after %.1fs\n",
+                    line_num, needle, timeout);
+            return -1;
+        }
+        drain(vt, pty, left < 0.05 ? left : 0.05);
+    }
+}
+
+/* Drain until the child exits; records its status. Returns 0 when it
+ * exited, -1 on timeout/error. */
+static int await_exit(CfrTerm *vt, PtyCtx *pty, double timeout, int line_num,
+                      int *out_status, int *have_status)
+{
+    double start = now_sec();
+    double deadline = start + timeout;
+
+    for (;;) {
+        int st = 0;
+        int r = pty_poll_exit(pty, &st);
+        if (r == 1) {
+            *out_status = st;
+            *have_status = 1;
+            fprintf(stderr, "[%d] await-exit: child exited with %d after %.1fs\n",
+                    line_num, st, now_sec() - start);
+            return 0;
+        }
+        if (r < 0) {
+            fprintf(stderr, "[%d] FAIL: await-exit: cannot query the child\n",
+                    line_num);
+            return -1;
+        }
+        double left = deadline - now_sec();
+        if (left <= 0) {
+            fprintf(stderr, "[%d] FAIL: await-exit: TIMEOUT after %.1fs\n",
+                    line_num, timeout);
+            return -1;
+        }
+        drain(vt, pty, left < 0.05 ? left : 0.05);
+    }
+}
+
+/* Parse `"TEXT" [TIMEOUT] [line-end]` (portty's wait-for grammar):
+ * trailing option tokens are trimmed right to left, a bare number is the
+ * timeout, `line-end` anchors the match to a row's end; the remainder is
+ * the needle, quotes optional. Returns a malloc'd needle (caller frees)
+ * or NULL when the argument is empty. */
+static char *parse_wait_for(char *args, double *out_timeout, int *out_line_end)
+{
+    int line_end = 0, got_num = 0;
+    for (;;) {
+        char *last_ws = NULL;
+        for (char *p = args; *p; p++) {
+            if (*p == ' ' || *p == '\t')
+                last_ws = p;
+        }
+        if (!last_ws || *(last_ws + 1) == '\0')
+            break; /* no trailing token */
+        const char *tok = last_ws + 1;
+        if (!got_num && (*tok >= '0' && *tok <= '9')) {
+            *out_timeout = atof(tok);
+            got_num = 1;
+            *last_ws = '\0';
+            continue;
+        }
+        if (strcmp(tok, "line-end") == 0) {
+            line_end = 1;
+            *last_ws = '\0';
+            continue;
+        }
+        break;
+    }
+    /* Strip surrounding quotes from what remains */
+    size_t len = strlen(args);
+    if (len >= 2 && ((args[0] == '"' && args[len - 1] == '"') ||
+                     (args[0] == '\'' && args[len - 1] == '\''))) {
+        args[len - 1] = '\0';
+        args++;
+    }
+    if (*args == '\0')
+        return NULL;
+    expand_escapes(args);
+    *out_line_end = line_end;
+    return strdup(args);
+}
+
+typedef struct
+{
+    CfrTerm *vt;
+    PtyCtx *pty;
+    const int *show_rows;
+    int n_show;
+    int show_cells, show_styles, quiet;
+    int exit_status; /* recorded by await-exit */
+    int have_exit_status;
+} ScriptCtx;
+
+static int run_script(ScriptCtx *ctx, const char *script_path)
+{
+    CfrTerm *vt = ctx->vt;
+    PtyCtx *pty = ctx->pty;
+
     FILE *f = fopen(script_path, "r");
     if (!f) {
         fprintf(stderr, "Cannot open script file: %s: %s\n", script_path,
@@ -972,12 +1412,15 @@ static int run_script(CfrTerm *vt, PtyCtx *pty, int rows, int cols,
                 args++;
         }
 
-        /* Strip surrounding quotes from args */
-        size_t alen = strlen(args);
-        if (alen >= 2 && ((args[0] == '"' && args[alen - 1] == '"') ||
-                          (args[0] == '\'' && args[alen - 1] == '\''))) {
-            args[alen - 1] = '\0';
-            args++;
+        /* Strip surrounding quotes from args (wait-for does its own,
+         * after the trailing options are trimmed) */
+        if (strcmp(cmd, "wait-for") != 0) {
+            size_t alen = strlen(args);
+            if (alen >= 2 && ((args[0] == '"' && args[alen - 1] == '"') ||
+                              (args[0] == '\'' && args[alen - 1] == '\''))) {
+                args[alen - 1] = '\0';
+                args++;
+            }
         }
 
         if (strcmp(cmd, "wait") == 0) {
@@ -986,6 +1429,26 @@ static int run_script(CfrTerm *vt, PtyCtx *pty, int rows, int cols,
                 sec = 1.0;
             fprintf(stderr, "[%d] wait %.2fs\n", line_num, sec);
             drain(vt, pty, sec);
+        } else if (strcmp(cmd, "wait-for") == 0) {
+            double timeout = 600;
+            int line_end = 0;
+            char *needle = parse_wait_for(args, &timeout, &line_end);
+            if (!needle) {
+                fprintf(stderr,
+                        "[%d] FAIL: wait-for requires text "
+                        "(usage: wait-for \"TEXT\" [TIMEOUT] [line-end])\n",
+                        line_num);
+                rc = 1;
+                break;
+            }
+            if (timeout <= 0)
+                timeout = 600;
+            int r = wait_for(vt, pty, needle, timeout, line_end, line_num);
+            free(needle);
+            if (r != 0) {
+                rc = 1;
+                break;
+            }
         } else if (strcmp(cmd, "send") == 0) {
             expand_escapes(args);
             fprintf(stderr, "[%d] send: %s\n", line_num, args);
@@ -996,26 +1459,77 @@ static int run_script(CfrTerm *vt, PtyCtx *pty, int rows, int cols,
             fprintf(stderr, "[%d] raw: %d bytes\n", line_num, n);
             pty_write(pty, (const char *)bytes, (size_t)n);
         } else if (strcmp(cmd, "assert-contains") == 0) {
-            if (!grid_contains(vt, rows, cols, args)) {
-                fprintf(stderr, "[%d] FAIL: grid does not contain \"%s\"\n",
+            if (!grid_contains(vt, args)) {
+                fprintf(stderr, "[%d] FAIL: buffer does not contain \"%s\"\n",
                         line_num, args);
                 rc = 1;
                 break;
             }
-            fprintf(stderr, "[%d] OK: grid contains \"%s\"\n", line_num, args);
+            fprintf(stderr, "[%d] OK: buffer contains \"%s\"\n", line_num,
+                    args);
         } else if (strcmp(cmd, "assert-not-contains") == 0) {
-            if (grid_contains(vt, rows, cols, args)) {
-                fprintf(stderr, "[%d] FAIL: grid contains \"%s\"\n",
+            if (grid_contains(vt, args)) {
+                fprintf(stderr, "[%d] FAIL: buffer contains \"%s\"\n",
                         line_num, args);
                 rc = 1;
                 break;
             }
-            fprintf(stderr, "[%d] OK: grid does not contain \"%s\"\n",
+            fprintf(stderr, "[%d] OK: buffer does not contain \"%s\"\n",
                     line_num, args);
+        } else if (strcmp(cmd, "await-exit") == 0) {
+            double timeout = atof(args);
+            if (timeout <= 0)
+                timeout = 10;
+            if (await_exit(vt, pty, timeout, line_num, &ctx->exit_status,
+                           &ctx->have_exit_status) != 0) {
+                rc = 1;
+                break;
+            }
+        } else if (strcmp(cmd, "assert-exit") == 0) {
+            if (!ctx->have_exit_status) {
+                fprintf(stderr,
+                        "[%d] FAIL: assert-exit: no status recorded "
+                        "(await-exit first)\n",
+                        line_num);
+                rc = 1;
+                break;
+            }
+            int want = atoi(args);
+            if (ctx->exit_status != want) {
+                fprintf(stderr, "[%d] FAIL: child exit status %d, want %d\n",
+                        line_num, ctx->exit_status, want);
+                rc = 1;
+                break;
+            }
+            fprintf(stderr, "[%d] OK: child exit status %d\n", line_num, want);
+        } else if (strcmp(cmd, "resize") == 0) {
+            int new_cols = 0, new_rows = 0;
+            if (sscanf(args, "%d %d", &new_cols, &new_rows) != 2 ||
+                new_cols <= 0 || new_rows <= 0) {
+                fprintf(stderr, "[%d] FAIL: resize requires COLS ROWS\n",
+                        line_num);
+                rc = 1;
+                break;
+            }
+            if (pty_resize(pty, new_rows, new_cols) != 0) {
+                fprintf(stderr, "[%d] FAIL: resize %dx%d failed\n", line_num,
+                        new_cols, new_rows);
+                rc = 1;
+                break;
+            }
+            cfr_resize(vt, new_rows, new_cols);
+            fprintf(stderr, "[%d] resize: %dx%d\n", line_num, new_cols,
+                    new_rows);
         } else if (strcmp(cmd, "render") == 0) {
-            fprintf(stderr, "[%d] render\n", line_num);
-            render_grid(vt, rows, cols, show_rows, n_show, show_cells,
-                        show_styles, quiet);
+            int rows = 0, cols = 0;
+            cfr_get_dimensions(vt, &rows, &cols);
+            const char *what = (*args) ? args : "visible";
+            fprintf(stderr, "[%d] render %s\n", line_num, what);
+            if (strcmp(what, "scrollback") == 0 || strcmp(what, "all") == 0)
+                render_scrollback(vt, cols);
+            if (strcmp(what, "visible") == 0 || strcmp(what, "all") == 0)
+                render_grid(vt, rows, cols, ctx->show_rows, ctx->n_show,
+                            ctx->show_cells, ctx->show_styles, ctx->quiet);
         } else if (strcmp(cmd, "cursor") == 0) {
             CfrCursor c = cfr_get_cursor(vt);
             fprintf(stderr, "[%d] cursor: row=%d col=%d visible=%d blink=%d\n",
@@ -1034,11 +1548,6 @@ static int run_script(CfrTerm *vt, PtyCtx *pty, int rows, int cols,
 /* Main                                                             */
 /* ================================================================ */
 
-static void usage(void)
-{
-    print_help();
-}
-
 int main(int argc, char *argv[])
 {
     int rows = 24, cols = 80;
@@ -1048,6 +1557,8 @@ int main(int argc, char *argv[])
     int show_rows[64];
     int n_show = 0;
     int show_cells = 0, show_styles = 0, quiet = 0;
+    const char *envs[64];
+    int n_env = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help-spec") == 0) {
@@ -1073,7 +1584,7 @@ int main(int argc, char *argv[])
 
         const FlagDef *f = &OPTIONS[fi];
 
-        if (matches_flag(arg, &OPTIONS[9])) { /* --help / -h */
+        if (strcmp(f->name, "--help") == 0) {
             print_help();
             return 0;
         }
@@ -1085,24 +1596,30 @@ int main(int argc, char *argv[])
             }
             const char *val = argv[++i];
 
-            if (matches_flag(arg, &OPTIONS[0])) /* --rows */
+            if (strcmp(f->name, "--rows") == 0)
                 rows = atoi(val);
-            else if (matches_flag(arg, &OPTIONS[1])) /* --cols */
+            else if (strcmp(f->name, "--cols") == 0)
                 cols = atoi(val);
-            else if (matches_flag(arg, &OPTIONS[2])) /* --wait */
+            else if (strcmp(f->name, "--wait") == 0)
                 initial_wait = atof(val);
-            else if (matches_flag(arg, &OPTIONS[3])) /* --script */
+            else if (strcmp(f->name, "--script") == 0)
                 script_path = val;
-            else if (matches_flag(arg, &OPTIONS[4])) /* --output */
+            else if (strcmp(f->name, "--output") == 0)
                 outfile = val;
-            else if (matches_flag(arg, &OPTIONS[5]) && n_show < 64) /* --show-row */
+            else if (strcmp(f->name, "--show-row") == 0 && n_show < 64)
                 show_rows[n_show++] = atoi(val);
+            else if (strcmp(f->name, "--env") == 0) {
+                if (n_env < 64)
+                    envs[n_env++] = val;
+                else
+                    fprintf(stderr, "Too many --env overrides (max 64)\n");
+            }
         } else {
-            if (matches_flag(arg, &OPTIONS[6])) /* --cell-data */
+            if (strcmp(f->name, "--cell-data") == 0)
                 show_cells = 1;
-            else if (matches_flag(arg, &OPTIONS[7])) /* --style-data */
+            else if (strcmp(f->name, "--style-data") == 0)
                 show_styles = 1;
-            else if (matches_flag(arg, &OPTIONS[8])) /* --quiet */
+            else if (strcmp(f->name, "--quiet") == 0)
                 quiet = 1;
         }
     }
@@ -1127,7 +1644,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    PtyCtx *pty = pty_spawn(rows, cols, cmd_argv);
+    PtyCtx *pty = pty_spawn(rows, cols, cmd_argv, (char *const *)envs, n_env);
     if (!pty) {
         cfr_free(vt);
         return 1;
@@ -1140,15 +1657,25 @@ int main(int argc, char *argv[])
     fprintf(stderr, "Waiting %.1fs for startup...\n", initial_wait);
     drain(vt, pty, initial_wait);
 
-    int rc = 0;
-    if (script_path) {
-        rc = run_script(vt, pty, rows, cols, script_path, show_rows,
-                        n_show, show_cells, show_styles, quiet);
-    }
+    ScriptCtx ctx = {
+        .vt = vt,
+        .pty = pty,
+        .show_rows = show_rows,
+        .n_show = n_show,
+        .show_cells = show_cells,
+        .show_styles = show_styles,
+        .quiet = quiet,
+    };
 
-    /* Final render if no script or script didn't render */
+    int rc = 0;
+    if (script_path)
+        rc = run_script(&ctx, script_path);
+
+    /* Final render if no script or the script did not render */
     if (!script_path || rc == 0) {
-        render_grid(vt, rows, cols, show_rows, n_show, show_cells,
+        int cur_rows = 0, cur_cols = 0;
+        cfr_get_dimensions(vt, &cur_rows, &cur_cols);
+        render_grid(vt, cur_rows, cur_cols, show_rows, n_show, show_cells,
                     show_styles, quiet);
     }
 

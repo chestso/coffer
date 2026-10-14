@@ -2,7 +2,7 @@
 
 bin_PROGRAMS = cfr-debug
 man1_MANS = cfr-debug.1
-EXTRA_DIST = $(man1_MANS) test-cfr-debug.sh
+EXTRA_DIST = $(man1_MANS) test-cfr-debug.sh README.md
 
 # Regression test for the binary itself (POSIX only; ConPTY builds skip it)
 if !HOST_WINDOWS
