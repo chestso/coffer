@@ -105,8 +105,25 @@ to the PTY. Backslash escapes are expanded:
 = ESC,
 .B \et
 = TAB,
+.B \exNN
+= byte NN (hex),
 .B \e\e
 = backslash.
+.TP
+.BI "sendln " TEXT
+Like
+.BR send ,
+with a trailing CR LF.
+.TP
+.BI "emit " TEXT
+Feed
+.I TEXT
+straight into coffer's terminal parser, bypassing the child (same
+escape expansion as
+.BR send ).
+.TP
+.BI "emit\-raw " "HEX [HEX ...]"
+Feed literal bytes straight into coffer's parser.
 .TP
 .BI "raw " "HEX [HEX ...]"
 Send literal bytes specified as space-separated hex pairs
@@ -146,12 +163,34 @@ Dump the grid (default:
 .BR visible ).
 .B scrollback
 prints the scrollback, oldest first, with unified row numbers (negative
-= scrollback depth); 
+= scrollback depth);
 .B all
 prints both.
 .TP
+.BI "render cells " "ROW [C0 C1]"
+Dump per-cell detail (codepoint, width, style, hyperlink id) for
+.IR ROW ,
+columns
+.I C0
+through
+.I C1
+(default: the whole row). Rows are unified coordinates: negative values
+address the scrollback
+.RB ( \-1
+= most recently scrolled off).
+.TP
+.BI "render styles " ROW
+Dump style detail (underline, colors, attributes) for
+.IR ROW .
+.TP
 .B cursor
 Dump the cursor state (row, col, visible, blink).
+.TP
+.B dump\-sixel
+Dump live images and placements (id, anchor row/col, pixel size).
+.TP
+.B quit
+End the script run early (success).
 .TP
 .BI "# " comment
 Lines starting with

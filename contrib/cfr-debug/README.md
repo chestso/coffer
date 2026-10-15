@@ -65,22 +65,40 @@ cfr-debug --env COLORTERM= -- my-tui
 
 ### Script file
 
-The `-f`/`--script FILE` option reads a script with one command per line:
+The `-f`/`--script FILE` option reads a script with one command per line.
+The script engine lives in the coffer library (`include/coffer/script.h`)
+and is shared with other consumers (e.g. portty's `-S` mode, which adds
+its own UI commands as extensions):
 
 | Command                                | Description                                                                   |
 | -------------------------------------- | ----------------------------------------------------------------------------- |
 | `wait SECONDS`                         | Drain PTY for N seconds (accepts decimals)                                    |
 | `wait-for "TEXT" [TIMEOUT] [line-end]` | Drain until TEXT appears (unified buffer); TIMEOUT (default 600) is a failure |
-| `send TEXT`                            | Send text to PTY input (child's stdin). `\n`=LF, `\r`=CR, `\e`=ESC, `\t`=TAB  |
+| `send TEXT`                            | Send text to PTY input (child's stdin); escapes expanded (see below)          |
+| `sendln TEXT`                          | Like `send`, with a trailing CR LF                                            |
 | `raw HEX [HEX ...]`                    | Send literal bytes to PTY input (e.g. `raw ff fc 01` for IAC WONT ECHO)       |
+| `emit TEXT`                            | Feed text straight into coffer's parser, bypassing the child                  |
+| `emit-raw HEX [HEX ...]`               | Feed literal bytes straight into coffer's parser                              |
 | `assert-contains TEXT`                 | Fail (exit 1) if the unified buffer lacks TEXT                                |
 | `assert-not-contains TEXT`             | Fail (exit 1) if the unified buffer contains TEXT                             |
 | `await-exit [TIMEOUT]`                 | Drain until the child exits (default 10 s), recording its status              |
 | `assert-exit STATUS`                   | Fail (exit 1) unless `await-exit` recorded STATUS                             |
 | `resize COLS ROWS`                     | Resize the PTY and the grid (the child gets SIGWINCH on POSIX)                |
 | `render [visible\|scrollback\|all]`    | Dump the grid (default: `visible`; `scrollback` = oldest first, unified rows) |
+| `render cells ROW [C0 C1]`             | Dump per-cell detail (codepoint, width, style, hyperlink) for ROW             |
+| `render styles ROW`                    | Dump style detail (underline, colors, attrs) for ROW                          |
 | `cursor`                               | Dump cursor state (row, col, visible, blink)                                  |
+| `dump-sixel`                           | Dump live images and placements (id, anchor row/col, pixel size)              |
+| `quit`                                 | End the script run early (success)                                            |
 | `# comment`                            | Skipped                                                                       |
+
+`render` rows are unified coordinates: `>= 0` is a visible row, `< 0` is
+scrollback depth (`-1` = the line most recently scrolled off), so
+`render cells -1` inspects the most recent scrollback line.
+
+`send`, `sendln` and `emit` expand backslash escapes in their argument:
+`\n` (LF), `\r` (CR), `\t` (TAB), `\e` (ESC), `\xNN` (byte NN) and `\\`
+(backslash). `\033` is deliberately **not** expanded — write `\e`.
 
 `wait-for` is the synchronization primitive: `wait 3` guesses, `wait-for`
 waits on a fact and fails loudly on timeout, so a script has no fixed

@@ -214,6 +214,26 @@ Key properties:
 - cfr-debug keeps `send` + explicit `\n`; portty's `sendln` becomes a
   core command available to both.
 
+### Additions made during integration (phases 3–4)
+
+The sketch above was written before touching either host; three functions
+were added while wiring them and are part of the shipped header
+(`include/coffer/script.h`):
+
+- `cfr_script_dump(vt, out, mode, row, col_start, col_end)` — the
+  render/cursor/dump-sixel output as a call, so a host can dump without a
+  script (cfr-debug's `-s/-d/-S/-q` flags call it for its final dump).
+  Modes mirror the `render …` / `cursor` / `dump-sixel` commands.
+- `cfr_script_expand_escapes(text)` — the engine's escape expander
+  (`\n \r \t \e \\ \xNN`) applied to a copy, for hosts expanding the raw
+  args of their **extension** commands (extension args arrive
+  unexpanded, decision Q5's counterpart: the host owns its own grammar).
+  portty uses it for `panel` titles/bodies.
+- `cfr_script_run_quit_requested(run)` — true when the run ended because
+  of a `quit` command rather than end-of-script. Both report
+  `CFR_SCRIPT_DONE`, but an event-loop host must quit the application on
+  `quit` and not on natural end (portty's `-S` run).
+
 ## Phases and progress
 
 How to work this plan:
@@ -281,7 +301,7 @@ How to work this plan:
 - [x] **2.6** Register the test in `tests/Makefile.am`; `make check`
       green.
 - [x] **2.7** `make -C build format`; commit (`script: parser +
-  executor, folded into libcoffer`).
+executor, folded into libcoffer`).
 
 ### Phase 3 — cfr-debug migrates to the module
 
@@ -307,7 +327,7 @@ How to work this plan:
       with `sendln`, `wait-for ... line-end`, `resize`, `render`,
       `await-exit`/`assert-exit`.
 - [x] **3.5** Format; commit (`cfr-debug: run scripts through the
-  script engine`).
+script engine`).
 
 ### Phase 4 — portty adopts the engine
 
@@ -349,7 +369,7 @@ How to work this plan:
       exercises an extension command (`screendump`) and one that
       exercises a core command (`wait-for`).
 - [x] **4.8** Format; commit (`script: adopt coffer's script
-  engine, keep UI commands as extensions`).
+engine, keep UI commands as extensions`).
 
 ### Phase 5 — portty script audit
 
@@ -367,16 +387,16 @@ How to work this plan:
 
 ### Phase 6 — docs
 
-- [ ] **6.1** coffer: `contrib/cfr-debug/README.md` script table
+- [x] **6.1** coffer: `contrib/cfr-debug/README.md` script table
       (new commands, `render cells`/`render styles`), `cfr-debug.1`
       man page.
-- [ ] **6.2** coffer: `README.md` feature list mentions the script
+- [x] **6.2** coffer: `README.md` feature list mentions the script
       engine; `AGENTS.md` gains `script_parse.c` /
       `script_exec.c` in the layout table and `test_script`
       in the test list.
-- [ ] **6.3** Both repos: `FOLLOWUPS.md` / `TODO.md` entries closed
+- [x] **6.3** Both repos: `FOLLOWUPS.md` / `TODO.md` entries closed
       or created for leftovers.
-- [ ] **6.4** Commit (`docs: script engine unification`).
+- [x] **6.4** Commit (`docs: script engine unification`).
 
 ### Phase 7 — release mechanics
 

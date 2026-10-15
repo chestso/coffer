@@ -136,6 +136,12 @@ compositing. See the portty README for renderer-side details.
   or malformed sequences via an optional `log` callback at three levels
   (`CFR_LOG_DEBUG`, `CFR_LOG_INFO`, `CFR_LOG_WARN`). Pass `NULL` to
   silence.
+- **Script engine** — `include/coffer/script.h` (in `libcoffer.a`, no
+  extra dependency) is a line-oriented automation script parser +
+  executor (`wait-for`, `send`/`emit`, `assert-*`, `render`, ...).
+  Event-loop hosts drive it with `cfr_script_step()`; batch hosts with
+  `cfr_script_run_blocking()`. Hosts register UI-specific commands as
+  extensions. cfr-debug and portty's `-S` mode share it.
 - **UTF-8 display width** — `cfr_utf8_display_width()` computes the
   cell width of a UTF-8 string without a `CfrTerm*`, useful for
   pre-measuring output before writing to the terminal.
@@ -398,12 +404,13 @@ renders the resulting grid as text. Useful for testing how coffer
 interprets real-world terminal output without a renderer.
 
 Features include script-driven testing (`-f`/`--script FILE` with `wait`,
-`send`, `raw`, `assert-contains`, `assert-not-contains`, `render`, `cursor`
-commands), raw PTY capture (`-o`/`--output FILE`), cell data inspection
-(`-d`/`--cell-data`), specific row dumping (`-s`/`--show-row`), and a
-machine-readable flag listing (`--help-spec`). A man page (`cfr-debug.1`)
-is installed with `make install`. Cross-platform: ConPTY on Windows,
-`forkpty` on POSIX.
+`wait-for`, `send`/`sendln`, `raw`, `emit`/`emit-raw`, `assert-contains`,
+`assert-not-contains`, `await-exit`/`assert-exit`, `resize`, `render`,
+`cursor`, `dump-sixel`, `quit` commands), raw PTY capture
+(`-o`/`--output FILE`), cell data inspection (`-d`/`--cell-data`),
+specific row dumping (`-s`/`--show-row`), and a machine-readable flag
+listing (`--help-spec`). A man page (`cfr-debug.1`) is installed with
+`make install`. Cross-platform: ConPTY on Windows, `forkpty` on POSIX.
 
 See [`contrib/cfr-debug/README.md`](contrib/cfr-debug/README.md) for full
 usage details.

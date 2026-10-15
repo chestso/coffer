@@ -5,6 +5,13 @@ on. Order is roughly priority, not strict dependency.
 
 ## Investigate
 
+- **Script engine leftovers** (see `docs/script-engine-design.md`):
+  portty's `-S` process exit code does not reflect a failed script run
+  (the engine reports CFR_SCRIPT_FAILED and the app quits, but exit 0);
+  and in portty, `await-exit` races the app's own PTY-close quit path
+  (the child exiting quits the app before the script observes it).
+  Neither affects cfr-debug, where both work end to end.
+
 - **Wrapped-line behavioral spec + differential fuzz.** The internal
   representation of soft wraps is now margin-cell `CFR_CELL_WRAPLINE`
   plus per-row lineage ids, with a two-sided predicate
