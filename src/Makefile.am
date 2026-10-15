@@ -33,7 +33,10 @@ libcoffer_a_SOURCES = \
     log.c \
     selection.c \
     introspect.c \
+    script_parse.c \
+    script_exec.c \
     coffer_internal.h \
+    script_internal.h \
     image_store.h \
     unicode_tables.h
 

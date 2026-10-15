@@ -176,30 +176,30 @@ Key properties:
 
 ### Command split
 
-| Command | Owner | Notes |
-| --- | --- | --- |
-| `wait` | coffer core | |
-| `wait-for "TEXT" [TIMEOUT] [line-end]` | coffer core | unified-buffer search via `cfr_find_text`; timeout = failure |
-| `send` / `sendln` | coffer core | `sendln` moves up from portty (**Q2 confirmed**) |
-| `raw` | coffer core | hex bytes → PTY input |
-| `emit` / `emit-raw` | coffer core | feed VT parser directly; engine-shaped, not UI (**Q2 confirmed**) |
-| `assert-contains` / `assert-not-contains` | coffer core | unified buffer |
-| `await-exit` / `assert-exit` | coffer core | via `poll_exit` hook; portty gains these |
-| `resize COLS ROWS` | coffer core | via `resize` hook (PTY + grid) |
-| `render [visible\|scrollback\|all]` | coffer core | text dump to `host.out` |
-| `render cells ROW [C0 C1]` | coffer core | per-cell detail dump — absorbs portty's `dumprow` / `dumpcells` (**Q3**: rendering info is not UI) |
-| `render styles ROW` | coffer core | style detail dump (scriptable form of cfr-debug's `-S` flag) (**Q3**) |
-| `cursor` | coffer core | |
-| `quit` | coffer core | ends the run early, status DONE; hosts treat run-end as exit (**Q6**: kept even though semi-redundant) |
-| `dump-sixel` | coffer core | sixel store is engine state (**Q2 confirmed**) |
-| `screendump`, `renderdump` | portty | presented framebuffer / offscene render — pure renderer |
-| `record-start` / `record-stop` | portty | QOI frame recorder, GL-frame cadence |
-| `panel` / `panel_hide` | portty | notification panels |
-| `mousemove` / `mousedown` / `mouseup` | portty | synthetic input drives hover/selection in the UI |
-| `winsize` | portty | SDL window pixel size |
-| `dumpstate` | portty | renderer/backend state dump |
-| `assert-hover` / `assert-no-hover` | portty | hover state is a UI concept |
-| ~~`dumpgrid` / `dumprow` / `dumpcells`~~ | **deleted** | replaced by core `render` / `render cells` (**Q3**; coffer's vocabulary wins, no aliases) |
+| Command                                   | Owner       | Notes                                                                                                  |
+| ----------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------ |
+| `wait`                                    | coffer core |                                                                                                        |
+| `wait-for "TEXT" [TIMEOUT] [line-end]`    | coffer core | unified-buffer search via `cfr_find_text`; timeout = failure                                           |
+| `send` / `sendln`                         | coffer core | `sendln` moves up from portty (**Q2 confirmed**)                                                       |
+| `raw`                                     | coffer core | hex bytes → PTY input                                                                                  |
+| `emit` / `emit-raw`                       | coffer core | feed VT parser directly; engine-shaped, not UI (**Q2 confirmed**)                                      |
+| `assert-contains` / `assert-not-contains` | coffer core | unified buffer                                                                                         |
+| `await-exit` / `assert-exit`              | coffer core | via `poll_exit` hook; portty gains these                                                               |
+| `resize COLS ROWS`                        | coffer core | via `resize` hook (PTY + grid)                                                                         |
+| `render [visible\|scrollback\|all]`       | coffer core | text dump to `host.out`                                                                                |
+| `render cells ROW [C0 C1]`                | coffer core | per-cell detail dump — absorbs portty's `dumprow` / `dumpcells` (**Q3**: rendering info is not UI)     |
+| `render styles ROW`                       | coffer core | style detail dump (scriptable form of cfr-debug's `-S` flag) (**Q3**)                                  |
+| `cursor`                                  | coffer core |                                                                                                        |
+| `quit`                                    | coffer core | ends the run early, status DONE; hosts treat run-end as exit (**Q6**: kept even though semi-redundant) |
+| `dump-sixel`                              | coffer core | sixel store is engine state (**Q2 confirmed**)                                                         |
+| `screendump`, `renderdump`                | portty      | presented framebuffer / offscene render — pure renderer                                                |
+| `record-start` / `record-stop`            | portty      | QOI frame recorder, GL-frame cadence                                                                   |
+| `panel` / `panel_hide`                    | portty      | notification panels                                                                                    |
+| `mousemove` / `mousedown` / `mouseup`     | portty      | synthetic input drives hover/selection in the UI                                                       |
+| `winsize`                                 | portty      | SDL window pixel size                                                                                  |
+| `dumpstate`                               | portty      | renderer/backend state dump                                                                            |
+| `assert-hover` / `assert-no-hover`        | portty      | hover state is a UI concept                                                                            |
+| ~~`dumpgrid` / `dumprow` / `dumpcells`~~  | **deleted** | replaced by core `render` / `render cells` (**Q3**; coffer's vocabulary wins, no aliases)              |
 
 ### Vocabulary unification (coffer wins)
 
@@ -242,7 +242,7 @@ How to work this plan:
 
 ### Phase 2 — coffer: the `script` module
 
-- [ ] **2.1** Public header `include/coffer/script.h`: `CfrScript`,
+- [x] **2.1** Public header `include/coffer/script.h`: `CfrScript`,
       `CfrScriptRun`, `CfrScriptHost`, `CfrScriptStatus`,
       `CfrScriptPump`, and the load/free/run/step/wait_ms/blocking-run
       functions from the API sketch above. **Naming: files unprefixed,
@@ -250,7 +250,7 @@ How to work this plan:
       `src/script_*.c` on disk, `CfrScriptRun` / `cfr_script_step()` in
       code (user directive 2026-10-15). Otherwise follow coffer
       conventions (extern "C" guard, doc comments per function).
-- [ ] **2.2** Parser `src/script_parse.c`: line splitting,
+- [x] **2.2** Parser `src/script_parse.c`: line splitting,
       `#` comments, keyword/args split, quote stripping, escape
       expansion (union set `\n \r \t \e \\ \xNN`), hex decoder
       (portty's lenient token walk, but with a real byte length — no
@@ -258,7 +258,7 @@ How to work this plan:
       (right-to-left trim: bare number = timeout, `line-end`),
       core command table, `ext_names` whitelist check, parse errors
       with `line N: ...` messages.
-- [ ] **2.3** Executor `src/script_exec.c`: `CfrScriptRun` state
+- [x] **2.3** Executor `src/script_exec.c`: `CfrScriptRun` state
       (current index, wait deadline, recorded exit status, failure
       flag — **no file-static state**, portty's static deadline goes
       away), monotonic clock helper, `cfr_script_step()`,
@@ -266,10 +266,10 @@ How to work this plan:
       execution through the host hooks, `render` / `render cells` /
       `render styles` / `cursor` / `dump-sixel` output to `host.out`,
       `quit` → early DONE.
-- [ ] **2.4** Build wiring: add sources + header to `src/Makefile.am`
+- [x] **2.4** Build wiring: add sources + header to `src/Makefile.am`
       (and the installed-headers list); confirm `libcoffer.a` grows the
       new objects and `coffer.pc` is unchanged.
-- [ ] **2.5** Tests `tests/test_script.c` with a fake host (no PTY;
+- [x] **2.5** Tests `tests/test_script.c` with a fake host (no PTY;
       `emit` feeds a real `CfrTerm`, asserts run against it). Cover:
       each core command parses; escape union incl. `\xNN`; malformed
       hex rejected; `raw` with a NUL byte keeps its length; `wait-for`
@@ -278,10 +278,10 @@ How to work this plan:
       loads and dispatches; `wait-for` timeout → FAILED; `quit` → early
       DONE; blocking runner end-to-end (`emit` text → `assert-contains`
       → `render` into a `tmpfile()`).
-- [ ] **2.6** Register the test in `tests/Makefile.am`; `make check`
+- [x] **2.6** Register the test in `tests/Makefile.am`; `make check`
       green.
-- [ ] **2.7** `make -C build format`; commit (`script: parser +
-      executor, folded into libcoffer`).
+- [x] **2.7** `make -C build format`; commit (`script: parser +
+    executor, folded into libcoffer`).
 
 ### Phase 3 — cfr-debug migrates to the module
 
@@ -307,7 +307,7 @@ How to work this plan:
       with `sendln`, `wait-for ... line-end`, `resize`, `render`,
       `await-exit`/`assert-exit`.
 - [ ] **3.5** Format; commit (`cfr-debug: run scripts through the
-      script engine`).
+    script engine`).
 
 ### Phase 4 — portty adopts the engine
 
@@ -349,7 +349,7 @@ How to work this plan:
       exercises an extension command (`screendump`) and one that
       exercises a core command (`wait-for`).
 - [ ] **4.8** Format; commit (`script: adopt coffer's script
-      engine, keep UI commands as extensions`).
+    engine, keep UI commands as extensions`).
 
 ### Phase 5 — portty script audit
 
