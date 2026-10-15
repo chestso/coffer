@@ -311,9 +311,9 @@ How to work this plan:
 
 ### Phase 4 — portty adopts the engine
 
-- [ ] **4.0** `make install` the new coffer (or set `PKG_CONFIG_PATH`);
+- [x] **4.0** `make install` the new coffer (or set `PKG_CONFIG_PATH`);
       portty `configure` still passes against the interim version.
-- [ ] **4.1** `portty_script.c`: replace `portty_script_load` internals
+- [x] **4.1** `portty_script.c`: replace `portty_script_load` internals
       with `cfr_script_load()`, passing portty's extension name list:
       `screendump`, `renderdump`, `dumpstate`, `record-start`,
       `record-stop`, `panel`, `panel_hide`, `mousemove`, `mousedown`,
@@ -321,49 +321,49 @@ How to work this plan:
       Keep the `PorttyScript` handle as a thin wrapper so callers
       change minimally (or update call sites directly — pick per
       diff size).
-- [ ] **4.2** Build the `CfrScriptHost`: `pty_write` → portty's
+- [x] **4.2** Build the `CfrScriptHost`: `pty_write` → portty's
       `pty_write`; `emit` → `terminal_process_input`; `term` →
       `term_cfr_get_cfr_term()`; `resize` → the existing
       backend resize path; `poll_exit` → portty's pty status query
       (this gives portty `await-exit` / `assert-exit` for free);
       `log` → portty's logging; `out` → stdout.
-- [ ] **4.3** Replace `portty_script_step()` call sites with
+- [x] **4.3** Replace `portty_script_step()` call sites with
       `cfr_script_step()` per frame; replace
       `portty_script_wait_remaining_ms()` with `cfr_script_wait_ms()`
       in the event-deadline fold.
-- [ ] **4.4** Implement `exec_ext`: move the existing UI command case
+- [x] **4.4** Implement `exec_ext`: move the existing UI command case
       handlers behind it, preserving the deferred-flag mechanism for
       `screendump`/`renderdump` (GL access) and the recorder timer
       lifecycle. Raw args arrive as a string — parse per command
       (the old `ScriptCmd` field pre-parsing moves here).
-- [ ] **4.5** Delete duplicated code from portty: `expand_escapes`,
+- [x] **4.5** Delete duplicated code from portty: `expand_escapes`,
       `parse_hex_bytes`, `hex_val`, `grid_build_row_text`,
       `portty_debug_grid_contains/find`, `ScriptCmd`/`ScriptCmdType`,
       `portty_script_wait_remaining_ms`. Check `portty_now_seconds`
       for non-script users first — if the renderer uses it, keep it
       (it's not script-specific); otherwise delete.
-- [ ] **4.6** `tests/test_debug_script` rewritten against the new
+- [x] **4.6** `tests/test_debug_script` rewritten against the new
       wiring (or deleted if it only tested the deleted parser — its
       grammar coverage now lives in `test_script`).
-- [ ] **4.7** portty `make check` green; run one `-S` script that
+- [x] **4.7** portty `make check` green; run one `-S` script that
       exercises an extension command (`screendump`) and one that
       exercises a core command (`wait-for`).
-- [ ] **4.8** Format; commit (`script: adopt coffer's script
+- [x] **4.8** Format; commit (`script: adopt coffer's script
   engine, keep UI commands as extensions`).
 
 ### Phase 5 — portty script audit
 
-- [ ] **5.1** `grep` `portty-scripts/*.portty` and `tests/` for
+- [x] **5.1** `grep` `portty-scripts/*.portty` and `tests/` for
       `wait-for` lines that relied on warn-and-continue (a timeout was
       survivable before; now it's fatal) — tighten needles or budgets.
-- [ ] **5.2** Same pass for `assert-not-contains` (now sees
+- [x] **5.2** Same pass for `assert-not-contains` (now sees
       scrollback) — confirm no false failures from scrolled-off text.
-- [ ] **5.3** Migrate `dumpgrid` / `dumprow` / `dumpcells` uses to
+- [x] **5.3** Migrate `dumpgrid` / `dumprow` / `dumpcells` uses to
       `render` / `render cells` / `render styles`.
-- [ ] **5.4** Run every `.portty` script end to end; fix fallout.
-- [ ] **5.5** Update the `Debug scripts (-S FILE)` section of
+- [x] **5.4** Run every `.portty` script end to end; fix fallout.
+- [x] **5.5** Update the `Debug scripts (-S FILE)` section of
       `portty/AGENTS.md` (vocabulary, semantics, extension list).
-- [ ] **5.6** Commit (`scripts: migrate to unified script semantics`).
+- [x] **5.6** Commit (`scripts: migrate to unified script semantics`).
 
 ### Phase 6 — docs
 
