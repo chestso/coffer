@@ -27,6 +27,8 @@ static char *dup_str(const char *s)
     return copy;
 }
 
+static void expand_escapes(char *s);
+
 /* ------------------------------------------------------------------ */
 /* Core command registry (drives parsing and --help-spec listings)    */
 /* ------------------------------------------------------------------ */
@@ -66,6 +68,16 @@ const CfrScriptCmdDef *cfr_script_commands(size_t *out_count)
     if (out_count)
         *out_count = n;
     return COMMANDS;
+}
+
+char *cfr_script_expand_escapes(const char *text)
+{
+    if (!text)
+        return NULL;
+    char *copy = dup_str(text);
+    if (copy)
+        expand_escapes(copy);
+    return copy;
 }
 
 /* ------------------------------------------------------------------ */

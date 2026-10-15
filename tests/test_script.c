@@ -321,6 +321,21 @@ static void test_wait_for_option_order(void)
     cfr_script_free(s);
 }
 
+static void test_expand_escapes_public(void)
+{
+    char *out = cfr_script_expand_escapes("a\\nb\\x41\\e\\\\");
+    ASSERT_NOT_NULL(out);
+    ASSERT_EQ(strlen(out), 6);
+    ASSERT_TRUE(memcmp(out, "a\nbA\x1b\\", 6) == 0);
+    free(out);
+    /* Malformed \x keeps its backslash. */
+    out = cfr_script_expand_escapes("x\\xzz");
+    ASSERT_NOT_NULL(out);
+    ASSERT_STR_EQ(out, "x\\xzz");
+    free(out);
+    ASSERT_NULL(cfr_script_expand_escapes(NULL));
+}
+
 /* ------------------------------------------------------------------ */
 /* Executor                                                           */
 /* ------------------------------------------------------------------ */
@@ -517,6 +532,36 @@ static void test_quit_ends_early_done(void)
     /* The failing assert after quit must not run. */
     ASSERT_EQ(run_str("quit\nassert-contains never\n", NULL, &fh, &host),
               CFR_SCRIPT_DONE);
+    cfr_free(vt);
+}
+
+static void test_quit_flag_distinguishes_early_done(void)
+{
+    CfrTerm *vt = make_term(5, 20);
+    FakeHost fh;
+    CfrScriptHost host;
+    host_init(&fh, &host, vt);
+    char err[256];
+
+    CfrScript *s = parse_str("quit\n", NULL, err, sizeof(err));
+    ASSERT_NOT_NULL(s);
+    CfrScriptRun *run = cfr_script_run_new(s, &host);
+    ASSERT_NOT_NULL(run);
+    ASSERT_EQ(cfr_script_step(run), CFR_SCRIPT_DONE);
+    ASSERT_TRUE(cfr_script_run_quit_requested(run));
+    cfr_script_run_free(run);
+    cfr_script_free(s);
+
+    /* Natural end of script: done, but no quit requested. The step
+     * that executes the final command already returns DONE. */
+    s = parse_str("send x\n", NULL, err, sizeof(err));
+    ASSERT_NOT_NULL(s);
+    run = cfr_script_run_new(s, &host);
+    ASSERT_NOT_NULL(run);
+    ASSERT_EQ(cfr_script_step(run), CFR_SCRIPT_DONE);
+    ASSERT_FALSE(cfr_script_run_quit_requested(run));
+    cfr_script_run_free(run);
+    cfr_script_free(s);
     cfr_free(vt);
 }
 
@@ -729,6 +774,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_render_bad_mode_rejected);
     RUN_TEST(test_load_missing_file);
     RUN_TEST(test_wait_for_option_order);
+    RUN_TEST(test_expand_escapes_public);
 
     RUN_TEST(test_send_escapes_captured);
     RUN_TEST(test_sendln_appends_crlf);
@@ -744,6 +790,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_await_exit_timeout_fails);
     RUN_TEST(test_resize_hook);
     RUN_TEST(test_quit_ends_early_done);
+    RUN_TEST(test_quit_flag_distinguishes_early_done);
     RUN_TEST(test_ext_dispatch);
     RUN_TEST(test_ext_fatal_failure);
     RUN_TEST(test_wait_ms_non_wait);

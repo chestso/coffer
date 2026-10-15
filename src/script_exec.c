@@ -61,6 +61,7 @@ struct CfrScriptRun
     bool deadline_armed;
     int exit_status; /* recorded by await-exit */
     bool have_exit_status;
+    bool quit_requested; /* set by `quit` */
     CfrScriptStatus status;
 };
 
@@ -565,6 +566,7 @@ CfrScriptStatus cfr_script_step(CfrScriptRun *run)
 
     case CFR_CMD_QUIT:
         run_log(run, cmd->line, "quit");
+        run->quit_requested = true;
         run->status = CFR_SCRIPT_DONE;
         break;
 
@@ -596,6 +598,11 @@ CfrScriptStatus cfr_script_step(CfrScriptRun *run)
         run->index >= run->script->count)
         run->status = CFR_SCRIPT_DONE;
     return run->status;
+}
+
+bool cfr_script_run_quit_requested(const CfrScriptRun *run)
+{
+    return run && run->quit_requested;
 }
 
 /* ------------------------------------------------------------------ */

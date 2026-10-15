@@ -109,6 +109,11 @@ void cfr_script_free(CfrScript *script);
  * The array is static storage, owned by the library. */
 const CfrScriptCmdDef *cfr_script_commands(size_t *out_count);
 
+/* Expand the script escape set (\n \r \t \e \\ \xNN) in a copy of
+ * `text`. For extension commands, whose args arrive raw. Returns
+ * malloc'd memory; free with free(). NULL in → NULL out. */
+char *cfr_script_expand_escapes(const char *text);
+
 /* Start a run. The host struct is copied; `host.term` may be replaced
  * between steps by keeping a pointer-stable CfrTerm. */
 CfrScriptRun *cfr_script_run_new(const CfrScript *script,
@@ -119,6 +124,11 @@ void cfr_script_run_free(CfrScriptRun *run);
  * commands in place and returns while a wait/wait-for/await-exit is
  * pending. Returns the run status. */
 CfrScriptStatus cfr_script_step(CfrScriptRun *run);
+
+/* True when the run executed a `quit` command. The status will be
+ * CFR_SCRIPT_DONE; this distinguishes an early quit from natural end
+ * of script (an event-loop host typically quits the app on `quit`). */
+bool cfr_script_run_quit_requested(const CfrScriptRun *run);
 
 /* Milliseconds until the current wait/wait-for/await-exit can advance,
  * for folding into an event loop's deadline. Returns UINT32_MAX when
