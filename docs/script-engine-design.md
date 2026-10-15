@@ -306,7 +306,7 @@ How to work this plan:
       `make check`; manual smoke: scripted session against `bash -l`
       with `sendln`, `wait-for ... line-end`, `resize`, `render`,
       `await-exit`/`assert-exit`.
-- [ ] **3.5** Format; commit (`cfr-debug: run scripts through the
+- [x] **3.5** Format; commit (`cfr-debug: run scripts through the
   script engine`).
 
 ### Phase 4 — portty adopts the engine
