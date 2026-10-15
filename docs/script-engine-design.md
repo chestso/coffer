@@ -1,6 +1,8 @@
 # Script engine unification — design + progress tracker
 
-Status: **in progress**
+Status: **complete** — all phases done; coffer **v0.8.0** tagged, portty
+requires it. Residual items live in
+[FOLLOWUPS.md](../FOLLOWUPS.md) ("Script engine leftovers").
 Owner repo: **coffer** (the shared engine lives here; portty consumes it)
 Last updated: 2026-10-15
 
@@ -400,13 +402,23 @@ engine, keep UI commands as extensions`).
 
 ### Phase 7 — release mechanics
 
-- [ ] **7.1** coffer version bump (minor — new public API in
-      `libcoffer`), `make distcheck`, tag.
-- [ ] **7.2** portty `configure.ac`: raise
-      `PKG_CHECK_MODULES([COFFER], [coffer >= <new>])` floor.
-- [ ] **7.3** Final cross-repo verification: coffer `make check`,
-      portty `make check`, one `-S` run, one `cfr-debug -f` run.
-- [ ] **7.4** Commit; mark this section complete.
+- [x] **7.1** coffer version bump (minor — new public API in
+      `libcoffer`), `make distcheck`, tag. → **v0.8.0** (annotated tag);
+      `make distcheck` green in `build-release` (tarball
+      `coffer-0.8.0.tar.gz` ships `script.h` + both sources).
+- [x] **7.2** portty `configure.ac`: raise
+      `PKG_CHECK_MODULES([COFFER], [coffer >= <new>])` floor. →
+      `>= 0.8.0`, with the three CI pins bumped to the tag and README's
+      quoted minimum.
+- [x] **7.3** Final cross-repo verification: coffer `make check`,
+      portty `make check`, one `-S` run, one `cfr-debug -f` run. → 21/21
+      and 32/32 green; `portty -S` on `test-hover-scroll.portty`
+      (core: `wait-for`, `assert-hover`, `render cells`, `quit`) and
+      `panel-demo.portty` (extensions: `panel`, `panel_hide`) plus
+      `diagonal_seam.portty` (`emit` with `\xNN`, `screendump`) exit 0;
+      `cfr-debug -f` script exercising `sendln`, `wait-for … line-end`,
+      `resize`, `render`, `await-exit 7`, `assert-exit 7` exits 0.
+- [x] **7.4** Commit; mark this section complete.
 
 ## Decisions
 
