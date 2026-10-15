@@ -222,14 +222,14 @@ static void test_parse_all_core_commands(void)
     ASSERT_EQ(s->cmds[11].type, CFR_CMD_RESIZE);
     ASSERT_EQ(s->cmds[11].a, 100); /* cols */
     ASSERT_EQ(s->cmds[11].b, 40);  /* rows */
-    ASSERT_EQ(s->cmds[13].render_mode, CFR_RENDER_ALL);
-    ASSERT_EQ(s->cmds[14].render_mode, CFR_RENDER_CELLS);
+    ASSERT_EQ(s->cmds[13].render_mode, CFR_SCRIPT_DUMP_ALL);
+    ASSERT_EQ(s->cmds[14].render_mode, CFR_SCRIPT_DUMP_CELLS);
     ASSERT_EQ(s->cmds[14].a, 0);
     ASSERT_EQ(s->cmds[14].c, -1); /* whole row */
-    ASSERT_EQ(s->cmds[15].render_mode, CFR_RENDER_CELLS);
+    ASSERT_EQ(s->cmds[15].render_mode, CFR_SCRIPT_DUMP_CELLS);
     ASSERT_EQ(s->cmds[15].b, 1);
     ASSERT_EQ(s->cmds[15].c, 5);
-    ASSERT_EQ(s->cmds[16].render_mode, CFR_RENDER_STYLES);
+    ASSERT_EQ(s->cmds[16].render_mode, CFR_SCRIPT_DUMP_STYLES);
     ASSERT_EQ(s->cmds[16].a, 2);
     ASSERT_EQ(s->cmds[19].type, CFR_CMD_QUIT);
     cfr_script_free(s);

@@ -149,10 +149,15 @@ uint32_t cfr_script_wait_ms(CfrScriptRun *run)
 /* Grid dumps (render / cursor / dump-sixel)                          */
 /* ------------------------------------------------------------------ */
 
-static void render_text(CfrScriptRun *run, int mode)
+static void dump_row_text(CfrTerm *vt, FILE *out, char *buf, size_t cap,
+                          int row)
 {
-    CfrTerm *vt = run->host.term;
-    FILE *out = run_out(run);
+    cfr_row_text(vt, row, buf, cap);
+    fprintf(out, "%2d|%s\n", row, buf);
+}
+
+static void dump_text(CfrTerm *vt, FILE *out, CfrScriptDumpMode mode)
+{
     int rows = 0, cols = 0;
     cfr_get_dimensions(vt, &rows, &cols);
     size_t cap = (size_t)cols * ROW_UTF8_PER_CELL + 1;
@@ -160,20 +165,17 @@ static void render_text(CfrScriptRun *run, int mode)
     if (!buf)
         return;
 
-    if (mode == CFR_RENDER_SCROLLBACK || mode == CFR_RENDER_ALL) {
+    if (mode == CFR_SCRIPT_DUMP_SCROLLBACK ||
+        mode == CFR_SCRIPT_DUMP_ALL) {
         int lines = cfr_get_scrollback_lines(vt);
         if (lines <= 0)
             fprintf(out, "(scrollback empty)\n");
-        for (int sb = lines - 1; sb >= 0; sb--) {
-            cfr_row_text(vt, -(sb + 1), buf, cap);
-            fprintf(out, "%2d|%s\n", -(sb + 1), buf);
-        }
+        for (int sb = lines - 1; sb >= 0; sb--)
+            dump_row_text(vt, out, buf, cap, -(sb + 1));
     }
-    if (mode == CFR_RENDER_VISIBLE || mode == CFR_RENDER_ALL) {
-        for (int r = 0; r < rows; r++) {
-            cfr_row_text(vt, r, buf, cap);
-            fprintf(out, "%2d|%s\n", r, buf);
-        }
+    if (mode == CFR_SCRIPT_DUMP_VISIBLE || mode == CFR_SCRIPT_DUMP_ALL) {
+        for (int r = 0; r < rows; r++)
+            dump_row_text(vt, out, buf, cap, r);
     }
     free(buf);
 }
@@ -196,11 +198,9 @@ static void describe_cp(const CfrCell *cell, char *buf, size_t cap)
         snprintf(buf, cap, "U+%04X", cell->cp);
 }
 
-static void render_cells(CfrScriptRun *run, int row, int col_start,
-                         int col_end)
+static void dump_cells(CfrTerm *vt, FILE *out, int row, int col_start,
+                       int col_end)
 {
-    CfrTerm *vt = run->host.term;
-    FILE *out = run_out(run);
     int rows = 0, cols = 0;
     cfr_get_dimensions(vt, &rows, &cols);
     if (col_end < 0 || col_end >= cols)
@@ -238,10 +238,8 @@ static void render_cells(CfrScriptRun *run, int row, int col_start,
     }
 }
 
-static void render_styles(CfrScriptRun *run, int row)
+static void dump_styles(CfrTerm *vt, FILE *out, int row)
 {
-    CfrTerm *vt = run->host.term;
-    FILE *out = run_out(run);
     int rows = 0, cols = 0;
     cfr_get_dimensions(vt, &rows, &cols);
 
@@ -273,18 +271,15 @@ static void render_styles(CfrScriptRun *run, int row)
     }
 }
 
-static void render_cursor(CfrScriptRun *run)
+static void dump_cursor(CfrTerm *vt, FILE *out)
 {
-    CfrCursor c = cfr_get_cursor(run->host.term);
-    fprintf(run_out(run), "cursor: row=%d col=%d visible=%d blink=%d\n",
-            c.row, c.col, c.visible, c.blink);
+    CfrCursor c = cfr_get_cursor(vt);
+    fprintf(out, "cursor: row=%d col=%d visible=%d blink=%d\n", c.row,
+            c.col, c.visible, c.blink);
 }
 
-static void render_sixel(CfrScriptRun *run)
+static void dump_sixel(CfrTerm *vt, FILE *out)
 {
-    CfrTerm *vt = run->host.term;
-    FILE *out = run_out(run);
-
     int count = 0;
     const CfrImage *imgs = cfr_get_images(vt, &count);
     fprintf(out, "dump-sixel: %d image(s)\n", count);
@@ -305,6 +300,34 @@ static void render_sixel(CfrScriptRun *run)
                 (unsigned long long)pls[i].image_id, pls[i].row, pls[i].col,
                 pls[i].rows, pls[i].cols, pls[i].src_x, pls[i].src_y,
                 pls[i].src_w, pls[i].src_h, pls[i].z_index);
+    }
+}
+
+void cfr_script_dump(CfrTerm *vt, FILE *out, CfrScriptDumpMode mode,
+                     int row, int col_start, int col_end)
+{
+    if (!vt)
+        return;
+    if (!out)
+        out = stdout;
+    switch (mode) {
+    case CFR_SCRIPT_DUMP_VISIBLE:
+    case CFR_SCRIPT_DUMP_SCROLLBACK:
+    case CFR_SCRIPT_DUMP_ALL:
+        dump_text(vt, out, mode);
+        break;
+    case CFR_SCRIPT_DUMP_CELLS:
+        dump_cells(vt, out, row, col_start, col_end);
+        break;
+    case CFR_SCRIPT_DUMP_STYLES:
+        dump_styles(vt, out, row);
+        break;
+    case CFR_SCRIPT_DUMP_CURSOR:
+        dump_cursor(vt, out);
+        break;
+    case CFR_SCRIPT_DUMP_SIXEL:
+        dump_sixel(vt, out);
+        break;
     }
 }
 
@@ -518,26 +541,25 @@ CfrScriptStatus cfr_script_step(CfrScriptRun *run)
     case CFR_CMD_RENDER:
         if (!require_term(run, cmd, "render"))
             break;
-        if (cmd->render_mode == CFR_RENDER_CELLS)
-            render_cells(run, cmd->a, cmd->b, cmd->c);
-        else if (cmd->render_mode == CFR_RENDER_STYLES)
-            render_styles(run, cmd->a);
-        else
-            render_text(run, cmd->render_mode);
+        cfr_script_dump(run->host.term, run_out(run),
+                        (CfrScriptDumpMode)cmd->render_mode, cmd->a,
+                        cmd->b, cmd->c);
         run_advance(run);
         break;
 
     case CFR_CMD_CURSOR:
         if (!require_term(run, cmd, "cursor"))
             break;
-        render_cursor(run);
+        cfr_script_dump(run->host.term, run_out(run),
+                        CFR_SCRIPT_DUMP_CURSOR, 0, 0, 0);
         run_advance(run);
         break;
 
     case CFR_CMD_DUMP_SIXEL:
         if (!require_term(run, cmd, "dump-sixel"))
             break;
-        render_sixel(run);
+        cfr_script_dump(run->host.term, run_out(run),
+                        CFR_SCRIPT_DUMP_SIXEL, 0, 0, 0);
         run_advance(run);
         break;
 

@@ -134,6 +134,30 @@ typedef void (*CfrScriptPump)(void *ud, uint32_t max_ms);
 CfrScriptStatus cfr_script_run_blocking(CfrScriptRun *run,
                                         CfrScriptPump pump, void *pump_ud);
 
+/* ------------------------------------------------------------------ */
+/* Direct dumps (no script needed)                                    */
+/* ------------------------------------------------------------------ */
+
+/* Dump modes for cfr_script_dump() — the same output the `render`,
+ * `cursor` and `dump-sixel` script commands produce. */
+typedef enum
+{
+    CFR_SCRIPT_DUMP_VISIBLE,    /* visible rows as text (row ignored) */
+    CFR_SCRIPT_DUMP_SCROLLBACK, /* scrollback, oldest first */
+    CFR_SCRIPT_DUMP_ALL,        /* scrollback then visible */
+    CFR_SCRIPT_DUMP_CELLS,      /* per-cell detail for `row`           */
+    CFR_SCRIPT_DUMP_STYLES,     /* style detail for `row`              */
+    CFR_SCRIPT_DUMP_CURSOR,     /* cursor state                        */
+    CFR_SCRIPT_DUMP_SIXEL,      /* live images and placements          */
+} CfrScriptDumpMode;
+
+/* Dump a grid view to `out` (NULL = stdout). Rows are unified
+ * coordinates: >= 0 visible, < 0 scrollback depth (-1 = most recent).
+ * `col_start`/`col_end` apply to CFR_SCRIPT_DUMP_CELLS
+ * (col_end -1 = whole row). */
+void cfr_script_dump(CfrTerm *vt, FILE *out, CfrScriptDumpMode mode,
+                     int row, int col_start, int col_end);
+
 #ifdef __cplusplus
 }
 #endif

@@ -281,7 +281,7 @@ static bool parse_wait_for(CfrScriptCmd *cmd, char *args,
 static bool parse_render(CfrScriptCmd *cmd, char *args,
                          char *err, size_t errlen)
 {
-    cmd->render_mode = CFR_RENDER_VISIBLE;
+    cmd->render_mode = CFR_SCRIPT_DUMP_VISIBLE;
     if (*args == '\0')
         return true;
 
@@ -293,15 +293,15 @@ static bool parse_render(CfrScriptCmd *cmd, char *args,
     args = skip_ws(args);
 
     if (strcmp(tok, "visible") == 0)
-        cmd->render_mode = CFR_RENDER_VISIBLE;
+        cmd->render_mode = CFR_SCRIPT_DUMP_VISIBLE;
     else if (strcmp(tok, "scrollback") == 0)
-        cmd->render_mode = CFR_RENDER_SCROLLBACK;
+        cmd->render_mode = CFR_SCRIPT_DUMP_SCROLLBACK;
     else if (strcmp(tok, "all") == 0)
-        cmd->render_mode = CFR_RENDER_ALL;
+        cmd->render_mode = CFR_SCRIPT_DUMP_ALL;
     else if (strcmp(tok, "cells") == 0)
-        cmd->render_mode = CFR_RENDER_CELLS;
+        cmd->render_mode = CFR_SCRIPT_DUMP_CELLS;
     else if (strcmp(tok, "styles") == 0)
-        cmd->render_mode = CFR_RENDER_STYLES;
+        cmd->render_mode = CFR_SCRIPT_DUMP_STYLES;
     else {
         set_error(err, errlen, cmd->line,
                   "render: unknown mode '%s' "
@@ -310,7 +310,7 @@ static bool parse_render(CfrScriptCmd *cmd, char *args,
         return false;
     }
 
-    if (cmd->render_mode == CFR_RENDER_CELLS) {
+    if (cmd->render_mode == CFR_SCRIPT_DUMP_CELLS) {
         cmd->a = 0;
         cmd->b = 0;
         cmd->c = -1;
@@ -325,7 +325,7 @@ static bool parse_render(CfrScriptCmd *cmd, char *args,
                       "render cells takes ROW alone or ROW C0 C1");
             return false;
         }
-    } else if (cmd->render_mode == CFR_RENDER_STYLES) {
+    } else if (cmd->render_mode == CFR_SCRIPT_DUMP_STYLES) {
         if (sscanf(args, "%d", &cmd->a) != 1) {
             set_error(err, errlen, cmd->line,
                       "render styles requires ROW");

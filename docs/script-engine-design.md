@@ -281,33 +281,33 @@ How to work this plan:
 - [x] **2.6** Register the test in `tests/Makefile.am`; `make check`
       green.
 - [x] **2.7** `make -C build format`; commit (`script: parser +
-    executor, folded into libcoffer`).
+  executor, folded into libcoffer`).
 
 ### Phase 3 — cfr-debug migrates to the module
 
-- [ ] **3.1** Replace `run_script()` and its helpers
+- [x] **3.1** Replace `run_script()` and its helpers
       (`parse_wait_for`, `expand_escapes`, `parse_hex_bytes`,
       `wait_for`, `await_exit`) in `cfr_debug.c` with
       `cfr_script_load` (no ext names) + `CfrScriptHost` wired to
       `PtyCtx` + `cfr_script_run_blocking()` with the existing `drain()`
       as the pump.
-- [ ] **3.2** Delete the now-duplicated grid render/search helpers in
+- [x] **3.2** Delete the now-duplicated grid render/search helpers in
       `cfr_debug.c` that moved into the engine (`render_grid`,
       `render_scrollback`, `render_row_cells`, `render_row_styles`);
       keep the CLI flag handling (`-s/-d/-S/-q`) by translating flags
       into engine render modes for the final dump.
-- [ ] **3.3** cfr-debug gains the new core commands for free; wire the
+- [x] **3.3** cfr-debug gains the new core commands for free; wire the
       `emit` hook to `cfr_input_write()` and expose `sendln` in help.
       Extend `--help-spec` `CMD` lines (`sendln`, `emit`, `emit-raw`,
       `render cells`, `render styles`, `quit`, `dump-sixel`) and
       `SCRIPT_COMMANDS[]`/`--help` accordingly — the table should be
       generated from the engine's command registry, not hand-duplicated.
-- [ ] **3.4** `contrib/cfr-debug/test-cfr-debug.sh` green via
+- [x] **3.4** `contrib/cfr-debug/test-cfr-debug.sh` green via
       `make check`; manual smoke: scripted session against `bash -l`
       with `sendln`, `wait-for ... line-end`, `resize`, `render`,
       `await-exit`/`assert-exit`.
 - [ ] **3.5** Format; commit (`cfr-debug: run scripts through the
-    script engine`).
+  script engine`).
 
 ### Phase 4 — portty adopts the engine
 
@@ -349,7 +349,7 @@ How to work this plan:
       exercises an extension command (`screendump`) and one that
       exercises a core command (`wait-for`).
 - [ ] **4.8** Format; commit (`script: adopt coffer's script
-    engine, keep UI commands as extensions`).
+  engine, keep UI commands as extensions`).
 
 ### Phase 5 — portty script audit
 

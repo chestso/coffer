@@ -31,15 +31,7 @@ typedef enum
     CFR_CMD_EXT,
 } CfrScriptCmdType;
 
-/* `render` sub-modes. */
-enum
-{
-    CFR_RENDER_VISIBLE,
-    CFR_RENDER_SCROLLBACK,
-    CFR_RENDER_ALL,
-    CFR_RENDER_CELLS,
-    CFR_RENDER_STYLES,
-};
+/* `render` sub-modes — the values of CfrScriptDumpMode in script.h. */
 
 typedef struct
 {
@@ -53,7 +45,7 @@ typedef struct
     size_t bytes_len;
     int a, b, c;     /* RESIZE cols/rows; ASSERT_EXIT status;
                         RENDER cells/styles row/col_start/col_end */
-    int render_mode; /* CFR_RENDER_* */
+    int render_mode; /* CFR_SCRIPT_DUMP_* */
     char *ext_name;  /* CFR_CMD_EXT: the command name as written */
 } CfrScriptCmd;
 
