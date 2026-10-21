@@ -5,6 +5,25 @@ on. Order is roughly priority, not strict dependency.
 
 ## Investigate
 
+- **The image store's lifetimes are half-unified** (see
+  `docs/image-store-design.md` — design + progress tracker, resume
+  there). Reproduced against the engine (reproducers in
+  `tests/repro/`): the 1:1/1:N split is _inferred_ from "does this
+  image have a placement", so a transmitted-but-unplaced kitty image
+  dies on `ED`/resize; the 256-record overflow evicts the NEWEST
+  image (the swap-remove moves the tail into slot 0); the byte-budget
+  eviction cannot order 1:N images (all their `abs_line` are 0) and
+  takes the newest one; the client's `i=` id and the engine's id
+  share one space, so an iTerm2 or Lottie image silently replaces a
+  kitty image with the same id; the kitty path reports NO damage, so
+  the host never repaints (the "blank space"); and `cfr_img_get()`
+  scales `buf_w`/`buf_h` by `content_scale` while the pixel buffer is
+  the native size — portty's texture upload then reads out of bounds
+  (ASan-confirmed at scale 2.0). The plan fixes the data model
+  (explicit kind, a handle beside the public id, a creation order for
+  the eviction), the lifetimes, the damage, the buffer dimensions, and
+  the lottie reconciliation.
+
 - **Script engine leftovers** (see `docs/script-engine-design.md`):
   portty's `-S` process exit code does not reflect a failed script run
   (the engine reports CFR_SCRIPT_FAILED and the app quits, but exit 0);
