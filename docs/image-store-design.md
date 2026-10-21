@@ -50,8 +50,9 @@ inference is the root of most of the defects below.
 
 ## 2. Findings (each reproduced against the engine)
 
-Repro programs live in `/tmp/kr` (throwaway) and are being turned into
-regression tests as part of the work.
+Repro programs live in `tests/repro/` (one per finding; they print, they
+do not assert) and are being turned into regression tests as part of the
+work.
 
 ### F1 — the 1:1 / 1:N split is inferred, so a transmitted-but-unplaced kitty image is treated as a sixel and dies with the screen
 
@@ -60,7 +61,7 @@ regression tests as part of the work.
 not yet placed has **no** placement, so the store treats it as a 1:1
 image and culls it by its placeholder anchor (`abs_line == 0`).
 
-Repro (`/tmp/kr/misclass.c`): after `a=t` → 1 image; after `ESC [ 2 J`
+Repro (`tests/repro/misclass.c`): after `a=t` → 1 image; after `ESC [ 2 J`
 → **0 images**; after a resize → **0 images**.
 
 Kitty's spec says the opposite: _"The other commands to erase text must
@@ -81,7 +82,7 @@ img_rec_release(vt, st, 0);` and `img_rec_release()` ends with
 index 0 therefore moves the **last** (newest) record into slot 0, and
 the next overflow releases _that_ one.
 
-Repro (`/tmp/kr/evict3.c`): 256 images live; the 257th transmit makes
+Repro (`tests/repro/evict3.c`): 256 images live; the 257th transmit makes
 id 1 vanish and id 257 appear. The oldest image is evicted, the newest
 survives — the opposite of the documented "evicts the oldest first".
 
@@ -95,7 +96,7 @@ _newest_ one — the one the user is looking at. The eviction looks
 named image (kitty, Lottie) has `abs_line == 0` — the anchor is in the
 placement — so all candidates tie and the first one found wins.
 
-Repro (`/tmp/kr/budget2.c`): ten 16 MB images; after the budget bites
+Repro (`tests/repro/budget2.c`): ten 16 MB images; after the budget bites
 the live set is `9 2 3 4 5 6 7 10` — id 1 (the oldest) survived, id 9
 (the newest) died.
 
@@ -113,7 +114,7 @@ advances `next_id`. So the two id authorities share one space:
 - and `cfr_img_find_by_id()` resolves the kitty placement to whichever
   record comes first in the dense array.
 
-Repro (`/tmp/kr/collide2.c`): a kitty image with `i=1` is _replaced_
+Repro (`tests/repro/collide2.c`): a kitty image with `i=1` is _replaced_
 by a following iTerm2 image (source flips KITTY→ITERM, pixels 8x8 →
 40x40) and by a following Lottie animation (source flips KITTY→LOTTIE).
 The kitty placement then points at the other protocol's pixels.
@@ -130,7 +131,7 @@ places through `cfr_img_add_placement()`, which does not damage). A
 kitty placement therefore produces **zero** damage callbacks, and the
 host (portty) only repaints when coffer reports damage.
 
-Repro (`/tmp/kr/damage.c`): `a=T` → 0 damage callbacks; the following
+Repro (`tests/repro/damage.c`): `a=T` → 0 damage callbacks; the following
 `\r\n` → 1.
 
 **Impact:** the "blank space". The image is in the store, the placement
@@ -146,7 +147,7 @@ placement for it is created."_
 
 coffer follows that for `a=t`/`a=T` with an explicit `i=` — but
 nevermore/boba re-send the same id for a _new_ picture, and the old
-placement disappears with the image. Repro (`/tmp/kr/repro.c`): the
+placement disappears with the image. Repro (`tests/repro/repro.c`): the
 re-transmit moved the placement to the cursor's row (a new placement
 was created) and the old one was gone.
 
@@ -160,9 +161,9 @@ constraint the fix must respect.
 The APC accumulator is bounded by `CFR_OSC_BUF_MAX` (256 MB) and the
 parser truncates silently (`apc_truncated`) — but a payload that is
 never ST-terminated is simply not dispatched at all. Repro
-(`/tmp/kr/budget.c` vs `budget2.c`): the same 21 MB transmit with and
-without the trailing `ESC \`; without it the image never lands and no
-error is emitted.
+(`tests/repro/budget2.c` with and without the trailing `ESC \`): the
+same 21 MB transmit; without the terminator the image never lands and
+no error is emitted.
 
 **Impact:** low (boba always terminates), but it is the shape of the
 "silently nothing" family the report is about.
@@ -174,7 +175,7 @@ error is emitted.
 portty's `image_get_texture()` copies `buf_w * buf_h * 4` bytes from
 `img->rgba`.
 
-Repro (`/tmp/kr/host_upload.c`, built with ASan): at
+Repro (`tests/repro/host_upload.c`, built with ASan): at
 `content_scale = 2.0` the host reads 1024 bytes from a 256-byte
 allocation — **heap-buffer-overflow**, confirmed by ASan.
 
