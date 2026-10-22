@@ -1,8 +1,9 @@
 # coffer — unified image store: design + fix plan
 
-Status: **phases 1–4 implemented** (the data model, the lifetimes, the
-damage, the buffer dimensions). Phases 5–8 remain: the Lottie
-reconciliation, the public surface, the tests, the consumers.
+Status: **all eight phases implemented** (the data model, the lifetimes,
+the damage, the buffer dimensions, the Lottie reconciliation, the
+public surface, the tests, the consumers). The findings F1–F9 are
+fixed; the reproducers under `tests/repro/` show the fixed behaviour.
 Owner repo: **coffer** (the engine; portty/nevermore/boba are consumers).
 Last updated: 2026-10-22.
 
@@ -360,10 +361,20 @@ run in CI).
 
 ### Phase 8 — the consumers
 
-19. **portty**: `render_images()` must use the _placement_ rect for
-    1:N images (it does) and the _image_ rect for 1:1 (it does). The
-    `img->width_px` vs `buf_w` distinction is the only change needed
-    (phase 4). The damage path needs no change once phase 3 lands.
+19. **portty**: `render_images()` uses the _placement_ rect for 1:N
+    images (it does) and the _image_ rect for 1:1 (it does). The
+    `img->width_px` vs `buf_w` distinction needed no portty change:
+    the host copies `buf_w * buf_h * 4` bytes out of the engine's
+    buffer, and the engine now reports the buffer's real extent, so
+    the upload no longer reads past the allocation on a scaled
+    display.
+    The host's TEXTURE CACHE did need a change: it keyed on the
+    public id, which the id-space split made ambiguous (a kitty image
+    and an iTerm2 image may carry the same number) — it keys on the
+    image's handle now, and a placement is paired with its image by
+    the handle too. The host-side regression test
+    (`portty/tests/test_kitty.c`) copies exactly what the renderer
+    copies, at `content_scale = 2.0`.
 20. **nevermore/boba**: no change is required — boba's kitty bytes are
     correct (`a=T,f=100,s=,v=,c=,r=,i=,q=2,C=1` + chunking + the row
     reservation). The client-id reuse is already avoided by boba's
@@ -391,7 +402,7 @@ run in CI).
 - [x] **Phase 5** — the lottie reconciliation (F9)
 - [x] **Phase 6** — the public surface + header docs
 - [x] **Phase 7** — the tests
-- [ ] **Phase 8** — the consumers (portty)
+- [x] **Phase 8** — the consumers (portty)
 
 ## 6. Files
 
