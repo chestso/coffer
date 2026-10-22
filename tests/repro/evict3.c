@@ -38,7 +38,7 @@ int main(void)
 
     char seq[256];
     /* 1x1 raw RGBA: tiny, so the byte budget never bites. */
-    const char *b64 = "/w=="; /* one byte -> not 4; use a real 4-byte b64 */
+    const char *b64 = "/w==";       /* one byte -> not 4; use a real 4-byte b64 */
     const char *b64ok = "AAAAAAE="; /* 4 zero bytes */
     (void)b64;
 

@@ -13,6 +13,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                          */
@@ -27,24 +28,57 @@
 /* Image source identifiers (IMG_SRC_*) are defined in coffer.h */
 
 /* ------------------------------------------------------------------ */
+/* Image kinds                                                        */
+/* ------------------------------------------------------------------ */
+
+/* The two lifetimes the store carries. The kind is set at creation and
+ * NEVER inferred: "does this image happen to have a placement?" is not
+ * a lifetime question (a kitty image can be transmitted before it is
+ * placed, and it must survive an erase until it is placed).
+ *
+ *   ANCHORED   — the image IS its placement (sixel, iTerm2). The record
+ *                carries the anchor (abs_line/col); the image lives as
+ *                long as the screen area it covers.
+ *   REFERENCED — the image is referenced by placements (kitty, Lottie).
+ *                The record carries no anchor of its own; the image
+ *                lives until the client deletes it, until the id is
+ *                re-transmitted, or until the store's budget evicts it.
+ */
+enum
+{
+    IMG_KIND_ANCHORED = 0,
+    IMG_KIND_REFERENCED = 1
+};
+
+/* ------------------------------------------------------------------ */
 /* Types                                                               */
 /* ------------------------------------------------------------------ */
 
 /* One stored image (was SxRec in sixel.c). */
 typedef struct
 {
-    uint64_t id;
-    uint32_t version; /* pixel generation from version_seq; never repeats */
-    uint8_t layer;    /* 0 = foreground, 1 = background */
-    uint8_t source;   /* IMG_SRC_* */
-    long abs_line;    /* absolute line index of the image's top row */
-    int col;          /* anchor column */
-    int w, h;         /* logical display pixel dimensions */
-    int buf_w, buf_h; /* logical pixel buffer stride (native decoded size) */
-    int rows_tall;    /* cells tall (cached for cull/clear) */
-    int cols_wide;    /* cells wide (cached) */
-    uint8_t *rgba;    /* pixel buffer */
-    size_t cap;       /* allocated bytes of rgba */
+    uint64_t id;         /* PUBLIC id: the client's i= for 1:N, the engine's
+                          * for 1:1. The host's texture cache keys on it. */
+    uint64_t handle;     /* store-internal identity, never reused, never
+                          * exposed; the placements point at THIS, so a
+                          * client id and an engine id cannot collide. */
+    uint64_t seq;        /* creation order (monotonic); the eviction's order */
+    uint32_t version;    /* pixel generation from version_seq; never repeats */
+    uint8_t layer;       /* 0 = foreground, 1 = background */
+    uint8_t source;      /* IMG_SRC_* */
+    uint8_t kind;        /* IMG_KIND_* */
+    uint8_t ever_placed; /* 1 once a placement referenced this image; an
+                          * image that was transmitted but never placed
+                          * is INVISIBLE, so a screen erase must not
+                          * touch it (kitty's rule) */
+    long abs_line;       /* absolute line index of the image's top row */
+    int col;             /* anchor column */
+    int w, h;            /* logical display pixel dimensions */
+    int buf_w, buf_h;    /* pixel buffer stride (native decoded size) */
+    int rows_tall;       /* cells tall (cached for cull/clear) */
+    int cols_wide;       /* cells wide (cached) */
+    uint8_t *rgba;       /* pixel buffer */
+    size_t cap;          /* allocated bytes of rgba */
 } CfrImg;
 
 /* A retained free buffer (was SxSpare / LtSpare). */
@@ -58,9 +92,14 @@ typedef struct
  * model used by Lottie and kitty). */
 typedef struct
 {
-    uint64_t id;       /* placement id (client- or engine-assigned) */
-    uint64_t image_id; /* owning image's id */
-    long abs_line;     /* absolute line anchor (scrolls with text) */
+    uint64_t id;           /* placement id (client- or engine-assigned) */
+    uint64_t image_id;     /* owning image's PUBLIC id */
+    uint64_t image_handle; /* owning image's store-internal handle; the
+                            * store's own lookups use THIS, so a client
+                            * id cannot collide with an engine id */
+    uint8_t source;        /* the owning image's IMG_SRC_* — the id space
+                            * the public id belongs to */
+    long abs_line;         /* absolute line anchor (scrolls with text) */
     int col;
     int rows, cols;
     uint8_t layer;
@@ -82,6 +121,15 @@ typedef struct CfrImgStore
     CfrImg *imgs;
     int img_count, img_cap;
     uint64_t next_id;
+    /* Store-internal handle counter. Handles are never reused and never
+     * exposed: the placements point at a handle, so a client-assigned
+     * id (kitty's i=) and an engine-assigned id (sixel/iTerm2) can
+     * never resolve to each other. */
+    uint64_t next_handle;
+    /* Creation order counter: every new record gets the next seq, so
+     * the eviction has a total order over ALL records (the 1:N images
+     * have no anchor of their own to order them by). */
+    uint64_t next_seq;
     /* Pixel-generation counter: every store or replace of pixel data
      * stamps the record with ++version_seq, so an (id, version) pair
      * never repeats for different pixels — even when a named image is
@@ -170,15 +218,31 @@ void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
 /* Find an image at a given anchor + layer. Returns index or -1. */
 int cfr_img_find_at(CfrImgStore *st, long abs_line, int col, uint8_t layer);
 
-/* Find an image by id. Returns index or -1. */
+/* Find an image by id. Returns index or -1.
+ *
+ * The id spaces of the protocols overlap by construction (kitty's
+ * client-chosen i=1 and the engine's first id are both 1), so this
+ * lookup is only meaningful WITHIN one protocol family. A client-id
+ * protocol (kitty, Lottie) must use cfr_img_find_by_source_id(); the
+ * engine-id protocols (sixel, iTerm2) own their ids exclusively. */
 int cfr_img_find_by_id(CfrImgStore *st, uint64_t id);
+
+/* Find an image by its PUBLIC id within one protocol family. Returns
+ * index or -1. */
+int cfr_img_find_by_source_id(CfrImgStore *st, uint8_t source, uint64_t id);
+
+/* Find an image by its store-internal handle. Unambiguous across
+ * protocols — this is what the placements point at. */
+int cfr_img_find_by_handle(CfrImgStore *st, uint64_t handle);
 
 /* Remove an image (and its placements) by index. */
 void cfr_img_remove(void *vt, CfrImgStore *st, int idx);
 
-/* Add a placement of an existing image (1:N model). Dedups on
- * image_id + abs_line + col. Returns placement index >= 0, or -1. */
-int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_id,
+/* Add a placement of an existing image (1:N model). The image is named
+ * by its HANDLE (unambiguous across protocols), not by its public id.
+ * Dedups on image_handle + abs_line + col. Returns placement index
+ * >= 0, or -1. Damages the rows the placement covers. */
+int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_handle,
                           long abs_line, int col, int rows, int cols,
                           uint8_t layer, uint8_t opacity, int z_index);
 
@@ -194,11 +258,36 @@ void img_evict_to_budget(void *vt, CfrImgStore *st, size_t incoming);
 void cfr_img_note_scroll(void *vt, CfrImgStore *st, int lines);
 
 /* Remove foreground-layer (0) images overlapping the inclusive display
- * row range [top, bot]. Background-layer (1) images are preserved. */
-void cfr_img_clear_display_rows(void *vt, CfrImgStore *st, int top, int bot);
+ * row range [top, bot]. Background-layer (1) images are preserved.
+ *
+ * `full` marks the screen-wide clear (ED 2). It matters for the 1:N
+ * protocols: kitty's "the other commands to erase text must have no
+ * effect on graphics" leaves the kitty images alone, and only the
+ * screen-wide clear touches them — and it clears the VISIBLE ones
+ * only (an image that was transmitted but never placed is not on the
+ * screen, so it survives). */
+void cfr_img_clear_display_rows(void *vt, CfrImgStore *st, int top, int bot,
+                                bool full);
 
-/* Remove all images. */
+/* Remove all images (a terminal reset, kitty's "delete all images"). */
 void cfr_img_clear_all(void *vt, CfrImgStore *st);
+
+/* Remove the images that die WITH the screen: the anchored (1:1)
+ * ones, whose anchors are the grid's own rows. A resize re-anchors
+ * the grid and an altscreen switch swaps it, so those images cannot be
+ * followed — the client-owned 1:N images (kitty) live on. */
+void cfr_img_clear_anchored(void *vt, CfrImgStore *st);
+
+/* Remove every image of ONE protocol. The protocols' id spaces are
+ * their own, so "delete all images" (kitty) means the kitty images. */
+void cfr_img_clear_source(void *vt, CfrImgStore *st, uint8_t source);
+
+/* Remove the foreground placements of ONE protocol in the display row
+ * range [top, bot], and the images that die with them. The Lottie
+ * handler uses it: a Lottie animation's clear behaviour is its own
+ * (the Lottie spec), so it must not be decided by the kitty rules. */
+void cfr_img_clear_source_rows(void *vt, CfrImgStore *st, uint8_t source,
+                               int top, int bot);
 
 /* ------------------------------------------------------------------ */
 /* Public query                                                       */
@@ -218,8 +307,14 @@ const CfrImagePlacement *cfr_img_get_placements(void *vt, CfrImgStore *st,
 /* Return placements for a single image id (1:N model). The returned array
  * is owned by the engine and valid until the next mutation. *out_count
  * receives the count (0 if none). Returns NULL when the image has no
- * placements or doesn't exist. */
+ * placements or doesn't exist.
+ *
+ * `source` scopes the query to one protocol's id space (the public ids
+ * of the 1:N protocols are chosen by their clients, so kitty's i=1 and
+ * a Lottie id of 1 are the same number in different spaces). Pass
+ * IMG_SRC_ANY to search every protocol. */
 const CfrImagePlacement *cfr_img_get_placements_for(void *vt, CfrImgStore *st,
+                                                    uint8_t source,
                                                     uint64_t image_id,
                                                     int *out_count);
 

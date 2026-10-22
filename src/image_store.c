@@ -27,6 +27,10 @@ CfrImgStore *cfr_img_store_new(void *vt)
         return NULL;
     memset(st, 0, sizeof(*st));
     st->next_id = 1;
+    /* The handle counter starts at 1: handle 0 is reserved as "no
+     * image" (a placement that names handle 0 refers to nothing). */
+    st->next_handle = 1;
+    st->next_seq = 1;
     return st;
 }
 
@@ -107,48 +111,107 @@ void img_buf_release(void *vt, CfrImgStore *st, uint8_t *ptr, size_t cap)
 /* Image lifecycle (tier 1)                                          */
 /* ------------------------------------------------------------------ */
 
+/* Damage the display rows covered by an image/placement. Defined
+ * below (it needs the grid geometry); declared here because the
+ * placement path calls it. */
+static void img_damage(CfrTerm *vt, long abs_line, int rows_tall);
+
+/* Recompute a 1:N image's anchor from its placements. Defined below
+ * (it needs the handle lookup); declared here because the placement
+ * release path calls it. */
+static void img_reanchor(CfrImgStore *st, uint64_t handle);
+
 /* Release an image record: return its buffer to the pool, swap-remove. */
 static void img_rec_release(void *vt, CfrImgStore *st, int idx)
 {
     CfrImg *r = &st->imgs[idx];
-    uint64_t id = r->id;
+    uint64_t handle = r->handle;
     st->live_bytes -= r->cap;
     img_buf_release(vt, st, r->rgba, r->cap);
     st->imgs[idx] = st->imgs[--st->img_count];
 
-    /* Remove any placements that referenced the released image. */
+    /* Remove any placements that referenced the released image. The
+     * placement names the image by HANDLE, so a client id and an
+     * engine id can never cross wires here. */
     for (int i = 0; i < st->place_count;) {
-        if (st->places[i].image_id == id)
+        if (st->places[i].image_handle == handle)
             st->places[i] = st->places[--st->place_count];
         else
             ++i;
     }
 }
 
+/* The eviction's victim: the OLDEST record, by creation order. The
+ * order is total over every record (a 1:N image has no anchor of its
+ * own to order it by, so an anchor-based order was arbitrary for it —
+ * and the "lowest abs_line" comparison ties for every named image,
+ * which made the byte-budget eviction take whichever record happened
+ * to sit first in the dense array). */
+static int img_evict_victim(CfrImgStore *st)
+{
+    int m = 0;
+    for (int i = 1; i < st->img_count; ++i)
+        if (st->imgs[i].seq < st->imgs[m].seq)
+            m = i;
+    return m;
+}
+
 void img_evict_to_budget(void *vt, CfrImgStore *st, size_t incoming)
 {
-    while (st->img_count > 0 && st->live_bytes + incoming > IMG_LIVE_MAX) {
-        int m = 0;
-        for (int i = 1; i < st->img_count; ++i)
-            if (st->imgs[i].abs_line < st->imgs[m].abs_line)
-                m = i;
-        img_rec_release(vt, st, m);
-    }
+    while (st->img_count > 0 && st->live_bytes + incoming > IMG_LIVE_MAX)
+        img_rec_release(vt, st, img_evict_victim(st));
+}
+
+/* Drop the oldest record when the record cap is reached. The victim is
+ * the OLDEST (creation order), not the record at index 0: the dense
+ * array is swap-removed, so index 0 holds an arbitrary record (the
+ * last one moved into the hole) — releasing it evicted the NEWEST
+ * image. */
+static void img_evict_for_cap(void *vt, CfrImgStore *st)
+{
+    if (st->img_count < IMG_MAX_IMAGES)
+        return;
+    img_rec_release(vt, st, img_evict_victim(st));
 }
 
 int cfr_img_find_at(CfrImgStore *st, long abs_line, int col, uint8_t layer)
 {
     for (int i = 0; i < st->img_count; ++i)
-        if (st->imgs[i].abs_line == abs_line && st->imgs[i].col == col &&
+        if (st->imgs[i].kind == IMG_KIND_ANCHORED &&
+            st->imgs[i].abs_line == abs_line && st->imgs[i].col == col &&
             st->imgs[i].layer == layer)
             return i;
     return -1;
 }
 
+/* Find an image by its PUBLIC id. The id spaces of the 1:1 and the 1:N
+ * protocols overlap by construction (kitty's client-chosen i=1 and the
+ * engine's first id are both 1), so this lookup is only meaningful
+ * within one protocol family — the callers that need an unambiguous
+ * answer use the handle (cfr_img_find_by_handle). */
 int cfr_img_find_by_id(CfrImgStore *st, uint64_t id)
 {
     for (int i = 0; i < st->img_count; ++i)
         if (st->imgs[i].id == id)
+            return i;
+    return -1;
+}
+
+/* Find an image by its store-internal handle. Unambiguous across
+ * protocols. */
+int cfr_img_find_by_handle(CfrImgStore *st, uint64_t handle)
+{
+    for (int i = 0; i < st->img_count; ++i)
+        if (st->imgs[i].handle == handle)
+            return i;
+    return -1;
+}
+
+/* Find an image by its PUBLIC id within one protocol family. */
+int cfr_img_find_by_source_id(CfrImgStore *st, uint8_t source, uint64_t id)
+{
+    for (int i = 0; i < st->img_count; ++i)
+        if (st->imgs[i].source == source && st->imgs[i].id == id)
             return i;
     return -1;
 }
@@ -160,26 +223,72 @@ void cfr_img_remove(void *vt, CfrImgStore *st, int idx)
     img_rec_release(vt, st, idx);
 }
 
-/* Remove a placement record (swap-remove). */
-static void place_rec_release(CfrImgStore *st, int idx)
+/* Remove a placement record (swap-remove) and re-anchor the image it
+ * belonged to. The placement's rows are damaged: the host must repaint
+ * them, or the image stays on the screen until something else dirties
+ * those rows (the "blank space" bug's other half). */
+static void place_rec_release(void *vt, CfrImgStore *st, int idx)
 {
+    uint64_t handle = st->places[idx].image_handle;
+    long abs_line = st->places[idx].abs_line;
+    int rows = st->places[idx].rows;
     st->places[idx] = st->places[--st->place_count];
+    img_reanchor(st, handle);
+    img_damage(vt, abs_line, rows);
 }
 
-int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_id,
+/* The anchor of a 1:N image is the anchor of its OLDEST placement: the
+ * image record carries no anchor of its own, so the store keeps the
+ * minimum over the image's placements. That anchor is what the host's
+ * "one image, many placements" view and the damage computation need.
+ *
+ * The handle (not the public id) is the reference: a client-assigned id
+ * and an engine-assigned id can be the same number. */
+static void img_reanchor(CfrImgStore *st, uint64_t handle)
+{
+    int idx = cfr_img_find_by_handle(st, handle);
+    if (idx < 0)
+        return;
+    bool have = false;
+    long best_line = 0;
+    int best_col = 0;
+    for (int i = 0; i < st->place_count; ++i) {
+        if (st->places[i].image_handle != handle)
+            continue;
+        if (!have || st->places[i].abs_line < best_line) {
+            have = true;
+            best_line = st->places[i].abs_line;
+            best_col = st->places[i].col;
+        }
+    }
+    if (have) {
+        st->imgs[idx].abs_line = best_line;
+        st->imgs[idx].col = best_col;
+    } else {
+        st->imgs[idx].abs_line = 0;
+        st->imgs[idx].col = 0;
+    }
+}
+
+int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_handle,
                           long abs_line, int col, int rows, int cols,
                           uint8_t layer, uint8_t opacity, int z_index)
 {
     if (!st)
         return -1;
 
-    /* The owning image must exist. */
-    if (cfr_img_find_by_id(st, image_id) < 0)
+    /* The owning image must exist. The handle is the unambiguous
+     * reference: a client's i= id and an engine id can be the same
+     * number without either shadowing the other. */
+    int img_idx = cfr_img_find_by_handle(st, image_handle);
+    if (img_idx < 0)
         return -1;
+    uint64_t image_id = st->imgs[img_idx].id;
+    uint8_t source = st->imgs[img_idx].source;
 
-    /* Dedup on image_id + abs_line + col. */
+    /* Dedup on image_handle + abs_line + col. */
     for (int i = 0; i < st->place_count; ++i) {
-        if (st->places[i].image_id == image_id &&
+        if (st->places[i].image_handle == image_handle &&
             st->places[i].abs_line == abs_line &&
             st->places[i].col == col) {
             CfrPlacement *pl = &st->places[i];
@@ -188,6 +297,8 @@ int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_id,
             pl->layer = layer;
             pl->opacity_x256 = opacity;
             pl->z_index = z_index;
+            img_reanchor(st, image_handle);
+            img_damage(vt, abs_line, rows);
             return i;
         }
     }
@@ -206,6 +317,8 @@ int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_id,
     memset(pl, 0, sizeof(*pl));
     pl->id = st->next_place_id++;
     pl->image_id = image_id;
+    pl->image_handle = image_handle;
+    pl->source = source;
     pl->abs_line = abs_line;
     pl->col = col;
     pl->rows = rows;
@@ -213,6 +326,18 @@ int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_id,
     pl->layer = layer;
     pl->opacity_x256 = opacity;
     pl->z_index = z_index;
+    st->imgs[img_idx].ever_placed = 1;
+
+    /* The image's own record takes the anchor of its oldest placement,
+     * so the store can order, cull and damage a 1:N image without
+     * walking the placements first. */
+    img_reanchor(st, image_handle);
+
+    /* The placement is a change of the screen: the host only repaints
+     * the rows coffer reports as damaged, so a placement that reports
+     * nothing is a placement the host never draws (the image lands as
+     * a blank space). */
+    img_damage(vt, abs_line, rows);
     return st->place_count - 1;
 }
 
@@ -344,8 +469,7 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     }
 
     /* New record */
-    if (st->img_count >= IMG_MAX_IMAGES)
-        img_rec_release(vt, st, 0);
+    img_evict_for_cap(vt, st);
     img_evict_to_budget(vt, st, need);
 
     if (st->img_count >= st->img_cap) {
@@ -366,9 +490,12 @@ int cfr_img_add(void *vt, CfrImgStore *st,
 
     CfrImg *r = &st->imgs[st->img_count++];
     r->id = st->next_id++;
+    r->handle = st->next_handle++;
+    r->seq = st->next_seq++;
     r->version = ++st->version_seq;
     r->layer = layer;
     r->source = source;
+    r->kind = IMG_KIND_ANCHORED;
     r->abs_line = abs_line;
     r->col = col;
     r->w = disp_w;
@@ -399,7 +526,7 @@ int cfr_img_add_named(void *vt, CfrImgStore *st,
     if (need == 0 || need > IMG_LIVE_MAX)
         return -1;
 
-    int existing = cfr_img_find_by_id(st, id);
+    int existing = cfr_img_find_by_source_id(st, source, id);
     if (existing >= 0) {
         CfrImg *r = &st->imgs[existing];
         if (r->cap < need) {
@@ -424,8 +551,7 @@ int cfr_img_add_named(void *vt, CfrImgStore *st,
         return existing;
     }
 
-    if (st->img_count >= IMG_MAX_IMAGES)
-        img_rec_release(vt, st, 0);
+    img_evict_for_cap(vt, st);
     img_evict_to_budget(vt, st, need);
 
     if (st->img_count >= st->img_cap) {
@@ -446,9 +572,12 @@ int cfr_img_add_named(void *vt, CfrImgStore *st,
 
     CfrImg *r = &st->imgs[st->img_count++];
     r->id = id;
+    r->handle = st->next_handle++;
+    r->seq = st->next_seq++;
     r->version = ++st->version_seq;
     r->layer = layer;
     r->source = source;
+    r->kind = IMG_KIND_REFERENCED;
     r->abs_line = 0;
     r->col = 0;
     r->w = w;
@@ -474,7 +603,7 @@ int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
     if (need == 0 || need > IMG_LIVE_MAX)
         return -1;
 
-    int existing = cfr_img_find_by_id(st, id);
+    int existing = cfr_img_find_by_source_id(st, source, id);
     if (existing >= 0) {
         CfrImg *r = &st->imgs[existing];
         if (r->cap < need) {
@@ -497,8 +626,7 @@ int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
         return existing;
     }
 
-    if (st->img_count >= IMG_MAX_IMAGES)
-        img_rec_release(vt, st, 0);
+    img_evict_for_cap(vt, st);
     img_evict_to_budget(vt, st, need);
 
     if (st->img_count >= st->img_cap) {
@@ -519,9 +647,12 @@ int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
 
     CfrImg *r = &st->imgs[st->img_count++];
     r->id = id;
+    r->handle = st->next_handle++;
+    r->seq = st->next_seq++;
     r->version = ++st->version_seq;
     r->layer = layer;
     r->source = source;
+    r->kind = IMG_KIND_REFERENCED;
     r->abs_line = 0;
     r->col = 0;
     r->w = w;
@@ -589,14 +720,51 @@ void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
 /* Grid maintenance                                                   */
 /* ------------------------------------------------------------------ */
 
-/* True if the image with the given id has at least one placement
- * (1:N model, kitty/lottie). 1:1 (sixel/iTerm2) images have none. */
-static bool img_has_placements(const CfrImgStore *st, uint64_t image_id)
+/* True if the image with the given HANDLE has at least one placement.
+ * The handle (not the public id) is the reference: a client-assigned
+ * id and an engine-assigned id can be the same number. */
+static bool img_has_placements(const CfrImgStore *st, uint64_t handle)
 {
     for (int i = 0; i < st->place_count; ++i)
-        if (st->places[i].image_id == image_id)
+        if (st->places[i].image_handle == handle)
             return true;
     return false;
+}
+
+/* The lifetime rule of a 1:N image, per source:
+ *
+ *   - kitty: the image lives until the CLIENT deletes it (a=d), until
+ *     the id is re-transmitted, or until the budget evicts it. It does
+ *     not die with the screen: kitty's rule is "the other commands to
+ *     erase text must have no effect on graphics", and an image whose
+ *     placement scrolled away is still a live image (kitty keeps
+ *     images until they are deleted).
+ *   - Lottie: an animation IS a placement — with its last placement
+ *     gone, the animation is over, and its record (the ThorVG
+ *     animation, the JSON arena) goes with it.
+ *
+ * The 1:1 protocols (sixel, iTerm2) are not 1:N; their rule is the
+ * screen's own (see cfr_img_clear_display_rows). */
+static bool img_dies_with_placements(uint8_t source)
+{
+    return source == IMG_SRC_LOTTIE;
+}
+
+/* Does an erase of the screen touch this 1:N image?
+ *
+ *   - kitty: no. "The other commands to erase text must have no effect
+ *     on graphics." The one screen-wide clear kitty sanctions is ED 2
+ *     ("the clear screen escape code should also clear all images"),
+ *     and that one clears the VISIBLE images — an image that was
+ *     transmitted but never placed is not on the screen, so it
+ *     survives.
+ *   - Lottie: yes — an erase removes the foreground placements in the
+ *     erased rows (the Lottie spec's clear behaviour). */
+static bool img_erase_affects(uint8_t source, bool full)
+{
+    if (source == IMG_SRC_KITTY)
+        return full;
+    return true;
 }
 
 void cfr_img_note_scroll(void *vt, CfrImgStore *st, int lines)
@@ -608,31 +776,37 @@ void cfr_img_note_scroll(void *vt, CfrImgStore *st, int lines)
     int cap = cvt->sb_capacity;
 
     for (int i = 0; i < st->img_count;) {
-        uint64_t id = st->imgs[i].id;
+        uint64_t handle = st->imgs[i].handle;
+        uint8_t source = st->imgs[i].source;
 
-        if (img_has_placements(st, id)) {
-            /* 1:N — cull placements whose bottom scrolled off. */
+        if (st->imgs[i].kind == IMG_KIND_REFERENCED) {
+            /* 1:N (kitty, Lottie) — the anchor lives in the placement,
+             * so the placement is what scrolls. A placement that fell
+             * out of the scrollback is dropped; the IMAGE is not (the
+             * source's rule decides: a kitty image lives until the
+             * client deletes it, a Lottie animation dies with its
+             * last placement). */
             for (int j = 0; j < st->place_count;) {
-                if (st->places[j].image_id != id) {
+                if (st->places[j].image_handle != handle) {
                     ++j;
                     continue;
                 }
                 long depth = cvt->sixel_abs_top - st->places[j].abs_line;
                 long bottom_depth = depth - st->places[j].rows + 1;
                 if (bottom_depth > cap)
-                    place_rec_release(st, j);
+                    place_rec_release(vt, st, j);
                 else
                     ++j;
             }
-            /* Remove the image if no placements remain. */
-            if (!img_has_placements(st, id))
+            if (img_dies_with_placements(source) && st->imgs[i].ever_placed &&
+                !img_has_placements(st, handle))
                 img_rec_release(vt, st, i);
             else
                 ++i;
             continue;
         }
 
-        /* 1:1 — cull based on the record's own anchor. */
+        /* 1:1 (sixel, iTerm2) — the record carries the anchor. */
         long depth = cvt->sixel_abs_top - st->imgs[i].abs_line;
         long bottom_depth = depth - st->imgs[i].rows_tall + 1;
         if (bottom_depth > cap)
@@ -642,52 +816,134 @@ void cfr_img_note_scroll(void *vt, CfrImgStore *st, int lines)
     }
 }
 
-void cfr_img_clear_display_rows(void *vt, CfrImgStore *st, int top, int bot)
+/* Remove the placements of ONE image that an erase touches, and the
+ * image itself when its source's rule says it dies with them.
+ *
+ * The rule per source:
+ *   - kitty: ED 2 (the screen-wide clear) removes the placements that
+ *     are ON the screen; the off-screen ones (a placement that
+ *     scrolled into the scrollback) are not visible, so they stay.
+ *   - Lottie: the erased rows take their foreground placements with
+ *     them (the Lottie spec's clear behaviour).
+ *
+ * `full` marks the screen-wide clear (ED 2).
+ *
+ * Returns true when the image itself was released (the dense array
+ * swap-removes, so the slot now holds another record — the caller must
+ * look at it again). */
+static bool img_clear_placements_for(void *vt, CfrImgStore *st, int i,
+                                     int top, int bot, bool full)
+{
+    CfrTerm *cvt = vt;
+    uint64_t handle = st->imgs[i].handle;
+    uint8_t source = st->imgs[i].source;
+
+    if (source == IMG_SRC_KITTY) {
+        /* kitty: ED 2 ("the clear screen escape code should also clear
+         * all images") clears the images that are ON the screen. An
+         * image with no on-screen placement is not visible — it was
+         * transmitted but never placed, or its placement scrolled into
+         * the scrollback — so it survives. */
+        if (!full)
+            return false;
+        bool on_screen = false;
+        for (int j = 0; j < st->place_count; ++j) {
+            if (st->places[j].image_handle != handle)
+                continue;
+            int ptop = (int)(st->places[j].abs_line - cvt->sixel_abs_top);
+            if (ptop >= 0 && ptop < cvt->rows)
+                on_screen = true;
+        }
+        if (!on_screen)
+            return false;
+        img_rec_release(vt, st, i);
+        return true;
+    }
+
+    bool removed = false;
+    for (int j = 0; j < st->place_count;) {
+        if (st->places[j].image_handle != handle) {
+            ++j;
+            continue;
+        }
+        if (st->places[j].layer != 0) {
+            /* Background placements survive a text erase. */
+            ++j;
+            continue;
+        }
+        int ptop = (int)(st->places[j].abs_line - cvt->sixel_abs_top);
+        int pbot = ptop + st->places[j].rows - 1;
+        if (ptop <= bot && pbot >= top) {
+            place_rec_release(vt, st, j);
+            removed = true;
+        } else {
+            ++j;
+        }
+    }
+    if (removed && img_dies_with_placements(source) &&
+        !img_has_placements(st, handle)) {
+        img_rec_release(vt, st, i);
+        return true;
+    }
+    return false;
+}
+
+void cfr_img_clear_display_rows(void *vt, CfrImgStore *st, int top, int bot,
+                                bool full)
 {
     CfrTerm *cvt = vt;
     if (!st || st->img_count == 0)
         return;
 
     for (int i = 0; i < st->img_count;) {
-        uint64_t id = st->imgs[i].id;
+        uint8_t source = st->imgs[i].source;
 
-        if (img_has_placements(st, id)) {
-            /* 1:N — remove foreground placements overlapping [top,bot]. */
-            bool removed = false;
-            for (int j = 0; j < st->place_count;) {
-                if (st->places[j].image_id != id ||
-                    st->places[j].layer != 0) {
-                    ++j;
-                    continue;
-                }
-                int ptop = (int)(st->places[j].abs_line - cvt->sixel_abs_top);
-                int pbot = ptop + st->places[j].rows - 1;
-                if (ptop <= bot && pbot >= top) {
-                    place_rec_release(st, j);
-                    removed = true;
-                } else {
-                    ++j;
-                }
+        if (st->imgs[i].kind == IMG_KIND_ANCHORED) {
+            /* 1:1 (sixel, iTerm2) — the image is part of the screen:
+             * an erase of the rows it covers removes it. */
+            if (st->imgs[i].layer != 0) {
+                ++i;
+                continue;
             }
-            /* Remove the image if no placements remain. */
-            if (removed && !img_has_placements(st, id))
+            int rtop = (int)(st->imgs[i].abs_line - cvt->sixel_abs_top);
+            int rbot = rtop + st->imgs[i].rows_tall - 1;
+            if (rtop <= bot && rbot >= top)
                 img_rec_release(vt, st, i);
             else
                 ++i;
             continue;
         }
 
-        /* 1:1 — clear based on the record's own anchor. */
-        if (st->imgs[i].layer != 0) {
+        /* 1:N (kitty, Lottie). */
+        if (!img_erase_affects(source, full)) {
             ++i;
             continue;
         }
-        int rtop = (int)(st->imgs[i].abs_line - cvt->sixel_abs_top);
-        int rbot = rtop + st->imgs[i].rows_tall - 1;
-        if (rtop <= bot && rbot >= top)
-            img_rec_release(vt, st, i);
-        else
+        if (img_clear_placements_for(vt, st, i, top, bot, full))
+            continue; /* the record was released — the slot moved */
+        ++i;
+    }
+}
+
+/* Remove the foreground placements of ONE protocol in the display row
+ * range [top, bot], and the images that die with them. The Lottie
+ * handler uses it: a Lottie animation's clear behaviour is its own
+ * (the Lottie spec), so it must not be decided by the kitty rules. */
+void cfr_img_clear_source_rows(void *vt, CfrImgStore *st, uint8_t source,
+                               int top, int bot)
+{
+    if (!st || st->img_count == 0)
+        return;
+
+    for (int i = 0; i < st->img_count;) {
+        if (st->imgs[i].source != source ||
+            st->imgs[i].kind != IMG_KIND_REFERENCED) {
             ++i;
+            continue;
+        }
+        if (img_clear_placements_for(vt, st, i, top, bot, false))
+            continue; /* the record was released — the slot moved */
+        ++i;
     }
 }
 
@@ -697,6 +953,39 @@ void cfr_img_clear_all(void *vt, CfrImgStore *st)
         return;
     while (st->img_count > 0)
         img_rec_release(vt, st, st->img_count - 1);
+}
+
+/* Clear the images that die with the SCREEN: the anchored (1:1) ones,
+ * whose anchors are the grid's own rows. A resize re-anchors the grid
+ * and an altscreen switch swaps it, so those images cannot be followed
+ * — but the client-owned 1:N images (kitty) live on: they are anchored
+ * by their own placements, and the client deletes them when it wants
+ * them gone. */
+void cfr_img_clear_anchored(void *vt, CfrImgStore *st)
+{
+    if (!st)
+        return;
+    for (int i = 0; i < st->img_count;) {
+        if (st->imgs[i].kind == IMG_KIND_ANCHORED)
+            img_rec_release(vt, st, i);
+        else
+            ++i;
+    }
+}
+
+/* Clear every image of ONE protocol (kitty's "delete all images"
+ * deletes the kitty images — not the sixels and not the Lottie
+ * animations, which live in their own id spaces). */
+void cfr_img_clear_source(void *vt, CfrImgStore *st, uint8_t source)
+{
+    if (!st)
+        return;
+    for (int i = 0; i < st->img_count;) {
+        if (st->imgs[i].source == source)
+            img_rec_release(vt, st, i);
+        else
+            ++i;
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -724,13 +1013,20 @@ const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count)
     }
 
     /* Single logical→physical conversion point for the whole pipeline.
-     * The renderer receives physical values and does zero conversions. */
+     * The renderer receives physical values and does zero conversions.
+     *
+     * The conversion applies to the DISPLAY dimensions only. The
+     * buffer dimensions (buf_w/buf_h) are the REAL dimensions of the
+     * pixel buffer the host is about to read: the buffer holds the
+     * decoded (native) pixels, so scaling them told the host to read
+     * past the end of the allocation on a scaled display. */
     float cscale = cvt->content_scale > 0.0f ? cvt->content_scale : 1.0f;
 
     for (int i = 0; i < st->img_count; ++i) {
         CfrImg *r = &st->imgs[i];
         CfrImage *v = &st->img_scratch[i];
         v->id = r->id;
+        v->handle = r->handle;
         v->version = r->version;
         v->layer = r->layer;
         v->source = r->source;
@@ -738,8 +1034,8 @@ const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count)
         v->col = r->col;
         v->width_px = (int)(r->w * cscale + 0.5f);
         v->height_px = (int)(r->h * cscale + 0.5f);
-        v->buf_w = (int)(r->buf_w * cscale + 0.5f);
-        v->buf_h = (int)(r->buf_h * cscale + 0.5f);
+        v->buf_w = r->buf_w;
+        v->buf_h = r->buf_h;
         v->rgba = r->rgba;
     }
     if (out_count)
@@ -773,6 +1069,8 @@ const CfrImagePlacement *cfr_img_get_placements(void *vt, CfrImgStore *st,
         CfrImagePlacement *v = &st->place_scratch[i];
         v->id = r->id;
         v->image_id = r->image_id;
+        v->image_handle = r->image_handle;
+        v->source = r->source;
         v->row = (int)(r->abs_line - cvt->sixel_abs_top);
         v->col = r->col;
         v->rows = r->rows;
@@ -791,6 +1089,7 @@ const CfrImagePlacement *cfr_img_get_placements(void *vt, CfrImgStore *st,
 }
 
 const CfrImagePlacement *cfr_img_get_placements_for(void *vt, CfrImgStore *st,
+                                                    uint8_t source,
                                                     uint64_t image_id,
                                                     int *out_count)
 {
@@ -800,10 +1099,19 @@ const CfrImagePlacement *cfr_img_get_placements_for(void *vt, CfrImgStore *st,
     if (!st || st->place_count == 0)
         return NULL;
 
+    /* The query names the image by its PUBLIC id, and the public ids
+     * of the 1:N protocols are chosen by their clients — kitty's i=1
+     * and a Lottie id of 1 are the same number in different id
+     * spaces. The answer is therefore scoped to ONE protocol (the
+     * source), or to all of them (IMG_SRC_ANY). */
     int want = 0;
-    for (int i = 0; i < st->place_count; ++i)
-        if (st->places[i].image_id == image_id)
-            want++;
+    for (int i = 0; i < st->place_count; ++i) {
+        if (st->places[i].image_id != image_id)
+            continue;
+        if (source != IMG_SRC_ANY && st->places[i].source != source)
+            continue;
+        want++;
+    }
     if (want == 0)
         return NULL;
 
@@ -824,9 +1132,13 @@ const CfrImagePlacement *cfr_img_get_placements_for(void *vt, CfrImgStore *st,
         CfrPlacement *r = &st->places[i];
         if (r->image_id != image_id)
             continue;
+        if (source != IMG_SRC_ANY && r->source != source)
+            continue;
         CfrImagePlacement *v = &st->place_scratch[w++];
         v->id = r->id;
         v->image_id = r->image_id;
+        v->image_handle = r->image_handle;
+        v->source = r->source;
         v->row = (int)(r->abs_line - cvt->sixel_abs_top);
         v->col = r->col;
         v->rows = r->rows;

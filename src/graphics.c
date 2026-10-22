@@ -365,8 +365,10 @@ static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
     return rgba;
 }
 
-/* Store a fully decoded image. Returns the id under which the image was
- * stored, or 0 on failure.
+/* Store a fully decoded image. Returns the store-internal HANDLE of
+ * the image (0 on failure) — the handle is what a placement must
+ * reference: the public id (the client's i=) is only meaningful
+ * within kitty's own id space.
  *
  * Id semantics (kitty graphics spec):
  *  - a=f (animation frame): replaces the pixels of the existing image
@@ -386,32 +388,34 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
 
     if (p->has_image_id) {
         uint64_t id = (uint64_t)p->image_id;
-        int idx = cfr_img_find_by_id(store, id);
+        /* The lookup is scoped to kitty's id space: a Lottie animation
+         * with the same number is a different image. */
+        int idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, id);
         if (idx >= 0 && is_frame) {
             /* Animation frame: replace pixels in place, keep placements. */
             cfr_img_replace(vt, store, idx, rgba, w, h);
             if (!p->quiet)
                 k_emit_ok(vt, p->image_id);
-            return id;
+            return store->imgs[idx].handle;
         }
         if (idx >= 0 && !is_frame) {
             /* Re-transmit: delete the image and all its placements. */
             cfr_img_remove(vt, store, idx);
         }
-        cfr_img_add_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
+        int ni = cfr_img_add_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
         if (!p->quiet)
             k_emit_ok(vt, p->image_id);
-        return id;
+        return ni >= 0 ? store->imgs[ni].handle : 0;
     }
 
     /* No i= key: always a fresh image under a unique engine id so
      * successive id-less transmits (chafa, kitten icat) don't collide
      * on id=0. The engine id is what placements must reference. */
     uint64_t id = store->next_id++;
-    cfr_img_add_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
+    int ni = cfr_img_add_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
     if (!p->quiet)
         k_emit_ok(vt, p->image_id);
-    return id;
+    return ni >= 0 ? store->imgs[ni].handle : 0;
 }
 
 /* An omitted f= key is not "unknown format": kitty's default is 32
@@ -569,10 +573,10 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         return;
     }
 
-    uint64_t stored_id = k_store_image(vt, p, rgba, w, h, is_frame);
+    uint64_t stored_handle = k_store_image(vt, p, rgba, w, h, is_frame);
 
     /* a=T also places at the cursor. */
-    if (place_at_cursor) {
+    if (place_at_cursor && stored_handle) {
         CfrImgStore *store = cfr_img_get_store(vt);
         int cell_h = vt->cell_h_px > 0 ? vt->cell_h_px : 1;
         int cell_w = vt->cell_w_px > 0 ? vt->cell_w_px : 1;
@@ -591,7 +595,8 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
             rows = 1;
         int place_row = vt->cursor.row;
         int place_col = vt->cursor.col;
-        cfr_img_add_placement(vt, store, stored_id, vt->sixel_abs_top + place_row,
+        cfr_img_add_placement(vt, store, stored_handle,
+                              vt->sixel_abs_top + place_row,
                               place_col, rows, cols, 0, 255,
                               p->has_z_index ? p->z_index : 0);
 
@@ -639,13 +644,16 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
         return;
 
     uint64_t image_id = (uint64_t)(p->has_image_id ? p->image_id : 0);
-    int img_idx = cfr_img_find_by_id(store, image_id);
+    /* The lookup is scoped to kitty's id space (a Lottie animation with
+     * the same number is a different image). */
+    int img_idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, image_id);
     if (img_idx < 0) {
         if (!p->quiet)
             k_emit_error(vt, p->image_id, "ENOENT:unknown image id");
         return;
     }
     CfrImg *img = &store->imgs[img_idx];
+    uint64_t image_handle = img->handle;
 
     int col = p->has_col ? p->col : vt->cursor.col;
     int row = p->has_row ? p->row : vt->cursor.row;
@@ -662,7 +670,8 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
         for (int i = 0; i < store->place_count; i++) {
             bool match = p->has_parent_place
                              ? store->places[i].id == want
-                             : store->places[i].image_id == want;
+                             : store->places[i].image_id == want &&
+                                   store->places[i].source == IMG_SRC_KITTY;
             if (match) {
                 int pcol = store->places[i].col;
                 int prow = (int)(store->places[i].abs_line - vt->sixel_abs_top);
@@ -696,7 +705,7 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
     int z_index = p->has_z_index ? p->z_index : 0;
 
     long abs_line = vt->sixel_abs_top + row;
-    int pi = cfr_img_add_placement(vt, store, image_id, abs_line, col,
+    int pi = cfr_img_add_placement(vt, store, image_handle, abs_line, col,
                                    rows, cols, 0, 255, z_index);
     if (pi < 0)
         return;
@@ -733,7 +742,9 @@ static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
     switch (p->delete_what) {
     case 'a':
     case 'A':
-        cfr_img_clear_all(vt, store);
+        /* Delete all the kitty images. The other protocols' images live
+         * in their own id spaces and are not kitty's to delete. */
+        cfr_img_clear_source(vt, store, IMG_SRC_KITTY);
         break;
     case 'p':
     case 'P':
@@ -751,9 +762,11 @@ static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
     case 'i':
     case 'I':
     {
-        /* Delete images (and their placements) by image id. */
+        /* Delete images (and their placements) by image id. The lookup
+         * is scoped to kitty's id space: a Lottie animation with the
+         * same number is a different image. */
         uint64_t iid = (uint64_t)(p->has_image_id ? p->image_id : 0);
-        int idx = cfr_img_find_by_id(store, iid);
+        int idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, iid);
         if (idx >= 0)
             cfr_img_remove(vt, store, idx);
         break;

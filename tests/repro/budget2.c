@@ -72,7 +72,7 @@ int main(void)
         char *seq = malloc(plen + 200);
         int n = snprintf(seq, 200, "\x1b_Ga=t,f=32,s=%d,v=%d,i=%d;", W, H, id);
         memcpy(seq + n, payload, plen);
-        seq[n + plen] = 0x1b;   /* ST */
+        seq[n + plen] = 0x1b; /* ST */
         seq[n + plen + 1] = 0x5c;
         seq[n + plen + 2] = 0;
         feed(vt, seq);

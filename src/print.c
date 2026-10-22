@@ -757,7 +757,8 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
             vt->grid->lineage[r] = 0;
         }
         if (vt->images)
-            cfr_img_clear_display_rows(vt, vt->images, row, vt->rows - 1);
+            cfr_img_clear_display_rows(vt, vt->images, row, vt->rows - 1,
+                                       false);
         if (vt->lottie)
             cfr_lottie_clear_display_rows(vt, row, vt->rows - 1);
         break;
@@ -769,7 +770,7 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
             vt->grid->lineage[r] = 0;
         }
         if (vt->images)
-            cfr_img_clear_display_rows(vt, vt->images, 0, row);
+            cfr_img_clear_display_rows(vt, vt->images, 0, row, false);
         if (vt->lottie)
             cfr_lottie_clear_display_rows(vt, 0, row);
         break;
@@ -779,7 +780,8 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
                         vt->cols);
         memset(vt->grid->lineage, 0, (size_t)vt->rows * sizeof(uint32_t));
         if (vt->images)
-            cfr_img_clear_display_rows(vt, vt->images, 0, vt->rows - 1);
+            cfr_img_clear_display_rows(vt, vt->images, 0, vt->rows - 1,
+                                       true);
         if (vt->lottie)
             cfr_lottie_clear_display_rows(vt, 0, vt->rows - 1);
         break;

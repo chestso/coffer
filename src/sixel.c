@@ -542,5 +542,17 @@ const CfrImagePlacement *cfr_get_image_placements_for(CfrTerm *vt,
 {
     if (!vt || !vt->images)
         return NULL;
-    return cfr_img_get_placements_for(vt, vt->images, image_id, out_count);
+    return cfr_img_get_placements_for(vt, vt->images, IMG_SRC_ANY, image_id,
+                                      out_count);
+}
+
+const CfrImagePlacement *cfr_get_image_placements_for_source(CfrTerm *vt,
+                                                             uint8_t source,
+                                                             uint64_t image_id,
+                                                             int *out_count)
+{
+    if (!vt || !vt->images)
+        return NULL;
+    return cfr_img_get_placements_for(vt, vt->images, source, image_id,
+                                      out_count);
 }

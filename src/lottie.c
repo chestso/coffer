@@ -51,9 +51,15 @@ typedef struct
     uint64_t id;      /* client-assigned, stable cache key */
     uint32_t version; /* bumps on any state/pixel change */
 
-    /* Index into vt->images (shared CfrImgStore). The pixel buffer lives
-     * there; -1 when not yet rasterized. */
-    int img_index;
+    /* The store-internal handle of this animation's image record in the
+     * shared store (vt->images). The pixel buffer lives there; 0 when
+     * the animation has no image record yet (not yet rasterized).
+     *
+     * The handle (not an index, not the client id) is the reference:
+     * the store's record array is swap-removed, so an index goes stale,
+     * and the client id lives in the Lottie id space, which overlaps
+     * the other protocols'. */
+    uint64_t img_handle;
 
     /* Parsed Lottie data */
     void *json_root; /* parsed JSON tree root (arena-allocated) */
@@ -187,7 +193,7 @@ static uint8_t *lt_rgba(CfrTerm *vt, uint64_t id)
     CfrImgStore *st = vt->images;
     if (!st)
         return NULL;
-    int idx = cfr_img_find_by_id(st, id);
+    int idx = cfr_img_find_by_source_id(st, IMG_SRC_LOTTIE, id);
     if (idx < 0)
         return NULL;
     return st->imgs[idx].rgba;
@@ -209,9 +215,11 @@ static LtRec *lt_find_by_id(struct CfrLottieState *st, uint64_t id)
 static void lt_rec_release(CfrTerm *vt, struct CfrLottieState *st, int idx)
 {
     LtRec *r = &st->recs[idx];
-    /* Remove the image (and its placements) from the shared store. */
+    /* Remove the image (and its placements) from the shared store. The
+     * lookup is scoped to the Lottie id space: another protocol's image
+     * may carry the same number. */
     if (vt->images) {
-        int ii = cfr_img_find_by_id(vt->images, r->id);
+        int ii = cfr_img_find_by_source_id(vt->images, IMG_SRC_LOTTIE, r->id);
         if (ii >= 0)
             cfr_img_remove(vt, vt->images, ii);
     }
@@ -722,7 +730,7 @@ static int lt_add_placement(CfrTerm *vt, struct CfrLottieState *st,
     CfrImgStore *store = lt_store(vt);
     if (!store)
         return -1;
-    return cfr_img_add_placement(vt, store, rec->id, abs_line, col,
+    return cfr_img_add_placement(vt, store, rec->img_handle, abs_line, col,
                                  rows, cols, layer, opacity, 0);
 }
 
@@ -752,7 +760,7 @@ static void lt_damage_all_placements(CfrTerm *vt, LtRec *rec)
     if (!store)
         return;
     for (int i = 0; i < store->place_count; i++)
-        if (store->places[i].image_id == rec->id)
+        if (store->places[i].image_handle == rec->img_handle)
             lt_damage_placement(vt, i);
 }
 
@@ -949,7 +957,7 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
                                      layer, IMG_SRC_LOTTIE);
         if (ii < 0)
             return;
-        rec->img_index = ii;
+        rec->img_handle = store->imgs[ii].handle;
     } else {
         if (st->rec_count >= st->rec_cap) {
             int new_cap = st->rec_cap ? st->rec_cap * 2 : 8;
@@ -969,7 +977,7 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         rec = &st->recs[st->rec_count++];
         memset(rec, 0, sizeof(*rec));
         rec->id = id;
-        rec->img_index = -1;
+        rec->img_handle = 0;
         rec->version = 1;
 
         /* Store the initial (zeroed) pixel buffer in the shared store. */
@@ -986,7 +994,7 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
             st->rec_count--;
             return;
         }
-        rec->img_index = ni;
+        rec->img_handle = store->imgs[ni].handle;
     }
 
     if (lottie_obj) {
@@ -1168,7 +1176,7 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
         CfrImgStore *store = lt_store(vt);
         if (!store)
             return;
-        int ii = cfr_img_find_by_id(store, rec->id);
+        int ii = cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE, rec->id);
         if (ii >= 0) {
             /* cfr_img_replace may realloc the backing buffer to grow it, so
              * we must not pass the image's own buffer as the source (it
@@ -1691,7 +1699,7 @@ const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
     }
 
     const CfrImagePlacement *pls =
-        cfr_img_get_placements_for(vt, store, id, out_count);
+        cfr_img_get_placements_for(vt, store, IMG_SRC_LOTTIE, id, out_count);
     if (!pls)
         return NULL;
 
@@ -1726,7 +1734,9 @@ const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
     return st->pl_scratch;
 }
 
-/* Count placements for an image id in the shared store. */
+/* Count placements for an image id in the shared store. The id is the
+ * Lottie id space's — another protocol's image may carry the same
+ * number. */
 static int lt_placements_for_count(CfrTerm *vt, uint64_t id)
 {
     CfrImgStore *store = vt->images;
@@ -1734,7 +1744,8 @@ static int lt_placements_for_count(CfrTerm *vt, uint64_t id)
         return 0;
     int n = 0;
     for (int i = 0; i < store->place_count; i++)
-        if (store->places[i].image_id == id)
+        if (store->places[i].source == IMG_SRC_LOTTIE &&
+            store->places[i].image_id == id)
             n++;
     return n;
 }
@@ -1757,7 +1768,9 @@ void cfr_lottie_note_scroll(CfrTerm *vt, int lines)
         cfr_img_note_scroll(vt, store, lines);
 
     for (int i = 0; i < st->rec_count;) {
-        if (!store || cfr_img_find_by_id(store, st->recs[i].id) < 0)
+        if (!store ||
+            cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE,
+                                      st->recs[i].id) < 0)
             lt_rec_release(vt, st, i);
         else
             ++i;
@@ -1772,10 +1785,14 @@ void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot)
 
     CfrImgStore *store = vt->images;
     if (store) {
-        cfr_img_clear_display_rows(vt, store, top, bot);
+        /* A Lottie animation's clear behaviour is its own (the Lottie
+         * spec): the foreground placements in the erased rows go, the
+         * background ones stay. The kitty rules do not apply here. */
+        cfr_img_clear_source_rows(vt, store, IMG_SRC_LOTTIE, top, bot);
         /* Drop animations whose image record was removed. */
         for (int i = 0; i < st->rec_count;) {
-            if (cfr_img_find_by_id(store, st->recs[i].id) < 0)
+            if (cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE,
+                                          st->recs[i].id) < 0)
                 lt_rec_release(vt, st, i);
             else
                 ++i;

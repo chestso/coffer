@@ -364,7 +364,7 @@ static void test_img_clear_display_rows(void)
     ASSERT_EQ(st->img_count, 1);
 
     /* Clear rows 0-5 — should remove the image (it's at row 0, 1 row tall) */
-    cfr_img_clear_display_rows(vt, st, 0, 5);
+    cfr_img_clear_display_rows(vt, st, 0, 5, false);
     ASSERT_EQ(st->img_count, 0);
 
     cfr_img_store_free(vt, st);
@@ -411,7 +411,7 @@ static void test_img_clear_preserves_background_layer(void)
 
     /* Clear display rows 0-5 — should remove foreground (layer 0)
      * but preserve background (layer 1) */
-    cfr_img_clear_display_rows(vt, st, 0, 5);
+    cfr_img_clear_display_rows(vt, st, 0, 5, false);
     ASSERT_EQ(st->img_count, 1);
     ASSERT_EQ(st->imgs[0].layer, 1);
 
@@ -475,14 +475,16 @@ static void test_img_add_placement_basic(void)
     free(rgba);
     ASSERT_TRUE(img_idx >= 0);
     uint64_t img_id = st->imgs[img_idx].id;
+    uint64_t img_handle = st->imgs[img_idx].handle;
 
-    int p = cfr_img_add_placement(vt, st, img_id, vt->sixel_abs_top + 2,
+    int p = cfr_img_add_placement(vt, st, img_handle, vt->sixel_abs_top + 2,
                                   3, 4, 5, 0, 200, -1);
     ASSERT_TRUE(p >= 0);
     ASSERT_EQ(st->place_count, 1);
 
     CfrPlacement *pl = &st->places[p];
     ASSERT_EQ(pl->image_id, img_id);
+    ASSERT_EQ(pl->image_handle, img_handle);
     ASSERT_EQ(pl->abs_line, vt->sixel_abs_top + 2);
     ASSERT_EQ(pl->col, 3);
     ASSERT_EQ(pl->rows, 4);
@@ -503,10 +505,10 @@ static void test_img_add_placement_dedup(void)
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
     int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_KITTY);
     free(rgba);
-    uint64_t img_id = st->imgs[img_idx].id;
+    uint64_t img_handle = st->imgs[img_idx].handle;
 
-    int p1 = cfr_img_add_placement(vt, st, img_id, 100, 0, 2, 2, 0, 255, 0);
-    int p2 = cfr_img_add_placement(vt, st, img_id, 100, 0, 4, 4, 1, 100, 5);
+    int p1 = cfr_img_add_placement(vt, st, img_handle, 100, 0, 2, 2, 0, 255, 0);
+    int p2 = cfr_img_add_placement(vt, st, img_handle, 100, 0, 4, 4, 1, 100, 5);
     ASSERT_TRUE(p1 >= 0);
     ASSERT_EQ(p1, p2); /* same image + anchor + col dedups */
     ASSERT_EQ(st->place_count, 1);
@@ -541,8 +543,9 @@ static void test_img_get_placements(void)
     int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_KITTY);
     free(rgba);
     uint64_t img_id = st->imgs[img_idx].id;
+    uint64_t img_handle = st->imgs[img_idx].handle;
 
-    cfr_img_add_placement(vt, st, img_id, vt->sixel_abs_top + 2, 3, 4, 5,
+    cfr_img_add_placement(vt, st, img_handle, vt->sixel_abs_top + 2, 3, 4, 5,
                           0, 200, -1);
 
     int count = -1;
@@ -550,6 +553,7 @@ static void test_img_get_placements(void)
     ASSERT_NOT_NULL(pls);
     ASSERT_EQ(count, 1);
     ASSERT_EQ(pls[0].image_id, img_id);
+    ASSERT_EQ(pls[0].image_handle, img_handle);
     ASSERT_EQ(pls[0].row, 2); /* abs_line - sixel_abs_top */
     ASSERT_EQ(pls[0].col, 3);
     ASSERT_EQ(pls[0].rows, 4);
@@ -569,9 +573,9 @@ static void test_img_clear_removes_placements(void)
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
     int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_KITTY);
     free(rgba);
-    uint64_t img_id = st->imgs[img_idx].id;
+    uint64_t img_handle = st->imgs[img_idx].handle;
 
-    cfr_img_add_placement(vt, st, img_id, vt->sixel_abs_top, 0, 1, 1, 0, 255, 0);
+    cfr_img_add_placement(vt, st, img_handle, vt->sixel_abs_top, 0, 1, 1, 0, 255, 0);
     ASSERT_EQ(st->place_count, 1);
 
     cfr_img_clear_all(vt, st);
@@ -591,9 +595,9 @@ static void test_img_scroll_cull_removes_placements(void)
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
     int img_idx = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_KITTY);
     free(rgba);
-    uint64_t img_id = st->imgs[img_idx].id;
+    uint64_t img_handle = st->imgs[img_idx].handle;
 
-    cfr_img_add_placement(vt, st, img_id, vt->sixel_abs_top, 0, 1, 1, 0, 255, 0);
+    cfr_img_add_placement(vt, st, img_handle, vt->sixel_abs_top, 0, 1, 1, 0, 255, 0);
     ASSERT_EQ(st->place_count, 1);
 
     vt->sixel_abs_top = 10;
@@ -611,7 +615,11 @@ static void test_img_scroll_cull_removes_placements(void)
 /* --------------------------------------------------------------- */
 
 /* A 1:N image not anchored at the cursor must be culled based on its
- * placement's abs_line, not its image record's abs_line (which is 0). */
+ * placement's abs_line, not its image record's abs_line (which is 0).
+ *
+ * The PLACEMENT is culled when it falls out of the scrollback; the
+ * IMAGE is not: a kitty image lives until the client deletes it (the
+ * store's lifetime rule per source), so the image record stays. */
 static void test_named_image_scroll_culls_by_placement(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -622,10 +630,11 @@ static void test_named_image_scroll_culls_by_placement(void)
     int img_idx = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_KITTY);
     free(rgba);
     ASSERT_TRUE(img_idx >= 0);
+    uint64_t img_handle = st->imgs[img_idx].handle;
 
     /* Placement anchored at abs_line 0 (row 0), 1 cell tall. */
-    int pi = cfr_img_add_placement(vt, st, 7, vt->sixel_abs_top, 0, 1, 1,
-                                   0, 255, 0);
+    int pi = cfr_img_add_placement(vt, st, img_handle, vt->sixel_abs_top, 0,
+                                   1, 1, 0, 255, 0);
     ASSERT_TRUE(pi >= 0);
     ASSERT_EQ(st->place_count, 1);
     ASSERT_EQ(st->img_count, 1);
@@ -634,7 +643,9 @@ static void test_named_image_scroll_culls_by_placement(void)
     vt->sixel_abs_top = 10;
     cfr_img_note_scroll(vt, st, 10);
 
-    ASSERT_EQ(st->img_count, 0);
+    /* The placement is gone; the kitty image lives on (the client owns
+     * it — kitty keeps images until they are deleted). */
+    ASSERT_EQ(st->img_count, 1);
     ASSERT_EQ(st->place_count, 0);
 
     cfr_img_store_free(vt, st);
@@ -642,29 +653,36 @@ static void test_named_image_scroll_culls_by_placement(void)
 }
 
 /* A placement clears rows based on its own abs_line, even though the
- * image record's abs_line is 0 (1:N model). */
+ * image record's abs_line is 0 (1:N model).
+ *
+ * The source decides the rule: a Lottie animation's foreground
+ * placements go with the erased rows (the Lottie spec), while a kitty
+ * image ignores the text erases altogether ("the other commands to
+ * erase text must have no effect on graphics"). */
 static void test_named_image_clear_rows_by_placement(void)
 {
     CfrTerm *vt = make_term(24, 80);
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    int img_idx = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int img_idx = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_LOTTIE);
     free(rgba);
     ASSERT_TRUE(img_idx >= 0);
+    uint64_t img_handle = st->imgs[img_idx].handle;
 
     /* Placement at display row 5. */
-    int pi = cfr_img_add_placement(vt, st, 7, vt->sixel_abs_top + 5, 0, 1, 1,
-                                   0, 255, 0);
+    int pi = cfr_img_add_placement(vt, st, img_handle, vt->sixel_abs_top + 5,
+                                   0, 1, 1, 0, 255, 0);
     ASSERT_TRUE(pi >= 0);
 
     /* Clear rows 0-4 — placement at 5 survives. */
-    cfr_img_clear_display_rows(vt, st, 0, 4);
+    cfr_img_clear_display_rows(vt, st, 0, 4, false);
     ASSERT_EQ(st->img_count, 1);
     ASSERT_EQ(st->place_count, 1);
 
-    /* Clear rows 5-5 — placement at 5 removed (image + placement). */
-    cfr_img_clear_display_rows(vt, st, 5, 5);
+    /* Clear rows 5-5 — placement at 5 removed (image + placement: a
+     * Lottie animation dies with its last placement). */
+    cfr_img_clear_display_rows(vt, st, 5, 5, false);
     ASSERT_EQ(st->img_count, 0);
     ASSERT_EQ(st->place_count, 0);
 

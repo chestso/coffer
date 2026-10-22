@@ -519,8 +519,15 @@ static void test_large_single_shot(void)
 
 /* The single-conversion design: cfr_img_get converts logical→physical.
  * With content_scale=2.0, a 4x4 decoded image with width=2 cells should
- * have width_px = 2 * 5 * 2 = 20 (physical) and buf_w = 4 * 2 = 8
- * (physical).  The renderer uses these directly with zero conversions. */
+ * have width_px = 2 * 5 * 2 = 20 (physical).
+ *
+ * The BUFFER dimensions are NOT scaled: the buffer holds the decoded
+ * (native) pixels, so buf_w/buf_h are the real extent of the memory
+ * the host is about to read (buf_w * buf_h * 4 bytes). Scaling them
+ * told the host to read past the end of the allocation on a scaled
+ * display — a heap-buffer-overflow the ASan reproducer
+ * (tests/repro/host_upload.c) confirmed. The scaling lives in the
+ * DISPLAY fields only. */
 static void test_content_scale_physical(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -528,7 +535,7 @@ static void test_content_scale_physical(void)
     /* cell_w_px=10, cell_h_px=6 (physical, from make_term).
      * logical_cw = 10 / 2 = 5.  width=2 cells → disp_w = 2*5 = 10 (logical).
      * cfr_img_get: width_px = 10 * 2 = 20 (physical).
-     * buf_w = 4 * 2 = 8 (physical). */
+     * buf_w = 4 (the decoded PNG's real width — NOT scaled). */
     char seq[256];
     snprintf(seq, sizeof(seq),
              "\x1b]1337;File=inline=1;width=2:%s\x07",
@@ -541,8 +548,8 @@ static void test_content_scale_physical(void)
     ASSERT_EQ(count, 1);
     ASSERT_EQ(imgs[0].width_px, 20);
     ASSERT_EQ(imgs[0].height_px, 20);
-    ASSERT_EQ(imgs[0].buf_w, 8);
-    ASSERT_EQ(imgs[0].buf_h, 8);
+    ASSERT_EQ(imgs[0].buf_w, 4);
+    ASSERT_EQ(imgs[0].buf_h, 4);
 
     cfr_free(vt);
 }

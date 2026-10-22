@@ -1,8 +1,10 @@
 # coffer — unified image store: design + fix plan
 
-Status: **investigation complete, plan written, not yet implemented.**
+Status: **phases 1–4 implemented** (the data model, the lifetimes, the
+damage, the buffer dimensions). Phases 5–8 remain: the Lottie
+reconciliation, the public surface, the tests, the consumers.
 Owner repo: **coffer** (the engine; portty/nevermore/boba are consumers).
-Last updated: 2026-10-21.
+Last updated: 2026-10-22.
 
 > This file is the design AND the state tracker. It is written so the work
 > can resume after an outage or an OOM: the "Progress" section at the
@@ -256,31 +258,41 @@ The store must satisfy, and the tests must pin:
 
 ### Phase 2 — the lifetimes (F1, F2, F3)
 
-6. `cfr_img_clear_display_rows()`: an ANCHORED (1:1) image is culled
-   when the erased rows overlap it; a REFERENCED (1:N) image is **not**
-   culled — its placements are culled only by a kitty `a=d` (which
-   coffer does not implement per-placement beyond `d=p`), by a
-   re-transmit, or by the budget. Per kitty: "The other commands to
-   erase text must have no effect on graphics."
-   The only screen-wide clear kitty sanctions is `ESC [ 2 J` ("the clear
-   screen escape code should also clear all images") — that one clears
-   the _visible_ images (1:1 images and 1:N images that have a
-   placement on screen), and leaves invisible ones alone.
+6. `cfr_img_clear_display_rows()`: the SOURCE decides, not the kind
+   alone — the 1:N protocols have different rules, and the store
+   carries all of them:
+   - an ANCHORED (1:1) image is culled when the erased rows overlap it
+     (sixel, iTerm2: the image is part of the screen);
+   - a kitty image is NOT touched by a text erase at all ("the other
+     commands to erase text must have no effect on graphics"). The one
+     screen-wide clear kitty sanctions is `ESC [ 2 J` ("the clear screen
+     escape code should also clear all images"), and that one clears
+     the _visible_ images (the ones with a placement on screen) — an
+     image that was transmitted but never placed is not on the screen,
+     so it survives;
+   - a Lottie animation's foreground placements go with the erased rows
+     (the Lottie spec's own clear behaviour — `docs/lottie-spec.md`
+     §7.3), and the animation dies with its last placement.
+     The store therefore takes a `full` flag (the screen-wide clear) and
+     the Lottie handler clears its own source's placements
+     (`cfr_img_clear_source_rows()`), so the kitty rules never decide the
+     Lottie's fate.
 7. `cfr_img_note_scroll()`: culls 1:1 images whose anchor scrolled out
-   of the scrollback; 1:N images only when their placements all
-   scrolled out AND the client has not re-placed them. A kitty image
-   whose placement scrolled into the scrollback is still a live image
-   (kitty keeps images until deleted), but the placement is off-screen.
-   Decide: keep the placement, report it with a negative row (the
-   unified-row convention already supports that), and let the host
-   cull it.
-8. `cfr_img_clear_all()` stays for RIS/altscreen/resize — but the
-   altscreen switch must only clear the images of the screen being
-   left. Today it clears the whole store. (Kitty: "When switching from
-   the main screen to the alternate screen buffer (1049) all images in
-   the alternate screen must be cleared".)
+   of the scrollback; a 1:N image's PLACEMENT that fell out of the
+   scrollback is dropped, but the IMAGE is not — a kitty image lives
+   until the client deletes it (kitty keeps images until deleted), and
+   a Lottie animation dies with its last placement.
+8. `cfr_img_clear_all()` stays for RIS — kitty: "when resetting the
+   terminal, all images must be cleared". The altscreen switch and the
+   resize clear the ANCHORED images only (`cfr_img_clear_anchored()`):
+   those images are anchored to the grid that is being swapped or
+   re-anchored, while the client-owned 1:N images carry their own
+   anchors. (Kitty wants the images of the screen being left cleared;
+   coffer has ONE image set, not one per screen — the divergence is
+   recorded in `FOLLOWUPS.md`.)
 9. The overflow path evicts by **creation order** (oldest first), not
-   by array index.
+   by array index: the dense array is swap-removed, so index 0 holds
+   an arbitrary record — releasing it evicted the NEWEST image.
 10. `img_evict_to_budget()` evicts by the same creation order. It must
     also never evict an image that still has placements _in the
     visible area_ while an invisible one is available — kitty's
@@ -372,10 +384,10 @@ run in CI).
 > `make -C build check`, commit, then tick the box in the SAME commit.
 
 - [x] **Phase 0** — investigation, repro programs, findings F1–F9
-- [ ] **Phase 1** — the store's data model (kind, seq, handle, id space)
-- [ ] **Phase 2** — the lifetimes (F1, F2, F3)
-- [ ] **Phase 3** — the damage (F5)
-- [ ] **Phase 4** — the buffer dimensions (F8)
+- [x] **Phase 1** — the store's data model (kind, seq, handle, id space)
+- [x] **Phase 2** — the lifetimes (F1, F2, F3)
+- [x] **Phase 3** — the damage (F5)
+- [x] **Phase 4** — the buffer dimensions (F8)
 - [ ] **Phase 5** — the lottie reconciliation (F9)
 - [ ] **Phase 6** — the public surface + header docs
 - [ ] **Phase 7** — the tests

@@ -166,9 +166,12 @@ void cfr_resize(CfrTerm *vt, int rows, int cols)
         return;
     cfr_selection_clear(vt);
     /* Reflow rebuilds the grid with no line identity, so anchored sixel
-     * images can't be followed across a rewrap — drop them on resize. */
+     * images can't be followed across a rewrap — drop them on resize.
+     * The client-owned 1:N images (kitty) are anchored by their own
+     * placements, so they survive the resize: kitty keeps images until
+     * the client deletes them, and a resize is not a delete. */
     if (vt->images)
-        cfr_img_clear_all(vt, vt->images);
+        cfr_img_clear_anchored(vt, vt->images);
     if (vt->lottie)
         cfr_lottie_clear_all(vt);
     cfr_reflow(vt, rows, cols);

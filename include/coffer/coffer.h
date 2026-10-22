@@ -500,11 +500,22 @@ enum
     IMG_SRC_LOTTIE = 1,
     IMG_SRC_ITERM = 2,
     IMG_SRC_KITTY = 3,
+    /* Not a real source: the "any protocol" wildcard for the placement
+     * queries, whose id spaces belong to the protocols themselves. */
+    IMG_SRC_ANY = 255
 };
 
 typedef struct
 {
     uint64_t id;
+    /* The engine's internal handle for this image — stable for the
+     * image's whole life, never reused, and unique across protocols.
+     * The public `id` is the CLIENT's id for the 1:N protocols (kitty's
+     * i=, Lottie's id) and the engine's own id for the 1:1 protocols
+     * (sixel, iTerm2); those id spaces overlap by construction, so a
+     * host that matches a placement to its image must use the handle
+     * (CfrImagePlacement.image_handle), not the id. */
+    uint64_t handle;
     uint32_t version;
     uint8_t layer;
     uint8_t source; /* IMG_SRC_SIXEL, IMG_SRC_LOTTIE, IMG_SRC_ITERM, IMG_SRC_KITTY */
@@ -512,8 +523,10 @@ typedef struct
     int col;
     int width_px;        /* physical display pixels (coffer pre-converts) */
     int height_px;       /* physical display pixels */
-    int buf_w;           /* physical pixel buffer width (for texture upload) */
-    int buf_h;           /* physical pixel buffer height */
+    int buf_w;           /* pixel buffer width (for texture upload) — the
+                          * REAL width of `rgba`, NOT scaled: the buffer
+                          * holds the decoded (native) pixels */
+    int buf_h;           /* pixel buffer height (see buf_w) */
     const uint8_t *rgba; /* buf_w * buf_h * 4, RGBA, engine-owned */
 } CfrImage;
 
@@ -540,6 +553,13 @@ typedef struct
 {
     uint64_t id;
     uint64_t image_id;
+    /* The owning image's handle (CfrImage.handle) and its protocol
+     * (IMG_SRC_*). The public `image_id` is only unique WITHIN one
+     * protocol's id space — kitty's i=1 and a Lottie id of 1 are the
+     * same number — so a host that pairs a placement with its image
+     * must compare handles, not ids. */
+    uint64_t image_handle;
+    uint8_t source;
     int row; /* display-relative row */
     int col;
     int rows;
@@ -560,10 +580,23 @@ const CfrImagePlacement *cfr_get_image_placements(CfrTerm *vt, int *out_count);
 
 /* Return placements for a single image id. Engine-owned, valid until the
  * next mutation; *out_count receives the count (0 if none). Returns NULL
- * when the image has no placements. */
+ * when the image has no placements.
+ *
+ * The id is looked up in EVERY protocol's id space (the protocols'
+ * id spaces overlap), so a kitty id of 1 and a Lottie id of 1 both
+ * match. Use cfr_get_image_placements_for_source() when the protocol
+ * is known. */
 const CfrImagePlacement *cfr_get_image_placements_for(CfrTerm *vt,
                                                       uint64_t image_id,
                                                       int *out_count);
+
+/* Return placements for a single image id within ONE protocol's id
+ * space (source is an IMG_SRC_* value). This is the unambiguous
+ * query: kitty's i=1 and a Lottie id of 1 are different images. */
+const CfrImagePlacement *cfr_get_image_placements_for_source(CfrTerm *vt,
+                                                             uint8_t source,
+                                                             uint64_t image_id,
+                                                             int *out_count);
 
 /* --- Lottie animations ------------------------------------------------- */
 

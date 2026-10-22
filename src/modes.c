@@ -25,10 +25,14 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
     /* Selection is screen-specific — clear on any altscreen switch. */
     cfr_selection_clear(vt);
 
-    /* Sixel images belong to the primary grid. We don't keep a separate
-     * per-screen image set yet, so clear on any altscreen switch. */
+    /* The anchored (1:1) images belong to the grid that is being left:
+     * their anchors are that grid's rows, and the grid is swapped here.
+     * The client-owned 1:N images (kitty) carry their own anchors and
+     * live until the client deletes them — kitty's rule is that only
+     * the images of the screen being left are cleared, and coffer has
+     * one image set, not one per screen. */
     if (vt->images)
-        cfr_img_clear_all(vt, vt->images);
+        cfr_img_clear_anchored(vt, vt->images);
 
     if (on) {
         if (save_restore_cursor)
