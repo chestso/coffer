@@ -475,7 +475,7 @@ uint32_t cfr_default_palette_rgb(uint8_t index);
 /* ------------------------------------------------------------------ */
 
 /*
- * A decoded sixel image, anchored to a grid line. The engine owns the
+ * A decoded image, anchored to a grid line. The engine owns the
  * pixel data and the lifetime; the view returned by cfr_get_images() is
  * valid until the next cfr_input_write()/cfr_get_images() call.
  *
@@ -492,6 +492,32 @@ uint32_t cfr_default_palette_rgb(uint8_t index);
  * reuses a version for different pixels. `layer` is 0 for foreground
  * (drawn over text); layer 1 (background, drawn behind text) is
  * reserved for a future extension.
+ *
+ * THE LIFETIME OF AN IMAGE (per `source`):
+ *
+ *   IMG_SRC_SIXEL, IMG_SRC_ITERM — the image IS its placement: it
+ *     lives as long as the screen area it covers. An erase of those
+ *     rows removes it, and so does a scroll that carries it out of
+ *     the scrollback.
+ *
+ *   IMG_SRC_KITTY — the image belongs to the CLIENT: it lives until
+ *     the client deletes it (kitty's a=d), until the same id is
+ *     re-transmitted, or until the store's budget evicts it. It is not
+ *     touched by the text erases ("the other commands to erase text
+ *     must have no effect on graphics"); the screen-wide clear
+ *     (ESC [ 2 J) removes the images that are visible on the screen.
+ *     Its position comes from its PLACEMENTS (see
+ *     CfrImagePlacement), not from `row`.
+ *
+ *   IMG_SRC_LOTTIE — an animation IS a placement: it lives as long as
+ *     its last placement, and an erase of the rows a placement covers
+ *     removes it.
+ *
+ * The `id` spaces are per protocol: a kitty image's id is the
+ * client's, a sixel's is the engine's, and they may be the same
+ * number. `handle` is the engine's own identity for the image —
+ * unique across protocols, never reused — and the placements name
+ * their image by it.
  */
 /* Image source identifiers for the `source` field on CfrImage. */
 enum
@@ -540,15 +566,19 @@ void cfr_set_cell_pixels(CfrTerm *vt, int cell_w_px, int cell_h_px);
  * cell_px already includes the scale but image pixels are unscaled. */
 void cfr_set_content_scale(CfrTerm *vt, float scale);
 
-/* Return the live sixel images. The returned array is owned by the
- * engine and valid until the next mutation; *out_count receives the
- * number of images (0 if none). Returns NULL when there are none. */
+/* Return the live images (sixel, iTerm2, kitty, Lottie). The returned
+ * array is owned by the engine and valid until the next mutation;
+ * *out_count receives the number of images (0 if none). Returns NULL
+ * when there are none. */
 const CfrImage *cfr_get_images(CfrTerm *vt, int *out_count);
 
 /* A placement of an image on the terminal grid (1:N image-to-placement,
  * used by Lottie and kitty graphics). Anchored by absolute line so it
  * scrolls with text. `row` is the display-relative row (abs_line minus
- * the scroll top). `image_id` links to the owning CfrImage's id. */
+ * the scroll top). `image_id` links to the owning CfrImage's id (the
+ * id of the OWNING PROTOCOL's id space) and `image_handle` to its
+ * engine-internal identity — the unambiguous link, since the
+ * protocols' id spaces overlap. */
 typedef struct
 {
     uint64_t id;

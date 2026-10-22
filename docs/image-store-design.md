@@ -389,7 +389,7 @@ run in CI).
 - [x] **Phase 3** — the damage (F5)
 - [x] **Phase 4** — the buffer dimensions (F8)
 - [x] **Phase 5** — the lottie reconciliation (F9)
-- [ ] **Phase 6** — the public surface + header docs
+- [x] **Phase 6** — the public surface + header docs
 - [ ] **Phase 7** — the tests
 - [ ] **Phase 8** — the consumers (portty)
 
