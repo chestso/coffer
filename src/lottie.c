@@ -187,13 +187,15 @@ static CfrImgStore *lt_store(CfrTerm *vt)
     return st;
 }
 
-/* Return the RGBA buffer for a Lottie animation, or NULL. */
-static uint8_t *lt_rgba(CfrTerm *vt, uint64_t id)
+/* Return the RGBA buffer for a Lottie animation, or NULL. The record's
+ * HANDLE names the image in the store — the client id lives in the
+ * Lottie id space, which overlaps the other protocols'. */
+static uint8_t *lt_rgba(CfrTerm *vt, uint64_t handle)
 {
     CfrImgStore *st = vt->images;
     if (!st)
         return NULL;
-    int idx = cfr_img_find_by_source_id(st, IMG_SRC_LOTTIE, id);
+    int idx = cfr_img_find_by_handle(st, handle);
     if (idx < 0)
         return NULL;
     return st->imgs[idx].rgba;
@@ -216,10 +218,10 @@ static void lt_rec_release(CfrTerm *vt, struct CfrLottieState *st, int idx)
 {
     LtRec *r = &st->recs[idx];
     /* Remove the image (and its placements) from the shared store. The
-     * lookup is scoped to the Lottie id space: another protocol's image
-     * may carry the same number. */
-    if (vt->images) {
-        int ii = cfr_img_find_by_source_id(vt->images, IMG_SRC_LOTTIE, r->id);
+     * record's HANDLE names the image: the client id lives in the
+     * Lottie id space, which overlaps the other protocols'. */
+    if (vt->images && r->img_handle) {
+        int ii = cfr_img_find_by_handle(vt->images, r->img_handle);
         if (ii >= 0)
             cfr_img_remove(vt, vt->images, ii);
     }
@@ -321,7 +323,7 @@ static void lt_rasterize(CfrTerm *vt, LtRec *r)
     tvg_canvas_draw(r->tvg_canvas, true);
     tvg_canvas_sync(r->tvg_canvas);
 
-    uint8_t *rgba = lt_rgba(vt, r->id);
+    uint8_t *rgba = lt_rgba(vt, r->img_handle);
     if (rgba)
         lt_linearize_rgba(rgba, r->px_w, r->px_h);
     r->dirty = true;
@@ -329,7 +331,7 @@ static void lt_rasterize(CfrTerm *vt, LtRec *r)
 
 static bool lt_tvg_init(CfrTerm *vt, LtRec *r)
 {
-    uint8_t *rgba = lt_rgba(vt, r->id);
+    uint8_t *rgba = lt_rgba(vt, r->img_handle);
     if (!rgba)
         return false;
 
@@ -1043,7 +1045,7 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     }
     /* Initialize ThorVG and rasterize the first frame */
     if (!lt_tvg_init(vt, rec)) {
-        uint8_t *rgba = lt_rgba(vt, rec->id);
+        uint8_t *rgba = lt_rgba(vt, rec->img_handle);
         if (rgba)
             memset(rgba, 0, (size_t)rec->px_w * rec->px_h * 4);
     }
@@ -1176,7 +1178,7 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
         CfrImgStore *store = lt_store(vt);
         if (!store)
             return;
-        int ii = cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE, rec->id);
+        int ii = cfr_img_find_by_handle(store, rec->img_handle);
         if (ii >= 0) {
             /* cfr_img_replace may realloc the backing buffer to grow it, so
              * we must not pass the image's own buffer as the source (it
@@ -1199,7 +1201,7 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
             Tvg_Paint pic = tvg_animation_get_picture(rec->tvg_anim);
             tvg_picture_set_size(pic, (float)new_px_w, (float)new_px_h);
 
-            uint8_t *rgba = lt_rgba(vt, rec->id);
+            uint8_t *rgba = lt_rgba(vt, rec->img_handle);
             if (rgba) {
                 /* Recreate SW canvas with new target buffer */
                 if (rec->tvg_canvas) {
@@ -1660,7 +1662,7 @@ const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count)
         l->version = r->version;
         l->canvas_w = r->px_w;
         l->canvas_h = r->px_h;
-        l->rgba = lt_rgba(vt, r->id);
+        l->rgba = lt_rgba(vt, r->img_handle);
         l->current_frame = r->current_frame;
         l->frame_count = r->frame_op - r->frame_ip;
         l->playing = r->playing;
@@ -1762,15 +1764,16 @@ void cfr_lottie_note_scroll(CfrTerm *vt, int lines)
 
     /* Cull placement-anchored images (and their placements) in the shared
      * store, then reconcile the parallel LtRec array against whatever
-     * survived. */
+     * survived. The store is the one source of truth: a record whose
+     * IMAGE is gone is released — the question is answered by the
+     * handle, not by a second walk over two arrays. */
     CfrImgStore *store = vt->images;
     if (store)
         cfr_img_note_scroll(vt, store, lines);
 
     for (int i = 0; i < st->rec_count;) {
         if (!store ||
-            cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE,
-                                      st->recs[i].id) < 0)
+            cfr_img_find_by_handle(store, st->recs[i].img_handle) < 0)
             lt_rec_release(vt, st, i);
         else
             ++i;
@@ -1791,8 +1794,7 @@ void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot)
         cfr_img_clear_source_rows(vt, store, IMG_SRC_LOTTIE, top, bot);
         /* Drop animations whose image record was removed. */
         for (int i = 0; i < st->rec_count;) {
-            if (cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE,
-                                          st->recs[i].id) < 0)
+            if (cfr_img_find_by_handle(store, st->recs[i].img_handle) < 0)
                 lt_rec_release(vt, st, i);
             else
                 ++i;

@@ -388,7 +388,7 @@ run in CI).
 - [x] **Phase 2** — the lifetimes (F1, F2, F3)
 - [x] **Phase 3** — the damage (F5)
 - [x] **Phase 4** — the buffer dimensions (F8)
-- [ ] **Phase 5** — the lottie reconciliation (F9)
+- [x] **Phase 5** — the lottie reconciliation (F9)
 - [ ] **Phase 6** — the public surface + header docs
 - [ ] **Phase 7** — the tests
 - [ ] **Phase 8** — the consumers (portty)
