@@ -37,6 +37,7 @@ Makefile.in
 .deps/
 .dirstamp
 /build/
+/build-asan/
 /build-release/
 /build-sym/
 /_build/

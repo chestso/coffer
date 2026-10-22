@@ -1280,7 +1280,8 @@ static void test_lottie_and_kitty_ids_do_not_collide(void)
     /* A kitty image with the client's id 1. */
     CfrImgStore *store = cfr_img_get_store(vt);
     ASSERT_NOT_NULL(store);
-    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    uint8_t rgba[4 * 4 * 4] = { 0 };
+    rgba[0] = 255;
     int kitty = cfr_img_add_named(vt, store, 1, rgba, 4, 4, 0, IMG_SRC_KITTY);
     ASSERT_TRUE(kitty >= 0);
 

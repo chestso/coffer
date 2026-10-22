@@ -917,7 +917,6 @@ static void test_img_handle_is_stable(void)
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
     int a = cfr_img_add_named(vt, st, 1, rgba, 10, 6, 0, IMG_SRC_KITTY);
     int b = cfr_img_add_named(vt, st, 2, rgba, 10, 6, 0, IMG_SRC_KITTY);
-    free(rgba);
     ASSERT_TRUE(a >= 0);
     ASSERT_TRUE(b >= 0);
 
@@ -936,6 +935,7 @@ static void test_img_handle_is_stable(void)
     ASSERT_TRUE(st->imgs[c].handle != ha);
     ASSERT_TRUE(st->imgs[c].handle != hb);
 
+    free(rgba);
     cfr_img_store_free(vt, st);
     cfr_free(vt);
 }
