@@ -188,3 +188,44 @@ Not yet implemented:
 **Benefit:** Full spec compliance for kitty-native clients (timg,
 chafa, and tools driving kitty animations). Most consumers only need
 the transmit/place/delete paths, which already work.
+
+### The image store — one image set, not one per screen
+
+The store holds ONE set of images for the whole terminal
+(`src/image_store.c`), not one per screen buffer. Kitty's rule is that
+switching to the alternate screen clears the images _of the alternate
+screen_ — so the images drawn in the main screen should survive the
+switch, and the ones drawn in the alternate screen should go when it
+is left. Coffer cannot tell them apart: the altscreen switch clears
+the ANCHORED (1:1) images, whose anchors are the grid's own rows, and
+keeps the client-owned 1:N images (kitty), which carry their own
+anchors and live until the client deletes them.
+
+**Impact:** a kitty image drawn in the alternate screen stays visible
+after the switch back to the main screen. The client can delete it
+(`a=d,d=i`).
+
+**Fix:** a per-screen image set (or a per-image screen tag), and the
+altscreen switch clearing the set of the screen being left.
+
+### The image store — the kitty `a=d` subtypes
+
+Kitty's delete subtypes (`d=c` cursor cell, `d=n` image number,
+`d=x`/`d=y` intersecting ranges) are still unimplemented, and the
+`d=a` ("delete all") is now scoped to kitty's own id space: it
+deletes the kitty images, not the sixels or the Lottie animations.
+That is the correct reading of the protocol (each protocol owns its
+id space), but a client that mixed protocols and expected one
+"delete all" to clear everything will be surprised.
+
+### The image store — the byte-budget eviction
+
+The budget eviction takes the OLDEST record (by creation order), which
+is deterministic — but it does not yet prefer an image that is not on
+the screen over one that is. A kitty image the client placed and still
+wants can be evicted by a flood of transmissions, and the client has
+no way to know (kitty's "delete older images to make space" is a soft
+delete of the oldest, but the victim should ideally be invisible).
+
+**Fix:** the eviction skips the images with a placement on screen
+while an invisible one is available.

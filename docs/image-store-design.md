@@ -390,7 +390,7 @@ run in CI).
 - [x] **Phase 4** — the buffer dimensions (F8)
 - [x] **Phase 5** — the lottie reconciliation (F9)
 - [x] **Phase 6** — the public surface + header docs
-- [ ] **Phase 7** — the tests
+- [x] **Phase 7** — the tests
 - [ ] **Phase 8** — the consumers (portty)
 
 ## 6. Files

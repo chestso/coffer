@@ -1230,6 +1230,88 @@ static void test_fit_none_place_rescale(void)
     cfr_free(vt);
 }
 
+/* ------------------------------------------------------------------ */
+/* The store is the one source of truth                               */
+/* ------------------------------------------------------------------ */
+
+/* When the store drops the animation's image (the byte budget, the
+ * record cap), the Lottie record goes with it: the reconcile asks the
+ * store — by the image's handle — whether the image is still there.
+ * The old code walked two arrays in parallel and kept a stale index
+ * into the store's swap-removed record array. */
+static void test_store_eviction_releases_the_record(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":24,\"layers\":[]},"
+                "\"placement\":{\"row\":5,\"col\":10},"
+                "\"layer\":\"foreground\"}");
+
+    int count = 0;
+    cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    CfrImgStore *store = vt->images;
+    ASSERT_NOT_NULL(store);
+    int idx = cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE, 1);
+    ASSERT_TRUE(idx >= 0);
+
+    /* The store evicts the image (what the budget does). */
+    cfr_img_remove(vt, store, idx);
+
+    /* The reconcile releases the record. */
+    cfr_lottie_note_scroll(vt, 1);
+    cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 0);
+
+    cfr_free(vt);
+}
+
+/* The protocols' id spaces are their own: a kitty image with the
+ * client's id 1 and a Lottie animation with the id 1 are two images,
+ * and one protocol's delete never touches the other's. */
+static void test_lottie_and_kitty_ids_do_not_collide(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* A kitty image with the client's id 1. */
+    CfrImgStore *store = cfr_img_get_store(vt);
+    ASSERT_NOT_NULL(store);
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    int kitty = cfr_img_add_named(vt, store, 1, rgba, 4, 4, 0, IMG_SRC_KITTY);
+    ASSERT_TRUE(kitty >= 0);
+
+    /* A Lottie animation with the same id. */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":60,"
+                "\"w\":40,\"h\":24,\"layers\":[]},"
+                "\"placement\":{\"row\":5,\"col\":10},"
+                "\"layer\":\"foreground\"}");
+
+    int count = 0;
+    cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    /* Both images are in the store, with different handles. */
+    int kitty_idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, 1);
+    int lottie_idx = cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE, 1);
+    ASSERT_TRUE(kitty_idx >= 0);
+    ASSERT_TRUE(lottie_idx >= 0);
+    ASSERT_TRUE(store->imgs[kitty_idx].handle !=
+                store->imgs[lottie_idx].handle);
+
+    /* Removing the kitty image leaves the animation alone. */
+    cfr_img_remove(vt, store, kitty_idx);
+    cfr_get_lotties(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -1271,6 +1353,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_fit_none_scale_half);
     RUN_TEST(test_fit_none_ignores_max_cols);
     RUN_TEST(test_fit_none_place_rescale);
+
+    /* The store is the one source of truth */
+    RUN_TEST(test_store_eviction_releases_the_record);
+    RUN_TEST(test_lottie_and_kitty_ids_do_not_collide);
 
     TEST_SUMMARY();
 }

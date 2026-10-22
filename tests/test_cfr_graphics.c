@@ -62,6 +62,28 @@ static void watchdog_disarm(void)
 static char g_output[1024];
 static size_t g_output_len;
 
+/* Damage tracking: the host repaints only the rows coffer reports as
+ * damaged. A kitty placement that reports nothing is a placement the
+ * host never draws — the image lands as a blank space. */
+static int g_damage_calls;
+static int g_damage_min_row;
+static int g_damage_max_row;
+
+static void on_damage(CfrRect r, void *u)
+{
+    (void)u;
+    g_damage_calls++;
+    if (g_damage_calls == 1) {
+        g_damage_min_row = r.start_row;
+        g_damage_max_row = r.end_row;
+        return;
+    }
+    if (r.start_row < g_damage_min_row)
+        g_damage_min_row = r.start_row;
+    if (r.end_row > g_damage_max_row)
+        g_damage_max_row = r.end_row;
+}
+
 static void on_output(const uint8_t *bytes, size_t len, void *u)
 {
     (void)u;
@@ -82,10 +104,14 @@ static CfrTerm *make_term(int rows, int cols)
     CfrTerm *vt = cfr_new(&cfg);
     CfrCallbacks cb = { 0 };
     cb.output = on_output;
+    cb.damage = on_damage;
     cfr_set_callbacks(vt, &cb, NULL);
     cfr_set_cell_pixels(vt, 10, 6);
     g_output_len = 0;
     g_output[0] = '\0';
+    g_damage_calls = 0;
+    g_damage_min_row = 0;
+    g_damage_max_row = 0;
     return vt;
 }
 
@@ -1387,6 +1413,225 @@ static void test_raw_transmit_still_needs_dimensions(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 17. The kitty rules: the image belongs to the client             */
+/* --------------------------------------------------------------- */
+
+/* A transmitted-but-unplaced kitty image is INVISIBLE: kitty's spec
+ * says the other commands to erase text must have no effect on
+ * graphics, and the screen-wide clear (ESC [ 2 J) clears the images
+ * that are visible on the screen. The image was transmitted but never
+ * placed, so it is not on the screen — and it must survive, together
+ * with the bytes the client still has in its FIFO.
+ *
+ * The old engine decided the lifetime by asking "does this image
+ * have a placement?" — so a transmitted-but-unplaced kitty image was
+ * treated like a sixel and died with the screen. */
+static void test_unplaced_image_survives_ed2(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=5;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0); /* transmitted, never placed */
+
+    /* ESC [ 2 J — the image is not on the screen, so it survives. */
+    feed(vt, "\x1b[2J");
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ((long long)cfr_get_images(vt, &count)[0].id, 5);
+
+    /* A resize is not a delete either. */
+    cfr_resize(vt, 30, 100);
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    cfr_free(vt);
+}
+
+/* A text erase does not touch the graphics: "The other commands to
+ * erase text must have no effect on graphics." The kitty image and
+ * its placement survive an erase of the rows they cover. */
+static void test_erase_does_not_touch_kitty(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+
+    /* Erase the display below the cursor (the image sits at row 0). */
+    feed(vt, "\x1b[0J");
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+
+    /* Erase to the end of the line, and the whole display. */
+    feed(vt, "\x1b[K");
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    feed(vt, "\x1b[1J");
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+
+    cfr_free(vt);
+}
+
+/* The screen-wide clear IS sanctioned by kitty ("the clear screen
+ * escape code should also clear all images") — and it clears the
+ * images that are visible on the screen, with their placements. */
+static void test_ed2_clears_the_visible_kitty_image(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+
+    feed(vt, "\x1b[2J");
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 0);
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+
+    cfr_free(vt);
+}
+
+/* "Delete all images" is kitty's own id space: the sixels and the
+ * Lottie animations are not kitty's to delete. */
+static void test_delete_all_is_kitty_only(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* A kitty image. */
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* A Lottie animation with the same id, in the same store. */
+    CfrImgStore *store = cfr_img_get_store(vt);
+    ASSERT_NOT_NULL(store);
+    int lottie = cfr_img_add_named(vt, store, 1, rgba, 4, 4, 0,
+                                   IMG_SRC_LOTTIE);
+    ASSERT_TRUE(lottie >= 0);
+
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 2);
+
+    feed(vt, "\x1b_Ga=d,d=a\x1b\\");
+
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].source, IMG_SRC_LOTTIE);
+    ASSERT_EQ((long long)imgs[0].id, 1);
+
+    cfr_free(vt);
+}
+
+/* "Delete image by id" is scoped to kitty's id space as well: a
+ * Lottie animation with the same number is a different image. */
+static void test_delete_by_id_is_kitty_scoped(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    CfrImgStore *store = cfr_img_get_store(vt);
+    int lottie = cfr_img_add_named(vt, store, 1, rgba, 4, 4, 0,
+                                   IMG_SRC_LOTTIE);
+    ASSERT_TRUE(lottie >= 0);
+
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 2);
+
+    feed(vt, "\x1b_Ga=d,d=i,i=1\x1b\\");
+
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].source, IMG_SRC_LOTTIE);
+
+    cfr_free(vt);
+}
+
+/* A placement changes the screen, so it reports damage: the host
+ * repaints only the rows coffer reports as damaged, and a placement
+ * that reports nothing is a placement the host never draws (the
+ * "blank space" the report saw). */
+static void test_placement_reports_damage(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Park the cursor at row 5 so the placement's rows are known. */
+    feed(vt, "\x1b[6;1H");
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7,c=2,r=3;%s\x1b\\", b64);
+
+    cfr_damage_flush(vt);
+    g_damage_calls = 0;
+    feed(vt, seq);
+    cfr_damage_flush(vt);
+
+    /* The placement covers rows 5..7 — those rows must be dirty. */
+    ASSERT_TRUE(g_damage_calls > 0);
+    ASSERT_TRUE(g_damage_min_row <= 5);
+    ASSERT_TRUE(g_damage_max_row >= 7);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* main                                                           */
 /* --------------------------------------------------------------- */
 
@@ -1433,6 +1678,12 @@ int main(int argc, char *argv[])
     RUN_TEST(test_png_transmit_without_dimensions);
     RUN_TEST(test_png_chunked_without_dimensions);
     RUN_TEST(test_raw_transmit_still_needs_dimensions);
+    RUN_TEST(test_unplaced_image_survives_ed2);
+    RUN_TEST(test_erase_does_not_touch_kitty);
+    RUN_TEST(test_ed2_clears_the_visible_kitty_image);
+    RUN_TEST(test_delete_all_is_kitty_only);
+    RUN_TEST(test_delete_by_id_is_kitty_scoped);
+    RUN_TEST(test_placement_reports_damage);
 
     TEST_SUMMARY();
 }

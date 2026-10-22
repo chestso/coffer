@@ -126,19 +126,29 @@ static void img_rec_release(void *vt, CfrImgStore *st, int idx)
 {
     CfrImg *r = &st->imgs[idx];
     uint64_t handle = r->handle;
+    long abs_line = r->abs_line;
+    int rows_tall = r->rows_tall;
+    uint8_t kind = r->kind;
     st->live_bytes -= r->cap;
     img_buf_release(vt, st, r->rgba, r->cap);
     st->imgs[idx] = st->imgs[--st->img_count];
 
     /* Remove any placements that referenced the released image. The
      * placement names the image by HANDLE, so a client id and an
-     * engine id can never cross wires here. */
+     * engine id can never cross wires here. Each placement's rows
+     * change on the screen — the host must repaint them. */
     for (int i = 0; i < st->place_count;) {
-        if (st->places[i].image_handle == handle)
+        if (st->places[i].image_handle == handle) {
+            img_damage(vt, st->places[i].abs_line, st->places[i].rows);
             st->places[i] = st->places[--st->place_count];
-        else
+        } else
             ++i;
     }
+
+    /* An anchored image IS its placement: the rows it covered change
+     * on the screen when it goes. */
+    if (kind == IMG_KIND_ANCHORED)
+        img_damage(vt, abs_line, rows_tall);
 }
 
 /* The eviction's victim: the OLDEST record, by creation order. The

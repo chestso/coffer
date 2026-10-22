@@ -16,6 +16,28 @@
 /* Test harness                                                    */
 /* --------------------------------------------------------------- */
 
+/* Damage tracking: the host's only repaint trigger. A mutation that
+ * changes the screen and reports no damage is a change the host never
+ * draws (the "blank space" bug). */
+static int g_damage_calls;
+static int g_damage_min_row;
+static int g_damage_max_row;
+
+static void on_damage(CfrRect r, void *u)
+{
+    (void)u;
+    g_damage_calls++;
+    if (g_damage_calls == 1) {
+        g_damage_min_row = r.start_row;
+        g_damage_max_row = r.end_row;
+        return;
+    }
+    if (r.start_row < g_damage_min_row)
+        g_damage_min_row = r.start_row;
+    if (r.end_row > g_damage_max_row)
+        g_damage_max_row = r.end_row;
+}
+
 static CfrTerm *make_term(int rows, int cols)
 {
     CfrConfig cfg = CFR_CONFIG_DEFAULTS;
@@ -26,7 +48,13 @@ static CfrTerm *make_term(int rows, int cols)
     CfrTerm *vt = cfr_new(&cfg);
     if (!vt)
         return NULL;
+    CfrCallbacks cb = { 0 };
+    cb.damage = on_damage;
+    cfr_set_callbacks(vt, &cb, NULL);
     cfr_set_cell_pixels(vt, 10, 6);
+    g_damage_calls = 0;
+    g_damage_min_row = 0;
+    g_damage_max_row = 0;
     return vt;
 }
 
@@ -691,6 +719,228 @@ static void test_named_image_clear_rows_by_placement(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 8. The invariants (I1–I5)                                       */
+/* --------------------------------------------------------------- */
+
+/* I1: the kind is set at creation and never inferred. A 1:1 image
+ * (the record carries the anchor) and a 1:N image (the placements
+ * carry the anchor) are told apart by the record, not by asking
+ * "does it happen to have a placement?". */
+static void test_img_kind_is_set_at_creation(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int anchored = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
+    int referenced = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0,
+                                       IMG_SRC_KITTY);
+    int blanked = cfr_img_blank_named(vt, st, 8, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    ASSERT_TRUE(anchored >= 0);
+    ASSERT_TRUE(referenced >= 0);
+    ASSERT_TRUE(blanked >= 0);
+
+    ASSERT_EQ(st->imgs[anchored].kind, IMG_KIND_ANCHORED);
+    ASSERT_EQ(st->imgs[referenced].kind, IMG_KIND_REFERENCED);
+    ASSERT_EQ(st->imgs[blanked].kind, IMG_KIND_REFERENCED);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* I2: a client-assigned id and an engine-assigned id live in
+ * different spaces. A kitty image with the client's id 1 and an
+ * engine image with the engine's id 1 are two images, and the
+ * placement of one never resolves to the other. */
+static void test_img_id_spaces_are_separate(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    /* The kitty image takes the CLIENT's id (1). */
+    int kitty = cfr_img_add_named(vt, st, 1, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    /* The engine's counter also hands out 1 — a different image. */
+    int engine = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_ITERM);
+    free(rgba);
+    ASSERT_TRUE(kitty >= 0);
+    ASSERT_TRUE(engine >= 0);
+    ASSERT_EQ(st->imgs[kitty].id, 1);
+    ASSERT_EQ(st->imgs[engine].id, 1);
+    ASSERT_TRUE(st->imgs[kitty].handle != st->imgs[engine].handle);
+
+    /* The scoped lookup finds each one in its own space. */
+    ASSERT_EQ(cfr_img_find_by_source_id(st, IMG_SRC_KITTY, 1), kitty);
+    ASSERT_EQ(cfr_img_find_by_source_id(st, IMG_SRC_ITERM, 1), engine);
+    ASSERT_EQ(cfr_img_find_by_source_id(st, IMG_SRC_LOTTIE, 1), -1);
+
+    /* The handle lookup is unambiguous. */
+    ASSERT_EQ(cfr_img_find_by_handle(st, st->imgs[kitty].handle), kitty);
+    ASSERT_EQ(cfr_img_find_by_handle(st, st->imgs[engine].handle), engine);
+
+    /* A placement names its image by the handle, so it follows the
+     * kitty image and not the engine one. */
+    int p = cfr_img_add_placement(vt, st, st->imgs[kitty].handle,
+                                  vt->sixel_abs_top, 0, 1, 1, 0, 255, 0);
+    ASSERT_TRUE(p >= 0);
+    ASSERT_EQ(st->places[p].image_id, 1);
+    ASSERT_EQ(st->places[p].image_handle, st->imgs[kitty].handle);
+    ASSERT_EQ(st->places[p].source, IMG_SRC_KITTY);
+
+    /* The public query can be scoped to one protocol. */
+    int count = -1;
+    const CfrImagePlacement *pls =
+        cfr_img_get_placements_for(vt, st, IMG_SRC_KITTY, 1, &count);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(count, 1);
+    count = -1;
+    pls = cfr_img_get_placements_for(vt, st, IMG_SRC_ITERM, 1, &count);
+    ASSERT_NULL(pls);
+    ASSERT_EQ(count, 0);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* I5: the eviction's order is the creation order — oldest first, over
+ * EVERY record. The dense array is swap-removed, so the record at
+ * index 0 is an arbitrary one: evicting it took the NEWEST image
+ * (the "random eviction" the report saw). */
+static void test_img_evict_takes_the_oldest(void)
+{
+    CfrTerm *vt = make_term(100, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 0, 0, 0, 255);
+    uint64_t first_handle = 0;
+    uint64_t last_handle = 0;
+    for (int i = 0; i < IMG_MAX_IMAGES + 1; i++) {
+        int idx = cfr_img_add_named(vt, st, (uint64_t)(i + 1), rgba, 10, 6, 0,
+                                    IMG_SRC_KITTY);
+        ASSERT_TRUE(idx >= 0);
+        if (i == 0)
+            first_handle = st->imgs[idx].handle;
+        last_handle = st->imgs[idx].handle;
+        if (i > 0)
+            ASSERT_TRUE(st->imgs[idx].seq > 0);
+    }
+    free(rgba);
+
+    ASSERT_EQ(st->img_count, IMG_MAX_IMAGES);
+    /* The oldest is gone, the newest is alive. */
+    ASSERT_EQ(cfr_img_find_by_handle(st, first_handle), -1);
+    ASSERT_TRUE(cfr_img_find_by_handle(st, last_handle) >= 0);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* I3: a mutation that changes the screen reports damage. A placement
+ * that reports nothing is a placement the host never draws — the
+ * image lands as a blank space. */
+static void test_img_placement_damages_rows(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int idx = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    ASSERT_TRUE(idx >= 0);
+    uint64_t handle = st->imgs[idx].handle;
+
+    g_damage_calls = 0;
+    cfr_damage_flush(vt);
+
+    /* A placement at row 4, three rows tall. */
+    int p = cfr_img_add_placement(vt, st, handle, vt->sixel_abs_top + 4, 0,
+                                  3, 1, 0, 255, 0);
+    ASSERT_TRUE(p >= 0);
+    cfr_damage_flush(vt);
+    ASSERT_TRUE(g_damage_calls > 0);
+    ASSERT_TRUE(g_damage_min_row <= 4);
+    ASSERT_TRUE(g_damage_max_row >= 6);
+
+    /* Removing the placement dirties the rows it used to cover: the
+     * host must repaint them, or the image stays on the screen. */
+    g_damage_calls = 0;
+    cfr_damage_flush(vt);
+    cfr_img_remove(vt, st, idx);
+    cfr_damage_flush(vt);
+    ASSERT_TRUE(g_damage_calls > 0);
+    ASSERT_TRUE(g_damage_min_row <= 4);
+    ASSERT_TRUE(g_damage_max_row >= 6);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* I4: the buffer dimensions the host reads are the buffer's REAL
+ * dimensions. The logical→physical scaling belongs to the display
+ * fields; scaling the buffer fields told the host to read past the
+ * end of the allocation on a scaled display. */
+static void test_img_buffer_dims_are_the_buffers(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    cfr_set_content_scale(vt, 2.0f);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(4, 4, 0, 255, 0, 255);
+    int idx = cfr_img_add(vt, st, rgba, 4, 4, 0, 0, 0, IMG_SRC_SIXEL);
+    free(rgba);
+    ASSERT_TRUE(idx >= 0);
+
+    int count = -1;
+    const CfrImage *imgs = cfr_img_get(vt, st, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    /* The buffer holds the decoded 4x4 pixels. */
+    ASSERT_EQ(imgs[0].buf_w, 4);
+    ASSERT_EQ(imgs[0].buf_h, 4);
+    /* The display is scaled. */
+    ASSERT_EQ(imgs[0].width_px, 8);
+    ASSERT_EQ(imgs[0].height_px, 8);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* I2: the handle is the image's identity for its whole life — it
+ * does not change when the pixels are replaced, and it is never
+ * reused. */
+static void test_img_handle_is_stable(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int a = cfr_img_add_named(vt, st, 1, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int b = cfr_img_add_named(vt, st, 2, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    ASSERT_TRUE(a >= 0);
+    ASSERT_TRUE(b >= 0);
+
+    uint64_t ha = st->imgs[a].handle;
+    uint64_t hb = st->imgs[b].handle;
+    ASSERT_TRUE(ha != hb);
+
+    /* A frame replacement keeps the identity. */
+    cfr_img_replace(vt, st, a, rgba, 10, 6);
+    ASSERT_EQ(st->imgs[a].handle, ha);
+    ASSERT_EQ(st->imgs[b].handle, hb);
+
+    /* A new image never reuses a handle. */
+    int c = cfr_img_add_named(vt, st, 3, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    ASSERT_TRUE(c >= 0);
+    ASSERT_TRUE(st->imgs[c].handle != ha);
+    ASSERT_TRUE(st->imgs[c].handle != hb);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* main                                                           */
 /* --------------------------------------------------------------- */
 
@@ -723,6 +973,12 @@ int main(int argc, char *argv[])
     RUN_TEST(test_img_scroll_cull_removes_placements);
     RUN_TEST(test_named_image_scroll_culls_by_placement);
     RUN_TEST(test_named_image_clear_rows_by_placement);
+    RUN_TEST(test_img_kind_is_set_at_creation);
+    RUN_TEST(test_img_id_spaces_are_separate);
+    RUN_TEST(test_img_evict_takes_the_oldest);
+    RUN_TEST(test_img_placement_damages_rows);
+    RUN_TEST(test_img_buffer_dims_are_the_buffers);
+    RUN_TEST(test_img_handle_is_stable);
 
     TEST_SUMMARY();
 }
