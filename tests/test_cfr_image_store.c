@@ -203,19 +203,20 @@ static void test_img_add_advances_cursor(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     /* Image is 10px wide, 10px tall, cell is 10x6 → 1 col, 2 rows.
-     * Sixel lands the cursor on the image's LAST row (VT340 spec). */
+     * The cursor lands below the image's footprint, so the text that
+     * follows it is never under the image's pixels. */
     uint8_t *rgba = make_rgba(10, 10, 0, 255, 0, 255);
     cfr_img_add(vt, st, rgba, 10, 10, 0, 0, 0, IMG_SRC_SIXEL);
     free(rgba);
 
-    ASSERT_EQ(vt->cursor.row, 1);
+    ASSERT_EQ(vt->cursor.row, 2);
     ASSERT_EQ(vt->cursor.col, 0);
 
     cfr_img_store_free(vt, st);
     cfr_free(vt);
 }
 
-/* iTerm2 1337 keeps the "cursor below the image" landing. */
+/* iTerm2 1337 lands the same way: below the image. */
 static void test_img_add_iterm2_advances_below(void)
 {
     CfrTerm *vt = make_term(24, 80);

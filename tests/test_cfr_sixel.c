@@ -149,14 +149,13 @@ static void test_cursor_advance(void)
     ASSERT_EQ(s[0].height_px, 12);
 
     CfrCursor cur = cfr_get_cursor(vt);
-    ASSERT_EQ(cur.row, 1); /* the image's last row (2 rows tall) */
+    ASSERT_EQ(cur.row, 2); /* below the image (2 rows tall) */
     ASSERT_EQ(cur.col, 0);
     cfr_free(vt);
 }
 
 /* A sixel anchored on the bottom margin scrolls into view and leaves the
- * cursor on its last row — the same spec landing, one row short of the
- * iTerm2 "below" behavior. */
+ * cursor below the image. */
 static void test_cursor_advance_at_bottom_margin(void)
 {
     CfrTerm *vt = make_term(4, 20);
@@ -170,8 +169,8 @@ static void test_cursor_advance_at_bottom_margin(void)
     ASSERT_EQ(n, 1);
     ASSERT_EQ(s[0].height_px, 12);
 
-    /* The image scrolled up one line; the cursor sits on its last row. */
-    ASSERT_EQ(s[0].row, vt->rows - 2);
+    /* The image scrolled up one line; the cursor sits below it. */
+    ASSERT_EQ(s[0].row, vt->rows - 3);
     CfrCursor cur = cfr_get_cursor(vt);
     ASSERT_EQ(cur.row, vt->rows - 1);
     ASSERT_EQ(cur.col, 0);

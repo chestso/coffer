@@ -352,22 +352,21 @@ int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_handle,
 }
 
 /* Move the text cursor after a placed image and scroll the grid as
- * needed. `land_on_last` selects WHERE it lands:
+ * needed.
  *
- *   - sixel (1): the VT340 spec (ch14, "Sixel Scrolling Mode": "When
- *     sixel mode is exited, the text cursor is set to the current sixel
- *     cursor position") puts the text cursor on the image's LAST row —
- *     the row holding the top of the bottom-most sixel band — so
- *     advance rows_tall - 1. The app then prints its own break to get
- *     below the image (nevermore's one \r\n).
- *   - iTerm2 1337 (0): the cursor goes BELOW the image, so advance
- *     rows_tall.
+ * The cursor lands on the FIRST ROW BELOW the image's cell footprint
+ * (rows_tall rows down), so the text an app prints after an image is
+ * never covered by the image's pixels. An image whose pixel height is
+ * not a multiple of the cell height spills into the row under its
+ * footprint (a 512px image in 21px cells covers 25 rows, the last one
+ * 8px deep), and a cursor on that row prints its text under the
+ * spill — the text a producer (img2sixel) prints after the image
+ * comes out cut.
  *
  * The loop still scrolls when it runs out of screen, so an image
  * anchored at the bottom margin scrolls into view and the cursor ends
- * on the image's last row (or below it, for iTerm2). */
-static void img_advance_cursor(CfrTerm *vt, int rows_tall, int cols_wide,
-                               int land_on_last)
+ * below it. */
+static void img_advance_cursor(CfrTerm *vt, int rows_tall, int cols_wide)
 {
     if (vt->modes[CFR_MODE_SIXEL_SCROLLING])
         return;
@@ -378,7 +377,7 @@ static void img_advance_cursor(CfrTerm *vt, int rows_tall, int cols_wide,
         vt->cursor.col = c;
         return;
     }
-    int rows = land_on_last ? rows_tall - 1 : rows_tall;
+    int rows = rows_tall;
     if (rows < 0)
         rows = 0;
     int col = vt->cursor.col;
@@ -473,8 +472,7 @@ int cfr_img_add(void *vt, CfrImgStore *st,
         r->rows_tall = rows_tall;
         r->cols_wide = cols_wide;
         img_damage(cvt, abs_line, rows_tall);
-        img_advance_cursor(cvt, rows_tall, cols_wide,
-                           source == IMG_SRC_SIXEL);
+        img_advance_cursor(cvt, rows_tall, cols_wide);
         return existing;
     }
 
@@ -521,7 +519,7 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     memcpy(buf, rgba, need);
 
     img_damage(cvt, abs_line, rows_tall);
-    img_advance_cursor(cvt, rows_tall, cols_wide, source == IMG_SRC_SIXEL);
+    img_advance_cursor(cvt, rows_tall, cols_wide);
     return st->img_count - 1;
 }
 
