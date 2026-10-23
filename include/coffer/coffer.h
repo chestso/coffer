@@ -601,6 +601,8 @@ typedef struct
     int src_y;
     int src_w;
     int src_h;
+    int cell_off_x; /* X= (kitty): offset within the first cell, pixels */
+    int cell_off_y; /* Y= */
 } CfrImagePlacement;
 
 /* Return the live image placements (kitty graphics). The returned array

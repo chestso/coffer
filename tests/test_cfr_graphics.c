@@ -364,18 +364,25 @@ static void test_place(void)
 {
     CfrTerm *vt = make_term(24, 80);
 
-    uint8_t rgba[4] = { 255, 0, 0, 255 };
-    char b64[64];
+    /* A 10x10 red image. */
+    uint8_t rgba[10 * 10 * 4];
+    for (int i = 0; i < 10 * 10; i++) {
+        rgba[i * 4 + 0] = 255;
+        rgba[i * 4 + 1] = 0;
+        rgba[i * 4 + 2] = 0;
+        rgba[i * 4 + 3] = 255;
+    }
+    char b64[1024];
     b64_encode(rgba, sizeof(rgba), b64);
-    char seq[256];
+    char seq[2048];
     snprintf(seq, sizeof(seq),
-             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+             "\x1b_Ga=t,f=32,s=10,v=10,i=7;%s\x1b\\", b64);
     feed(vt, seq);
 
-    /* Place with explicit placement id, z-index, cell offsets and size.
-     * kitty uses w= (cell width) and h= (cell height) for the placement
-     * box; x=/y= are the cell offsets from the cursor. */
-    feed(vt, "\x1b_Ga=p,i=7,p=99,z=-2,x=3,y=4,w=2,h=3\x1b\\");
+    /* The placement sits at the cursor. x=/y=/w=/h= are the source rect
+     * in pixels, c=/r= the display box in cells, and X=/Y= the offset
+     * within the first cell (kitty's keys). */
+    feed(vt, "\x1b_Ga=p,i=7,p=99,z=-2,x=2,y=3,w=4,h=5,c=2,r=1,X=1,Y=2\x1b\\");
 
     int count = 0;
     const CfrImagePlacement *pls = cfr_img_get_placements(vt, vt->images, &count);
@@ -384,10 +391,59 @@ static void test_place(void)
     ASSERT_EQ((long long)pls[0].image_id, 7);
     ASSERT_EQ((long long)pls[0].id, 99);
     ASSERT_EQ(pls[0].z_index, -2);
-    ASSERT_EQ(pls[0].col, 3);
-    ASSERT_EQ(pls[0].row, 4);
+    ASSERT_EQ(pls[0].col, 0); /* the cursor */
+    ASSERT_EQ(pls[0].row, 0);
     ASSERT_EQ(pls[0].cols, 2);
-    ASSERT_EQ(pls[0].rows, 3);
+    ASSERT_EQ(pls[0].rows, 1);
+    ASSERT_EQ(pls[0].src_x, 2);
+    ASSERT_EQ(pls[0].src_y, 3);
+    ASSERT_EQ(pls[0].src_w, 4);
+    ASSERT_EQ(pls[0].src_h, 5);
+    ASSERT_EQ(pls[0].cell_off_x, 1);
+    ASSERT_EQ(pls[0].cell_off_y, 2);
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
+/* 8a. A placement's cell size follows the source rect's aspect   */
+/* --------------------------------------------------------------- */
+
+static void test_place_cell_size_from_aspect(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* A 20x10 image in 10x6 cells: two columns, two rows. */
+    uint8_t rgba[20 * 10 * 4];
+    for (int i = 0; i < 20 * 10; i++) {
+        rgba[i * 4 + 0] = 255;
+        rgba[i * 4 + 3] = 255;
+    }
+    char b64[2048];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[4096];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=20,v=10,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* No c=/r=: the image's natural size, two cells by two. */
+    feed(vt, "\x1b_Ga=p,i=7,C=1\x1b\\");
+    int count = 0;
+    const CfrImagePlacement *pls = cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_NOT_NULL(pls);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(pls[0].cols, 2);
+    ASSERT_EQ(pls[0].rows, 2);
+
+    /* Only the width is given: the height follows the image's aspect
+     * ratio. Four cells are 40px wide, so the image is 20px tall,
+     * which is four 6px rows. */
+    feed(vt, "\x1b[2;1H"); /* a second placement needs its own anchor */
+    feed(vt, "\x1b_Ga=p,i=7,c=4,C=1\x1b\\");
+    pls = cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_EQ(count, 2);
+    ASSERT_EQ(pls[1].cols, 4);
+    ASSERT_EQ(pls[1].rows, 4);
 
     cfr_free(vt);
 }
@@ -454,7 +510,7 @@ static void test_place_virtual(void)
 }
 
 /* --------------------------------------------------------------- */
-/* 8d. Relative placement (P= parent id, X=/Y= offset)            */
+/* 8d. Relative placement (P= parent id, H=/V= offset)            */
 /* --------------------------------------------------------------- */
 
 static void test_place_relative(void)
@@ -466,19 +522,21 @@ static void test_place_relative(void)
     b64_encode(rgba, sizeof(rgba), b64);
     char seq[256];
 
-    /* Parent placement at cell (5,6). */
+    /* Parent placement at cell (5,6): a placement takes the cursor's
+     * position, so move the cursor there first. */
     snprintf(seq, sizeof(seq),
              "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
     feed(vt, seq);
-    feed(vt, "\x1b_Ga=p,i=7,p=100,x=5,y=6,U=1\x1b\\");
+    feed(vt, "\x1b[7;6H"); /* CUP to cell (row 6, col 5) */
+    feed(vt, "\x1b_Ga=p,i=7,p=100,U=1\x1b\\");
 
-    /* Child relative to parent 100, offset x=2 y=3. */
+    /* Child relative to parent 100, offset H=2 V=3 (cells). */
     uint8_t rgba2[4] = { 0, 255, 0, 255 };
     b64_encode(rgba2, sizeof(rgba2), b64);
     snprintf(seq, sizeof(seq),
              "\x1b_Ga=t,f=32,s=1,v=1,i=8;%s\x1b\\", b64);
     feed(vt, seq);
-    feed(vt, "\x1b_Ga=p,i=8,P=100,x=2,y=3,U=1\x1b\\");
+    feed(vt, "\x1b_Ga=p,i=8,P=100,H=2,V=3,U=1\x1b\\");
 
     int count = 0;
     const CfrImagePlacement *pls = cfr_img_get_placements(vt, vt->images, &count);
@@ -1655,6 +1713,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_osc5555_carrier);
     RUN_TEST(test_transmit_client_id);
     RUN_TEST(test_place);
+    RUN_TEST(test_place_cell_size_from_aspect);
     RUN_TEST(test_place_cursor_advance);
     RUN_TEST(test_place_virtual);
     RUN_TEST(test_place_relative);

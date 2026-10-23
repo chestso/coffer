@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 /* ------------------------------------------------------------------ */
 /* Parameter parsing                                                  */
@@ -39,10 +40,14 @@ typedef struct
     int delete_what;    /* d= (for a=d) */
     int delete_x;       /* x= (for delete ranges/positions) */
     int delete_y;       /* y= */
-    int col;            /* x= (placement column offset) */
-    int row;            /* y= (placement row offset) */
-    int place_cols;     /* w= (placement cell width) */
-    int place_rows;     /* h= (placement cell height) */
+    int src_x;          /* x= (source rect origin, pixels) */
+    int src_y;          /* y= (source rect origin, pixels) */
+    int src_w;          /* w= (source rect size, pixels) */
+    int src_h;          /* h= (source rect size, pixels) */
+    int cell_off_x;     /* X= (offset within the first cell, pixels) */
+    int cell_off_y;     /* Y= */
+    int rel_h;          /* H= (relative placement offset, cells) */
+    int rel_v;          /* V= */
     int disp_cols;      /* c= (display cols; placement cell width) */
     int disp_rows;      /* r= (display rows; placement cell height) */
     int no_cursor_move; /* C= (1 = leave the cursor where it is) */
@@ -58,10 +63,14 @@ typedef struct
     int has_height;
     int has_z_index;
     int has_more;
-    int has_col;
-    int has_row;
-    int has_place_cols;
-    int has_place_rows;
+    int has_src_x;
+    int has_src_y;
+    int has_src_w;
+    int has_src_h;
+    int has_cell_off_x;
+    int has_cell_off_y;
+    int has_rel_h;
+    int has_rel_v;
     int has_disp_cols;
     int has_disp_rows;
     int has_no_cursor_move;
@@ -140,22 +149,38 @@ static void k_parse_params(const char *ctrl, size_t len, KittyParams *p)
                     p->delete_what = val_buf[0];
                     break;
                 case 'x':
-                    p->has_col = 1;
-                    p->col = atoi(val_buf);
-                    p->delete_x = p->col;
+                    p->has_src_x = 1;
+                    p->src_x = atoi(val_buf);
+                    p->delete_x = p->src_x;
                     break;
                 case 'y':
-                    p->has_row = 1;
-                    p->row = atoi(val_buf);
-                    p->delete_y = p->row;
+                    p->has_src_y = 1;
+                    p->src_y = atoi(val_buf);
+                    p->delete_y = p->src_y;
                     break;
                 case 'w':
-                    p->has_place_cols = 1;
-                    p->place_cols = atoi(val_buf);
+                    p->has_src_w = 1;
+                    p->src_w = atoi(val_buf);
                     break;
                 case 'h':
-                    p->has_place_rows = 1;
-                    p->place_rows = atoi(val_buf);
+                    p->has_src_h = 1;
+                    p->src_h = atoi(val_buf);
+                    break;
+                case 'X':
+                    p->has_cell_off_x = 1;
+                    p->cell_off_x = atoi(val_buf);
+                    break;
+                case 'Y':
+                    p->has_cell_off_y = 1;
+                    p->cell_off_y = atoi(val_buf);
+                    break;
+                case 'H':
+                    p->has_rel_h = 1;
+                    p->rel_h = atoi(val_buf);
+                    break;
+                case 'V':
+                    p->has_rel_v = 1;
+                    p->rel_v = atoi(val_buf);
                     break;
                 case 'c':
                     p->has_disp_cols = 1;
@@ -270,6 +295,83 @@ static void k_advance_cursor(CfrTerm *vt, int start_col, int cols, int rows)
 }
 
 /* ------------------------------------------------------------------ */
+/* Placement geometry                                                  */
+/* ------------------------------------------------------------------ */
+
+/* The placement's cell size, by kitty's rule: c= and r= give the box; a
+ * missing dimension is derived from the source rect's aspect ratio; with
+ * neither, the image's natural size in cells.
+ *
+ * src_w/src_h are the source rect's size in the image's own pixels (the
+ * whole image when the client sends no rect). The cell size is physical
+ * (content scale included), so the image's pixels are scaled before the
+ * division. */
+static void k_placement_cells(CfrTerm *vt, const KittyParams *p,
+                              int src_w, int src_h,
+                              int *out_cols, int *out_rows)
+{
+    int cell_w = vt->cell_w_px > 0 ? vt->cell_w_px : 1;
+    int cell_h = vt->cell_h_px > 0 ? vt->cell_h_px : 1;
+    float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
+    if (src_w <= 0)
+        src_w = 1;
+    if (src_h <= 0)
+        src_h = 1;
+
+    int cols = (p->has_disp_cols && p->disp_cols > 0) ? p->disp_cols : 0;
+    int rows = (p->has_disp_rows && p->disp_rows > 0) ? p->disp_rows : 0;
+
+    if (cols > 0 && rows <= 0) {
+        /* Only the width is given: the height follows the aspect ratio. */
+        double width_px = (double)cell_w * cols;
+        double height_px = width_px * (double)src_h / (double)src_w;
+        rows = (int)ceil(height_px / (double)cell_h);
+    } else if (rows > 0 && cols <= 0) {
+        /* Only the height is given: the width follows the aspect ratio. */
+        double height_px = (double)cell_h * rows;
+        double width_px = height_px * (double)src_w / (double)src_h;
+        cols = (int)ceil(width_px / (double)cell_w);
+    } else if (cols <= 0 && rows <= 0) {
+        /* Neither: the image's natural size, as close as it fits. */
+        cols = ((int)(src_w * scale) + cell_w - 1) / cell_w;
+        rows = ((int)(src_h * scale) + cell_h - 1) / cell_h;
+    }
+    if (cols < 1)
+        cols = 1;
+    if (rows < 1)
+        rows = 1;
+    *out_cols = cols;
+    *out_rows = rows;
+}
+
+/* The source rect a placement shows: the client's x=/y=/w=/h= (pixels),
+ * else the whole image. The rect is clamped to the image. */
+static void k_source_rect(const KittyParams *p, int img_w, int img_h,
+                          int *out_x, int *out_y, int *out_w, int *out_h)
+{
+    if (img_w < 1)
+        img_w = 1;
+    if (img_h < 1)
+        img_h = 1;
+    *out_x = (p->has_src_x && p->src_x > 0) ? p->src_x : 0;
+    *out_y = (p->has_src_y && p->src_y > 0) ? p->src_y : 0;
+    *out_w = (p->has_src_w && p->src_w > 0) ? p->src_w : img_w;
+    *out_h = (p->has_src_h && p->src_h > 0) ? p->src_h : img_h;
+    if (*out_x >= img_w)
+        *out_x = img_w - 1;
+    if (*out_y >= img_h)
+        *out_y = img_h - 1;
+    if (*out_x + *out_w > img_w)
+        *out_w = img_w - *out_x;
+    if (*out_y + *out_h > img_h)
+        *out_h = img_h - *out_y;
+    if (*out_w < 1)
+        *out_w = 1;
+    if (*out_h < 1)
+        *out_h = 1;
+}
+
+/* ------------------------------------------------------------------ */
 /* Action: transmit (a=t, a=T, a=f frame)                            */
 /* ------------------------------------------------------------------ */
 
@@ -299,6 +401,12 @@ typedef struct
     int has_z_index;
     int no_cursor_move; /* C= from the first chunk (1 = leave cursor) */
     int has_no_cursor_move;
+    int src_x, src_y, src_w, src_h; /* x=/y=/w=/h= (source rect) */
+    int has_src_x, has_src_y, has_src_w, has_src_h;
+    int cell_off_x, cell_off_y; /* X=/Y= (offset in the first cell) */
+    int has_cell_off_x, has_cell_off_y;
+    int rel_h, rel_v; /* H=/V= (relative placement offset) */
+    int has_rel_h, has_rel_v;
 } KChunk;
 
 static KChunk g_chunk = { 0 };
@@ -475,6 +583,22 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
             g_chunk.has_z_index = p->has_z_index;
             g_chunk.no_cursor_move = p->no_cursor_move;
             g_chunk.has_no_cursor_move = p->has_no_cursor_move;
+            g_chunk.src_x = p->src_x;
+            g_chunk.src_y = p->src_y;
+            g_chunk.src_w = p->src_w;
+            g_chunk.src_h = p->src_h;
+            g_chunk.has_src_x = p->has_src_x;
+            g_chunk.has_src_y = p->has_src_y;
+            g_chunk.has_src_w = p->has_src_w;
+            g_chunk.has_src_h = p->has_src_h;
+            g_chunk.cell_off_x = p->cell_off_x;
+            g_chunk.cell_off_y = p->cell_off_y;
+            g_chunk.has_cell_off_x = p->has_cell_off_x;
+            g_chunk.has_cell_off_y = p->has_cell_off_y;
+            g_chunk.rel_h = p->rel_h;
+            g_chunk.rel_v = p->rel_v;
+            g_chunk.has_rel_h = p->has_rel_h;
+            g_chunk.has_rel_v = p->has_rel_v;
         }
         if (cfr_buf_append((uint8_t **)&g_chunk.b64, &g_chunk.len,
                            &g_chunk.cap, payload, payload_len) != 0)
@@ -534,6 +658,38 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
             p->no_cursor_move = g_chunk.no_cursor_move;
             p->has_no_cursor_move = g_chunk.has_no_cursor_move;
         }
+        if (!p->has_src_x) {
+            p->src_x = g_chunk.src_x;
+            p->has_src_x = g_chunk.has_src_x;
+        }
+        if (!p->has_src_y) {
+            p->src_y = g_chunk.src_y;
+            p->has_src_y = g_chunk.has_src_y;
+        }
+        if (!p->has_src_w) {
+            p->src_w = g_chunk.src_w;
+            p->has_src_w = g_chunk.has_src_w;
+        }
+        if (!p->has_src_h) {
+            p->src_h = g_chunk.src_h;
+            p->has_src_h = g_chunk.has_src_h;
+        }
+        if (!p->has_cell_off_x) {
+            p->cell_off_x = g_chunk.cell_off_x;
+            p->has_cell_off_x = g_chunk.has_cell_off_x;
+        }
+        if (!p->has_cell_off_y) {
+            p->cell_off_y = g_chunk.cell_off_y;
+            p->has_cell_off_y = g_chunk.has_cell_off_y;
+        }
+        if (!p->has_rel_h) {
+            p->rel_h = g_chunk.rel_h;
+            p->has_rel_h = g_chunk.has_rel_h;
+        }
+        if (!p->has_rel_v) {
+            p->rel_v = g_chunk.rel_v;
+            p->has_rel_v = g_chunk.has_rel_v;
+        }
 
         size_t need = g_chunk.len + payload_len + 1;
         tmp_b64 = malloc(need);
@@ -578,30 +734,30 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
     /* a=T also places at the cursor. */
     if (place_at_cursor && stored_handle) {
         CfrImgStore *store = cfr_img_get_store(vt);
-        int cell_h = vt->cell_h_px > 0 ? vt->cell_h_px : 1;
-        int cell_w = vt->cell_w_px > 0 ? vt->cell_w_px : 1;
-        float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
-        int cols = (((int)(w * scale) + cell_w - 1) / cell_w);
-        int rows = (((int)(h * scale) + cell_h - 1) / cell_h);
-        /* c=/r= override the display size in cells (the image is
-         * scaled/letterboxed into that rectangle, like kitty). */
-        if (p->has_disp_cols && p->disp_cols > 0)
-            cols = p->disp_cols;
-        if (p->has_disp_rows && p->disp_rows > 0)
-            rows = p->disp_rows;
-        if (cols < 1)
-            cols = 1;
-        if (rows < 1)
-            rows = 1;
+        int src_x, src_y, src_w, src_h;
+        k_source_rect(p, w, h, &src_x, &src_y, &src_w, &src_h);
+        int cols, rows;
+        k_placement_cells(vt, p, src_w, src_h, &cols, &rows);
         int place_row = vt->cursor.row;
         int place_col = vt->cursor.col;
-        cfr_img_add_placement(vt, store, stored_handle,
-                              vt->sixel_abs_top + place_row,
-                              place_col, rows, cols, 0, 255,
-                              p->has_z_index ? p->z_index : 0);
+        int pi = cfr_img_add_placement(vt, store, stored_handle,
+                                       vt->sixel_abs_top + place_row,
+                                       place_col, rows, cols, 0, 255,
+                                       p->has_z_index ? p->z_index : 0);
+        if (pi >= 0) {
+            store->places[pi].src_x = src_x;
+            store->places[pi].src_y = src_y;
+            store->places[pi].src_w = src_w;
+            store->places[pi].src_h = src_h;
+            store->places[pi].cell_off_x =
+                (p->has_cell_off_x && p->cell_off_x > 0) ? p->cell_off_x : 0;
+            store->places[pi].cell_off_y =
+                (p->has_cell_off_y && p->cell_off_y > 0) ? p->cell_off_y : 0;
+        }
 
-        /* Cursor advance by the placement size, unless C=1. */
-        if (!(p->has_no_cursor_move && p->no_cursor_move))
+        /* Cursor advance by the placement size, unless C=1 or U=1. */
+        if (!(p->has_no_cursor_move && p->no_cursor_move) &&
+            !(p->has_virtual && p->virtual))
             k_advance_cursor(vt, place_col, cols, rows);
     }
     free(rgba);
@@ -655,14 +811,17 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
     CfrImg *img = &store->imgs[img_idx];
     uint64_t image_handle = img->handle;
 
-    int col = p->has_col ? p->col : vt->cursor.col;
-    int row = p->has_row ? p->row : vt->cursor.row;
+    /* The placement sits at the cursor; a relative placement takes its
+     * position from its parent instead. */
+    int col = vt->cursor.col;
+    int row = vt->cursor.row;
 
     /* Relative placement: when P= (parent placement) or Q= (parent image)
-     * is given, x=/y= are offsets relative to the parent's top-left,
-     * not absolute cell coordinates. */
+     * is given, the position is the parent's top-left cell offset by
+     * H=/V= (cells). */
     uint64_t rel_place = 0, rel_img = 0;
-    if (p->has_parent_place || p->has_parent_img) {
+    bool relative = p->has_parent_place || p->has_parent_img;
+    if (relative) {
         uint64_t want = (uint64_t)(p->has_parent_place ? p->parent_place
                                                        : p->parent_img);
         /* Find the parent placement (by placement id, or the image's
@@ -675,8 +834,8 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
             if (match) {
                 int pcol = store->places[i].col;
                 int prow = (int)(store->places[i].abs_line - vt->sixel_abs_top);
-                col = pcol + (p->has_col ? p->col : 0);
-                row = prow + (p->has_row ? p->row : 0);
+                col = pcol + (p->has_rel_h ? p->rel_h : 0);
+                row = prow + (p->has_rel_v ? p->rel_v : 0);
                 if (p->has_parent_place)
                     rel_img = store->places[i].image_id;
                 else
@@ -686,21 +845,18 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
         }
     }
 
-    /* Placement cell size: c=/r= (display cols/rows) with w=/h= as the
-     * pixel-rect aliases, else derive from image display dimensions. */
-    int cell_h = vt->cell_h_px > 0 ? vt->cell_h_px : 1;
-    int cell_w = vt->cell_w_px > 0 ? vt->cell_w_px : 1;
-    float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
-    int cols = p->has_disp_cols ? p->disp_cols
-                                : (p->has_place_cols ? p->place_cols
-                                                     : (((int)(img->w * scale) + cell_w - 1) / cell_w));
-    int rows = p->has_disp_rows ? p->disp_rows
-                                : (p->has_place_rows ? p->place_rows
-                                                     : (((int)(img->h * scale) + cell_h - 1) / cell_h));
-    if (cols < 1)
-        cols = 1;
-    if (rows < 1)
-        rows = 1;
+    /* The source rect (x=/y=/w=/h=, pixels) and the cell offsets
+     * (X=/Y=, pixels within the first cell). */
+    int src_x, src_y, src_w, src_h;
+    k_source_rect(p, img->buf_w > 0 ? img->buf_w : img->w,
+                  img->buf_h > 0 ? img->buf_h : img->h,
+                  &src_x, &src_y, &src_w, &src_h);
+
+    /* Placement cell size: c=/r= (display cols/rows); a missing
+     * dimension follows the source rect's aspect ratio, and with
+     * neither the image's natural size. */
+    int cols, rows;
+    k_placement_cells(vt, p, src_w, src_h, &cols, &rows);
 
     int z_index = p->has_z_index ? p->z_index : 0;
 
@@ -715,10 +871,18 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
         store->places[pi].parent_place = rel_place;
     if (rel_img)
         store->places[pi].parent_img = rel_img;
+    store->places[pi].src_x = src_x;
+    store->places[pi].src_y = src_y;
+    store->places[pi].src_w = src_w;
+    store->places[pi].src_h = src_h;
+    store->places[pi].cell_off_x =
+        (p->has_cell_off_x && p->cell_off_x > 0) ? p->cell_off_x : 0;
+    store->places[pi].cell_off_y =
+        (p->has_cell_off_y && p->cell_off_y > 0) ? p->cell_off_y : 0;
 
-    /* Move the cursor: virtual (U=1) and C=1 leave it; otherwise
-     * advance by the placement size. */
-    if ((!p->has_virtual || !p->virtual) &&
+    /* Move the cursor: virtual (U=1), C=1 and a relative placement leave
+     * it; otherwise advance by the placement size. */
+    if ((!p->has_virtual || !p->virtual) && !relative &&
         !(p->has_no_cursor_move && p->no_cursor_move))
         k_advance_cursor(vt, col, cols, rows);
 

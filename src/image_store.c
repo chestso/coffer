@@ -1090,6 +1090,8 @@ const CfrImagePlacement *cfr_img_get_placements(void *vt, CfrImgStore *st,
         v->src_y = r->src_y;
         v->src_w = r->src_w;
         v->src_h = r->src_h;
+        v->cell_off_x = r->cell_off_x;
+        v->cell_off_y = r->cell_off_y;
     }
     if (out_count)
         *out_count = st->place_count;
@@ -1158,6 +1160,8 @@ const CfrImagePlacement *cfr_img_get_placements_for(void *vt, CfrImgStore *st,
         v->src_y = r->src_y;
         v->src_w = r->src_w;
         v->src_h = r->src_h;
+        v->cell_off_x = r->cell_off_x;
+        v->cell_off_y = r->cell_off_y;
     }
     if (out_count)
         *out_count = want;
