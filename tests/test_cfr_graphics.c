@@ -1588,6 +1588,65 @@ static void test_ed2_clears_the_visible_kitty_image(void)
     cfr_free(vt);
 }
 
+/* A kitty placement that scrolled UP is still on the screen.
+ *
+ * kitty's rule for "the image is on the screen" is its row EXTENT:
+ * the image is visible while its bottom edge is below the top of the
+ * viewport (kitty/graphics.c clear_filter_func: start_row +
+ * effective_num_rows > 0). A picture whose top row scrolled off the
+ * top margin is still partly on the screen, so the screen-wide clear
+ * must take it.
+ *
+ * chafa's slideshow hits this on every file: the picture fills the
+ * view, the label line under it scrolls the screen by one, and the
+ * next file's ESC [ 2 J must drop the stale picture — otherwise the
+ * previous picture stays on screen and the slideshow piles up.
+ *
+ * The old engine tested only the placement's FIRST row, so a picture
+ * that had scrolled one line up was treated as off-screen and
+ * survived the clear. */
+static void test_ed2_clears_the_kitty_image_that_scrolled_up(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* A full-height picture at row 0: r=24 rows, c=8 columns. */
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[128];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=9,r=24,c=8;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    int pc = 0;
+    const CfrImagePlacement *pl = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ(pl[0].row, 0);
+    ASSERT_EQ(pl[0].rows, 24);
+
+    /* The label line under the picture: the cursor sits on the bottom
+     * margin (the placement advanced it there), so the line scrolls
+     * the screen by one and the picture's top row moves to -1. */
+    feed(vt, "\n");
+
+    pl = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ(pl[0].row, -1);
+
+    /* The picture is still (partly) on the screen — the clear takes
+     * it, and its placement with it. */
+    feed(vt, "\x1b[2J");
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 0);
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+
+    cfr_free(vt);
+}
+
 /* "Delete all images" is kitty's own id space: the sixels and the
  * Lottie animations are not kitty's to delete. */
 static void test_delete_all_is_kitty_only(void)
@@ -1744,6 +1803,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unplaced_image_survives_ed2);
     RUN_TEST(test_erase_does_not_touch_kitty);
     RUN_TEST(test_ed2_clears_the_visible_kitty_image);
+    RUN_TEST(test_ed2_clears_the_kitty_image_that_scrolled_up);
     RUN_TEST(test_delete_all_is_kitty_only);
     RUN_TEST(test_delete_by_id_is_kitty_scoped);
     RUN_TEST(test_placement_reports_damage);

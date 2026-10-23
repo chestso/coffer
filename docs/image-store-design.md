@@ -268,9 +268,11 @@ The store must satisfy, and the tests must pin:
      commands to erase text must have no effect on graphics"). The one
      screen-wide clear kitty sanctions is `ESC [ 2 J` ("the clear screen
      escape code should also clear all images"), and that one clears
-     the _visible_ images (the ones with a placement on screen) — an
-     image that was transmitted but never placed is not on the screen,
-     so it survives;
+     the _visible_ images (the ones with a placement whose row EXTENT
+     overlaps the screen — kitty's rule is "the image's bottom edge is
+     below the top of the viewport", so a placement that scrolled one
+     line up is still visible) — an image that was transmitted but
+     never placed is not on the screen, so it survives;
    - a Lottie animation's foreground placements go with the erased rows
      (the Lottie spec's own clear behaviour — `docs/lottie-spec.md`
      §7.3), and the animation dies with its last placement.

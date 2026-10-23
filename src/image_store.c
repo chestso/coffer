@@ -851,7 +851,15 @@ static bool img_clear_placements_for(void *vt, CfrImgStore *st, int i,
          * all images") clears the images that are ON the screen. An
          * image with no on-screen placement is not visible — it was
          * transmitted but never placed, or its placement scrolled into
-         * the scrollback — so it survives. */
+         * the scrollback — so it survives.
+         *
+         * "On the screen" is the placement's row EXTENT, not its first
+         * row: kitty's rule is "the image's bottom edge is below the
+         * top of the screen" (kitty/graphics.c clear_filter_func:
+         * start_row + effective_num_rows > 0), so a picture that
+         * scrolled one line up — chafa's label line under a
+         * full-height picture does exactly that — is still on the
+         * screen and must go. */
         if (!full)
             return false;
         bool on_screen = false;
@@ -859,7 +867,8 @@ static bool img_clear_placements_for(void *vt, CfrImgStore *st, int i,
             if (st->places[j].image_handle != handle)
                 continue;
             int ptop = (int)(st->places[j].abs_line - cvt->sixel_abs_top);
-            if (ptop >= 0 && ptop < cvt->rows)
+            int pbot = ptop + st->places[j].rows - 1;
+            if (ptop <= cvt->rows - 1 && pbot >= 0)
                 on_screen = true;
         }
         if (!on_screen)
