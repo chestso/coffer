@@ -398,6 +398,38 @@ void cfr_paste_begin(CfrTerm *vt);
 void cfr_paste_end(CfrTerm *vt);
 
 /* ------------------------------------------------------------------ */
+/* Reset                                                               */
+/* ------------------------------------------------------------------ */
+
+/* Reset the *input protocol* state: the kitty keyboard protocol stack,
+ * xterm modifyOtherKeys, application cursor keys (DECCKM) and
+ * application keypad (DECKPAM), mouse reporting and focus reporting.
+ * The screen, the scrollback and the bracketed-paste mode are left
+ * alone — bracketed paste is a mode a shell owns (bash enables it at
+ * startup), so clearing it would break pasting into the shell.
+ *
+ * Use this to recover from a program that enabled one of those
+ * protocols and died without cleaning up: the shell then receives
+ * legacy key encodings again (Ctrl+A is 0x01, not CSI 97;5u). */
+void cfr_reset_input_state(CfrTerm *vt);
+
+/* Full reset (RIS) — what the shell command `reset` triggers. Clears
+ * everything cfr_reset_input_state() clears, plus the screen, the
+ * scrollback, the character sets, the scroll region, the tab stops,
+ * the saved cursor and the pen. */
+void cfr_reset(CfrTerm *vt);
+
+/* Kitty keyboard protocol flags currently in effect — the top of the
+ * stack. 0 means the protocol is off and keys are encoded the legacy
+ * way. */
+uint32_t cfr_get_kitty_kb_flags(const CfrTerm *vt);
+
+/* Pop `levels` entries from the kitty keyboard protocol stack. A
+ * `levels` of 0 or less pops the whole stack. Popping the last entry
+ * resets the flags to zero, per the kitty keyboard protocol spec. */
+void cfr_kitty_kb_pop(CfrTerm *vt, int levels);
+
+/* ------------------------------------------------------------------ */
 /* Queries                                                             */
 /* ------------------------------------------------------------------ */
 

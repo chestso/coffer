@@ -390,7 +390,7 @@ static inline void cfr_cursor_restore(CfrTerm *vt, const CfrCursorState *src)
 
 /* One-time log guards for unimplemented sequences. Bit set = already
  * logged; subsequent occurrences are silently dropped. Reset on
- * cfr_full_reset() so a new session gets fresh warnings. */
+ * cfr_reset() so a new session gets fresh warnings. */
 #define CFR_LOGGED_MEDIA_COPY (1u << 0)
 #define CFR_LOGGED_MEML       (1u << 1)
 #define CFR_LOGGED_MEMU       (1u << 2)
@@ -559,8 +559,7 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor);
  * DECCKM/DECKPAM/DECOM, charset designations, saved cursor, scroll
  * region, tab stops, and the grid. Notifies the host via set_mode for
  * any mode that turned off, so mouse/paste/etc. observers stay in
- * sync. */
-void cfr_full_reset(CfrTerm *vt);
+ * sync. Declared in <coffer/coffer.h> as cfr_reset(). */
 
 /* Reflow (reflow.c). When reflow_enabled is true cfr_reflow walks the
  * grid's logical lines (rows linked by WRAPLINE) and re-wraps them at

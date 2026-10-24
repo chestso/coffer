@@ -5,7 +5,7 @@
  * - cfr_vlog calls the log callback when registered
  * - cfr_vlog is a no-op when no callback is registered
  * - should_log_once rate-limits per-CfrTerm (fires once, then suppressed)
- * - Rate-limit resets on cfr_full_reset (ESC c)
+ * - Rate-limit resets on cfr_reset (ESC c)
  * - The log callback receives the correct CfrLogLevel and formatted message
  */
 
@@ -162,7 +162,7 @@ static void test_should_log_once_independent_bits(void)
     cfr_free(vt);
 }
 
-/* Rate-limit resets on cfr_full_reset (ESC c). */
+/* Rate-limit resets on cfr_reset (ESC c). */
 static void test_rate_limit_resets_on_full_reset(void)
 {
     LogCapture cap;

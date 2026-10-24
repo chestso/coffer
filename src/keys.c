@@ -55,6 +55,30 @@ static bool kitty_active(CfrTerm *vt, uint32_t bit)
     return (vt->kitty_kb_stack[vt->kitty_kb_depth] & bit) != 0;
 }
 
+void cfr_kitty_kb_pop(CfrTerm *vt, int levels)
+{
+    if (!vt)
+        return;
+
+    /* A count of zero or less pops the whole stack. */
+    if (levels <= 0)
+        levels = vt->kitty_kb_depth;
+
+    /* Never pop below the baseline: index 0 stays zero, which is the
+     * legacy (protocol off) behaviour. */
+    while (levels-- > 0 && vt->kitty_kb_depth > 0) {
+        vt->kitty_kb_stack[vt->kitty_kb_depth] = 0;
+        vt->kitty_kb_depth--;
+    }
+}
+
+uint32_t cfr_get_kitty_kb_flags(const CfrTerm *vt)
+{
+    if (!vt)
+        return 0;
+    return vt->kitty_kb_stack[vt->kitty_kb_depth];
+}
+
 /* Emit a kitty `CSI <code>;<mod>u` sequence. The mod parameter is
  * omitted when no modifier is held (`CSI <code>u`), matching the
  * kitty spec. */

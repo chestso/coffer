@@ -141,7 +141,50 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
         vt->callbacks.set_mode(CFR_MODE_ALTSCREEN, on, vt->callback_user);
 }
 
-void cfr_full_reset(CfrTerm *vt)
+void cfr_reset_input_state(CfrTerm *vt)
+{
+    if (!vt)
+        return;
+
+    /* Snapshot the modes so the host is told about every one that
+     * flips — the host uses these to tear down mouse capture and the
+     * like. */
+    bool prev_modes[32];
+    memcpy(prev_modes, vt->modes, sizeof(prev_modes));
+
+    /* Kitty keyboard protocol: pop the whole stack. A program that
+     * pushed the flags and died leaves them set for the rest of the
+     * session, which routes every Ctrl+key through CSI-u and leaves
+     * the shell unable to read a line. */
+    cfr_kitty_kb_pop(vt, 0);
+
+    /* xterm modifyOtherKeys (DECSET ?2): modified keys are reported
+     * as CSI 27;<mod>;<code>~, which readline does not understand. */
+    vt->modify_other_keys = 0;
+
+    /* Application cursor keys (DECCKM) and application keypad
+     * (DECKPAM). */
+    vt->decckm = false;
+    vt->deckpam = false;
+
+    /* Mouse reporting and focus reporting. Bracketed paste stays: a
+     * shell enables it for its own lifetime. */
+    vt->modes[CFR_MODE_MOUSE_X10] = false;
+    vt->modes[CFR_MODE_MOUSE_BTN_EVENT] = false;
+    vt->modes[CFR_MODE_MOUSE_DRAG] = false;
+    vt->modes[CFR_MODE_MOUSE_ANY_EVENT] = false;
+    vt->modes[CFR_MODE_FOCUS_REPORTING] = false;
+
+    if (vt->callbacks.set_mode) {
+        for (size_t i = 0; i < sizeof(prev_modes) / sizeof(prev_modes[0]); ++i) {
+            if (prev_modes[i] != vt->modes[i])
+                vt->callbacks.set_mode((CfrMode)i, vt->modes[i],
+                                       vt->callback_user);
+        }
+    }
+}
+
+void cfr_reset(CfrTerm *vt)
 {
     if (!vt)
         return;
@@ -196,11 +239,10 @@ void cfr_full_reset(CfrTerm *vt)
     vt->insert_mode = false;
     vt->modify_other_keys = 0;
 
-    /* The bug this exists to fix: pop every kitty keyboard flag.
-     * Without this, a TUI that pushed `CSI > 1 u` and crashed leaves
-     * Ctrl+letter routed through CSI-u, breaking the shell. */
-    memset(vt->kitty_kb_stack, 0, sizeof(vt->kitty_kb_stack));
-    vt->kitty_kb_depth = 0;
+    /* Pop every kitty keyboard flag. Without this, a TUI that pushed
+     * `CSI > 1 u` and crashed leaves Ctrl+letter routed through
+     * CSI-u, breaking the shell. */
+    cfr_kitty_kb_pop(vt, 0);
 
     /* RIS clears scrollback too — `reset` must behave like a fresh
      * terminal, not like `clear`. bash's `reset` runs `tput reset`,

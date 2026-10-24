@@ -520,6 +520,131 @@ static void test_decscusr_does_not_emit_xtversion(void)
     cfr_free(vt);
 }
 
+/* A program that pushed the kitty keyboard flags and died leaves them
+ * set: every Ctrl+key is then routed through CSI-u and the shell stops
+ * understanding them. cfr_reset_input_state() pops the stack. */
+static void test_reset_input_state_clears_kitty_stack(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>5u"); /* push disambiguate + report-all */
+    ASSERT_EQ(cfr_get_kitty_kb_flags(vt), 5);
+
+    clear_output();
+    cfr_send_text(vt, "a", 1, CFR_MOD_CTRL);
+    ASSERT_STR_EQ(g_output_buf, "\x1b[97;5u");
+
+    cfr_reset_input_state(vt);
+    ASSERT_EQ(cfr_get_kitty_kb_flags(vt), 0);
+
+    clear_output();
+    cfr_send_text(vt, "a", 1, CFR_MOD_CTRL);
+    ASSERT_STR_EQ(g_output_buf, "\x01");
+
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_ENTER, 0);
+    ASSERT_STR_EQ(g_output_buf, "\r");
+    cfr_free(vt);
+}
+
+/* The input-state reset leaves the screen and the scrollback alone —
+ * only the key encodings change. */
+static void test_reset_input_state_keeps_screen(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "hello");
+    cfr_reset_input_state(vt);
+    char buf[64] = { 0 };
+    cfr_row_text(vt, 0, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "hello");
+    cfr_free(vt);
+}
+
+/* Application cursor keys (DECCKM) left on by a dead program make the
+ * arrows send SS3 sequences the shell does not understand. */
+static void test_reset_input_state_clears_decckm(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[?1h");
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_UP, 0);
+    ASSERT_STR_EQ(g_output_buf, "\x1bOA");
+
+    cfr_reset_input_state(vt);
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_UP, 0);
+    ASSERT_STR_EQ(g_output_buf, "\x1b[A");
+    cfr_free(vt);
+}
+
+/* xterm modifyOtherKeys (CSI > 4 ; 1 m) left on by a dead program turns
+ * Ctrl+key into CSI 27;<mod>;<code>~, which readline ignores. */
+static void test_reset_input_state_clears_modify_other_keys(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>4;1m");
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_ENTER, CFR_MOD_CTRL);
+    ASSERT_STR_EQ(g_output_buf, "\x1b[27;5;13~");
+
+    cfr_reset_input_state(vt);
+    clear_output();
+    cfr_send_key(vt, CFR_KEY_ENTER, CFR_MOD_CTRL);
+    ASSERT_STR_EQ(g_output_buf, "\r");
+    cfr_free(vt);
+}
+
+/* Mouse reporting left on by a dead program steals every click, so the
+ * user can no longer select text. */
+static void test_reset_input_state_clears_mouse_reporting(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[?1000h");
+    ASSERT_TRUE(cfr_get_mode(vt, CFR_MODE_MOUSE_BTN_EVENT));
+    cfr_reset_input_state(vt);
+    ASSERT_FALSE(cfr_get_mode(vt, CFR_MODE_MOUSE_BTN_EVENT));
+    cfr_free(vt);
+}
+
+/* Bracketed paste belongs to the shell (bash enables it at startup), so
+ * the input-state reset leaves it alone. */
+static void test_reset_input_state_keeps_bracketed_paste(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[?2004h");
+    ASSERT_TRUE(cfr_get_mode(vt, CFR_MODE_BRACKETED_PASTE));
+    cfr_reset_input_state(vt);
+    ASSERT_TRUE(cfr_get_mode(vt, CFR_MODE_BRACKETED_PASTE));
+    cfr_free(vt);
+}
+
+/* The full reset (RIS) clears the screen and the scrollback too — it
+ * is what the shell command `reset` does. */
+static void test_reset_clears_screen(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "hello\r\nworld\r\n");
+    feed(vt, "\x1b[>5u");
+    cfr_reset(vt);
+
+    char buf[64] = { 0 };
+    cfr_row_text(vt, 0, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "");
+    ASSERT_EQ(cfr_get_kitty_kb_flags(vt), 0);
+    cfr_free(vt);
+}
+
+/* Popping the whole stack restores the legacy encoding. */
+static void test_kitty_kb_pop_all(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[>1u");
+    feed(vt, "\x1b[>8u");
+    ASSERT_EQ(cfr_get_kitty_kb_flags(vt), 8);
+    cfr_kitty_kb_pop(vt, 0);
+    ASSERT_EQ(cfr_get_kitty_kb_flags(vt), 0);
+    cfr_free(vt);
+}
+
 int main(int argc, char **argv)
 {
     test_parse_args(argc, argv);
@@ -552,5 +677,13 @@ int main(int argc, char **argv)
     RUN_TEST(test_xtversion_default_name);
     RUN_TEST(test_xtversion_custom_name);
     RUN_TEST(test_decscusr_does_not_emit_xtversion);
+    RUN_TEST(test_reset_input_state_clears_kitty_stack);
+    RUN_TEST(test_reset_input_state_keeps_screen);
+    RUN_TEST(test_reset_input_state_clears_decckm);
+    RUN_TEST(test_reset_input_state_clears_modify_other_keys);
+    RUN_TEST(test_reset_input_state_clears_mouse_reporting);
+    RUN_TEST(test_reset_input_state_keeps_bracketed_paste);
+    RUN_TEST(test_reset_clears_screen);
+    RUN_TEST(test_kitty_kb_pop_all);
     TEST_SUMMARY();
 }

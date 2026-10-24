@@ -56,7 +56,7 @@ void cfr_esc_dispatch(CfrTerm *vt, uint8_t final)
         cfr_reverse_index(vt);
         break;
     case 'c': /* RIS — full reset */
-        cfr_full_reset(vt);
+        cfr_reset(vt);
         break;
     case 'l': /* meml — locking shift G0 to G1 */
         if (should_log_once(vt, CFR_LOGGED_MEML))

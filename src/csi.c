@@ -613,13 +613,7 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
              * Never goes below depth 0; the baseline mask at index 0
              * is left at zero so popping past the bottom restores
              * legacy emit behaviour. */
-            int n = param_or(vt, 0, 1);
-            if (n < 1)
-                n = 1;
-            while (n-- > 0 && vt->kitty_kb_depth > 0) {
-                vt->kitty_kb_stack[vt->kitty_kb_depth] = 0;
-                vt->kitty_kb_depth--;
-            }
+            cfr_kitty_kb_pop(vt, param_or(vt, 0, 1));
         } else if (has_intermediate(vt, '=')) {
             /* CSI = flags ; mode u — update the active flags. Per the
              * kitty keyboard protocol:
