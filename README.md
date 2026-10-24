@@ -1,5 +1,7 @@
 # coffer
 
+**Homepage:** <https://chest.so/coffer/>
+
 A standalone virtual terminal engine in C — parser, grid, scrollback, reflow,
 charsets, kitty keyboard protocol, sixel, iTerm2 inline, kitty graphics, and
 Lottie graphics, ambiguous-width rendering — with no external libraries.
