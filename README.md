@@ -246,7 +246,7 @@ make check TESTS='test_cfr_parser test_cfr_keys test_cfr_sixel test_cfr_osc_1337
 | `test_cfr_image_store` | Shared image store: record lifecycle, buffer pool, eviction, scroll/clear, source enum                                    |
 | `test_cfr_graphics`    | Kitty graphics protocol: APC routing, query, transmit (RGBA/RGB/PNG), place, delete, zlib/chunked, animation              |
 | `test_cfr_altscreen`   | Altscreen enter/exit, cursor save/restore, content isolation                                                              |
-| `test_cfr_sgr`         | SGR styling: bold, italic, underline variants, truecolor, indexed                                                         |
+| `test_cfr_sgr`         | SGR styling: bold, italic, underline variants, SGR 21, overline, truecolor, indexed                                       |
 
 `test_cfr_pty` is skipped on CI (GitHub runners lack a real PTY). All other
 tests run on every push via GitHub Actions. Tags matching `v*` trigger a

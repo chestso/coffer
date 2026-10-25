@@ -164,6 +164,9 @@ static void sgr_dispatch(CfrTerm *vt)
         case 9:
             vt->cursor.pen.attrs |= CFR_ATTR_STRIKETHROUGH;
             break;
+        case 53:
+            vt->cursor.pen.attrs |= CFR_ATTR_OVERLINE;
+            break;
         case 22:
             vt->cursor.pen.attrs &= (uint16_t)~(CFR_ATTR_BOLD | CFR_ATTR_DIM);
             break;
@@ -184,6 +187,9 @@ static void sgr_dispatch(CfrTerm *vt)
             break;
         case 29:
             vt->cursor.pen.attrs &= (uint16_t)~CFR_ATTR_STRIKETHROUGH;
+            break;
+        case 55:
+            vt->cursor.pen.attrs &= (uint16_t)~CFR_ATTR_OVERLINE;
             break;
         /* Foreground 16-color (30-37 normal, 90-97 bright). */
         case 30:
@@ -289,8 +295,9 @@ static void sgr_dispatch(CfrTerm *vt)
             vt->cursor.pen.color_flags |= CFR_COLOR_DEFAULT_UL;
             break;
         default:
-            /* SGR 6 (rapid blink), 21 (double-underline),
-             * 53 (overline) etc. are accepted-but-ignored for now. */
+            /* SGR 6 (rapid blink), 10-19 (alternate fonts), 26 (proportional
+             * spacing) and the rest of the ECMA-48 tail are
+             * accepted-but-ignored. */
             break;
         }
     }

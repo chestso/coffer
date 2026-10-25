@@ -73,6 +73,7 @@ enum
     CFR_ATTR_DHL_BOTTOM = 1u << 7, /* double-height line, bottom half */
     CFR_ATTR_DIM = 1u << 8,        /* dim/faint (SGR 2) */
     CFR_ATTR_INVIS = 1u << 9,      /* invisible/concealed (SGR 8) */
+    CFR_ATTR_OVERLINE = 1u << 10,  /* overline (SGR 53) */
 };
 
 /* Underline styles: SGR 4:N */

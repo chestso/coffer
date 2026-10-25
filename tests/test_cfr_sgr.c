@@ -193,6 +193,49 @@ static void test_sgr_double_underline(void)
     cfr_free(vt);
 }
 
+/* SGR 53 raises the overline, 55 lowers it, and 0 clears everything. */
+static void test_sgr_overline(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b[53mX");
+
+    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    ASSERT_TRUE((s->attrs & CFR_ATTR_OVERLINE) != 0);
+    ASSERT_TRUE((s->attrs & CFR_ATTR_STRIKETHROUGH) == 0);
+
+    /* 55 drops the overline without touching the cell already written. */
+    feed(vt, "\x1b[55mY");
+    const CfrStyle *s0 = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    ASSERT_TRUE((s0->attrs & CFR_ATTR_OVERLINE) != 0);
+    const CfrStyle *s1 = cfr_cell_style(vt, cfr_get_cell(vt, 0, 1));
+    ASSERT_TRUE((s1->attrs & CFR_ATTR_OVERLINE) == 0);
+
+    /* A reset clears it like any other attribute bit. */
+    feed(vt, "\x1b[53mZ\x1b[0mW");
+    const CfrStyle *s2 = cfr_cell_style(vt, cfr_get_cell(vt, 0, 2));
+    ASSERT_TRUE((s2->attrs & CFR_ATTR_OVERLINE) != 0);
+    const CfrStyle *s3 = cfr_cell_style(vt, cfr_get_cell(vt, 0, 3));
+    ASSERT_TRUE((s3->attrs & CFR_ATTR_OVERLINE) == 0);
+
+    cfr_free(vt);
+}
+
+/* Overline composes with the underline family: the intern key must carry
+ * both the new attribute bit and the underline style/colour. */
+static void test_sgr_overline_combined(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b[53;4:3;58:2::255:0:0mX");
+
+    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    ASSERT_TRUE((s->attrs & CFR_ATTR_OVERLINE) != 0);
+    ASSERT_EQ(s->underline, CFR_UL_CURLY);
+    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_UL) == 0);
+    ASSERT_EQ(s->ul_rgb, 0x00FF0000u);
+
+    cfr_free(vt);
+}
+
 /* BCE (Back Color Erase): \e[K should extend the background colour to
  * the end of the line, not produce default-background cells.  ConPTY
  * on Windows emits \e[K after text with a truecolour background, so
@@ -249,6 +292,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_sgr_reset_bg);
     RUN_TEST(test_sgr_multi_attr_trailing_semicolon);
     RUN_TEST(test_sgr_double_underline);
+    RUN_TEST(test_sgr_overline);
+    RUN_TEST(test_sgr_overline_combined);
     RUN_TEST(test_bce_erase_in_line);
     RUN_TEST(test_bce_erase_in_display);
 
