@@ -1,7 +1,6 @@
 /*
- * test_cfr_sgr — regression test for SGR background/foreground colour
- * handling, especially the trailing-semicolon bug exposed by ConPTY on
- * Windows.
+ * test_cfr_sgr — regression test for SGR attribute and colour handling,
+ * especially the trailing-semicolon bug exposed by ConPTY on Windows.
  *
  * ConPTY re-serialises SGR sequences with a trailing semicolon
  * (e.g. \e[48;2;R;G;B;m).  The parser's param_separator creates an
@@ -175,6 +174,25 @@ static void test_sgr_multi_attr_trailing_semicolon(void)
     cfr_free(vt);
 }
 
+/* SGR 21 selects the double underline and 24 clears it. It is not a bold
+ * reset — 22 owns bold/dim. */
+static void test_sgr_double_underline(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b[1;21mX");
+
+    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    ASSERT_EQ(s->underline, CFR_UL_DOUBLE);
+    ASSERT_TRUE((s->attrs & CFR_ATTR_BOLD) != 0);
+
+    feed(vt, "\x1b[24mY");
+    const CfrStyle *s1 = cfr_cell_style(vt, cfr_get_cell(vt, 0, 1));
+    ASSERT_EQ(s1->underline, CFR_UL_NONE);
+    ASSERT_TRUE((s1->attrs & CFR_ATTR_BOLD) != 0);
+
+    cfr_free(vt);
+}
+
 /* BCE (Back Color Erase): \e[K should extend the background colour to
  * the end of the line, not produce default-background cells.  ConPTY
  * on Windows emits \e[K after text with a truecolour background, so
@@ -230,6 +248,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_sgr_combined_trailing_semicolon);
     RUN_TEST(test_sgr_reset_bg);
     RUN_TEST(test_sgr_multi_attr_trailing_semicolon);
+    RUN_TEST(test_sgr_double_underline);
     RUN_TEST(test_bce_erase_in_line);
     RUN_TEST(test_bce_erase_in_display);
 

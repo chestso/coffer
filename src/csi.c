@@ -143,6 +143,12 @@ static void sgr_dispatch(CfrTerm *vt)
             vt->cursor.pen.underline = style;
             break;
         }
+        case 21:
+            /* Double underline (kitty, xterm, foot). Legacy ANSI hardware
+             * used 21 for "bold off"; the double underline reading wins
+             * here, and 22 stays the reset for bold/dim. */
+            vt->cursor.pen.underline = CFR_UL_DOUBLE;
+            break;
         case 5:
             vt->cursor.pen.attrs |= CFR_ATTR_BLINK;
             break;
