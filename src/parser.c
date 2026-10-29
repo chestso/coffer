@@ -996,6 +996,20 @@ void cfr_parser_feed(CfrTerm *vt, const uint8_t *bytes, size_t len)
 
         switch (p->state) {
         case CFR_STATE_GROUND:
+            if (b >= 0x20u && b <= 0x7Eu) {
+                /* A printable ASCII byte cannot be an ESC/CAN/SUB (the
+                 * anywhere check above already ran for it, and the rest
+                 * of the run is ASCII too), and outside the DEC graphics
+                 * charset and IRM it prints as one width-1 cell: take
+                 * the whole run in one grid pass. A 0 return means a
+                 * precondition failed and the byte goes per-codepoint. */
+                size_t run = cfr_print_ascii_run(vt, bytes + i, len - i);
+                if (run > 0) {
+                    p->utf8_state = UTF8_ACCEPT;
+                    i += run - 1; /* the loop increment adds the last one */
+                    break;
+                }
+            }
             state_ground(vt, b);
             break;
         case CFR_STATE_ESCAPE:

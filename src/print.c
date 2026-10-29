@@ -566,6 +566,138 @@ void cfr_print_codepoint(CfrTerm *vt, uint32_t cp)
     /* If full, silently drop additional extends — extremely rare. */
 }
 
+size_t cfr_print_ascii_run(CfrTerm *vt, const uint8_t *bytes, size_t len)
+{
+    if (!vt || !bytes || len == 0)
+        return 0;
+    /* IRM shifts the row tail on every print, and the DEC graphics
+     * charset translates 0x5F..0x7E — both need the per-codepoint
+     * path. */
+    if (vt->insert_mode)
+        return 0;
+    if (vt->charset[vt->charset_active] == '0')
+        return 0;
+    if (vt->cols <= 0 || vt->rows <= 0)
+        return 0;
+    cfr_grid_ensure(vt);
+    if (!vt->grid)
+        return 0;
+
+    /* A pending cluster joins what follows through its last codepoint.
+     * A single printable-ASCII base always breaks before the next
+     * ASCII byte and the pen cannot change inside GROUND, so flushing it
+     * commits the same cell the per-codepoint path would when the next
+     * byte arrives. Anything else — a Prepend base that captures the
+     * next codepoint, a half-received sequence — may still join, so the
+     * run declines and the caller falls back. */
+    if (vt->cursor.cluster_len > 0) {
+        if (vt->cursor.cluster_len != 1u)
+            return 0;
+        uint32_t pending = vt->cursor.cluster_buf[0];
+        if (pending < 0x20u || pending > 0x7Eu)
+            return 0;
+        cfr_flush_cluster(vt);
+    }
+
+    size_t n = 0;
+    while (n < len && bytes[n] >= 0x20u && bytes[n] <= 0x7Eu)
+        n++;
+    if (n == 0)
+        return 0;
+
+    cursor_clamp(vt);
+    int cols = vt->cols;
+    int rows = vt->rows;
+    bool autowrap = vt->modes[CFR_MODE_DECAWM] != 0;
+    CfrCell *cells = vt->grid->cells;
+    /* The pen is constant inside GROUND, so the run interns the style
+     * once instead of per cell. */
+    uint32_t style_id = cfr_style_intern(vt, vt->grid, &vt->cursor.pen);
+    uint16_t link_id = vt->cursor.hyperlink_id;
+
+    int row = vt->cursor.row;
+    int col = vt->cursor.col;
+    int stamped_row = -1;
+    int dmg_r0 = -1, dmg_r1 = 0, dmg_cmin = 0, dmg_cmax = 0;
+    size_t k = 0;
+
+    for (; k < n; ++k) {
+        if (col >= cols) {
+            /* The deferred phantom resolves on the next print, exactly
+             * as commit_cluster() does; with autowrap off the print
+             * overwrites the margin cell in place. */
+            if (autowrap) {
+                vt->cursor.row = row;
+                vt->cursor.col = col;
+                cfr_wrap_commit(vt);
+                row = vt->cursor.row;
+                col = vt->cursor.col;
+            } else {
+                col = cols - 1;
+            }
+        }
+        if (row < 0 || row >= rows)
+            break;
+
+        if (row != stamped_row) {
+            /* First print onto this row: a blank row claims a lineage
+             * id, and a selection the printing intersects is cleared
+             * — both are row-granular, so once per row matches the
+             * per-cell calls. */
+            cfr_lineage_stamp(vt, row);
+            cfr_selection_on_draw(vt, row);
+            stamped_row = row;
+        }
+
+        CfrCell *cell = &cells[(size_t)row * cols + col];
+        int old_width = cell->width;
+        cell->cp = bytes[k];
+        cell->grapheme_id = 0;
+        cell->style_id = style_id;
+        cell->width = 1;
+        cell->flags = 0;
+        cell->hyperlink_id = link_id;
+        if (old_width == 2 && col + 1 < cols) {
+            /* A narrow print over the lead of a wide cluster strands
+             * its continuation: blank it, as commit_cluster() does. */
+            erase_cells(vt, cell + 1, 1);
+        }
+
+        if (dmg_r0 < 0) {
+            dmg_r0 = row;
+            dmg_cmin = col;
+            dmg_cmax = col;
+        } else {
+            if (col < dmg_cmin)
+                dmg_cmin = col;
+            if (col > dmg_cmax)
+                dmg_cmax = col;
+        }
+        dmg_r1 = row;
+
+        /* Advance with the phantom semantics: printing the margin cell
+         * leaves the logical column one past it. */
+        if (col + 1 >= cols) {
+            col = autowrap ? cols : cols - 1;
+        } else {
+            col++;
+        }
+    }
+    if (k == 0)
+        return 0;
+
+    vt->last_char = bytes[k - 1];
+    vt->cursor.row = row;
+    vt->cursor.col = col;
+    /* The cells were committed as they were written, so no cluster is
+     * pending: a joiner that follows re-attaches to the last cell
+     * through the stray-joiner path, as it already does across write
+     * boundaries. */
+    vt->cursor.cluster_len = 0;
+    cfr_damage_span(vt, dmg_r0, dmg_cmin, dmg_r1, dmg_cmax);
+    return k;
+}
+
 void cfr_erase_in_line(CfrTerm *vt, int mode)
 {
     if (!vt->grid)

@@ -466,6 +466,9 @@ bool cfr_is_grapheme_joiner(uint32_t cp);
 /* Grid mutators (print.c). */
 void cfr_grid_ensure(CfrTerm *vt);
 void cfr_print_codepoint(CfrTerm *vt, uint32_t cp);
+/* Bulk-print a run of printable ASCII (0x20..0x7E). Returns the number of
+ * bytes consumed; 0 means the caller must use cfr_print_codepoint(). */
+size_t cfr_print_ascii_run(CfrTerm *vt, const uint8_t *bytes, size_t len);
 void cfr_flush_cluster(CfrTerm *vt);
 void cfr_execute_c0(CfrTerm *vt, uint8_t b);
 void cfr_scroll_up(CfrTerm *vt, int lines);
@@ -587,6 +590,10 @@ void cfr_dcs_unhook(CfrTerm *vt);
 void cfr_damage_cell(CfrTerm *vt, int row, int col);
 void cfr_damage_row(CfrTerm *vt, int row);
 void cfr_damage_all(CfrTerm *vt);
+/* Rectangular union — equivalent to cfr_damage_cell() on every cell it
+ * covers, since the accumulator keeps a single union rect. */
+void cfr_damage_span(CfrTerm *vt, int start_row, int start_col, int end_row,
+                     int end_col);
 
 /* Scrollback (scrollback.c). */
 void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols, uint32_t lineage);

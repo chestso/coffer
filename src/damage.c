@@ -20,9 +20,10 @@ static void union_rect(CfrRect *acc, CfrRect r)
         acc->end_col = r.end_col;
 }
 
-void cfr_damage_cell(CfrTerm *vt, int row, int col)
+void cfr_damage_span(CfrTerm *vt, int start_row, int start_col, int end_row,
+                     int end_col)
 {
-    CfrRect r = { row, col, row, col };
+    CfrRect r = { start_row, start_col, end_row, end_col };
     if (!vt->damage_dirty) {
         vt->damage = r;
         vt->damage_dirty = true;
@@ -31,15 +32,14 @@ void cfr_damage_cell(CfrTerm *vt, int row, int col)
     }
 }
 
+void cfr_damage_cell(CfrTerm *vt, int row, int col)
+{
+    cfr_damage_span(vt, row, col, row, col);
+}
+
 void cfr_damage_row(CfrTerm *vt, int row)
 {
-    CfrRect r = { row, 0, row, vt->cols - 1 };
-    if (!vt->damage_dirty) {
-        vt->damage = r;
-        vt->damage_dirty = true;
-    } else {
-        union_rect(&vt->damage, r);
-    }
+    cfr_damage_span(vt, row, 0, row, vt->cols - 1);
 }
 
 void cfr_damage_all(CfrTerm *vt)
