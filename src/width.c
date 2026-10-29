@@ -141,6 +141,12 @@ int cfr_cluster_width(CfrTerm *vt, const uint32_t *cps, uint32_t len)
  * (the base and its VS16 arrived in separate input writes). */
 bool cfr_is_grapheme_joiner(uint32_t cp)
 {
+    /* ASCII fast path: no Extend or SpacingMark lives below U+0080,
+     * and plain text (a bulk flood, a code dump) reaches here once per
+     * printed cluster — the UCD tables would answer "no" only after a
+     * full miss probe of both tables. */
+    if (cp < 0x80u)
+        return false;
     return is_extend(cp) || is_spacing_mark(cp);
 }
 
@@ -152,9 +158,15 @@ bool cfr_grapheme_break_before(uint32_t prev, uint32_t cur, void *state_in)
     (void)state_in;
     if (prev == 0u)
         return false; /* SOT — first codepoint of cluster */
-    /* GB3: CR × LF */
-    if (prev == 0x0Du && cur == 0x0Au)
-        return false;
+    /* ASCII pair fast path: below U+0080 lives no Extend, SpacingMark,
+     * Prepend, Regional Indicator or Extended_Pictographic codepoint,
+     * so the only pair rule that can join is GB3 (CR × LF). GROUND
+     * dispatches C0 controls before print, so the cluster accumulator
+     * sees ASCII pairs as printing text alone — every one breaks.
+     * This keeps a flood of plain ASCII out of the UCD binary
+     * searches below, which otherwise run to a miss on every pair. */
+    if (prev < 0x80u && cur < 0x80u)
+        return !(prev == 0x0Du && cur == 0x0Au);
     /* GB4-5: control × any, any × control → break. Controls hit GROUND
      * before reaching the cluster accumulator, so this is mostly
      * defensive. */
