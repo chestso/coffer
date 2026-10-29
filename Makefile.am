@@ -43,18 +43,39 @@ all-local: version
 dist-hook:
 	printf '%s' '$(COFFER_VERSION)' > "$(distdir)/version"
 
+# The C sources the format targets own, as a NUL-separated find command.
+# third_party/ is deliberately excluded; it is vendored verbatim.
+FORMAT_FIND = find $(top_srcdir)/src $(top_srcdir)/include $(top_srcdir)/tests \
+	$(top_srcdir)/contrib \( -name '*.c' -o -name '*.h' \) -print0
+
+# True when file $f has something in it that does not end in a newline.
+# `tail -c 1 | wc -l` is the portable predicate: no od/xxd, no GNU-only
+# `sed -i`, and it needs no perl.
+FORMAT_EOL_TEST = [ "$$(tail -c 1 "$$f" | wc -l)" -eq 0 ]
+
 # Format target — runs clang-format on C/C++ and prettier on Markdown.
 # Requires the tools to be installed; logs a warning if they are not.
+#
+# The final-newline pass is separate on purpose. clang-format only gained
+# InsertNewlineAtEOF in 19 (default false, so a file that lacks one keeps
+# lacking one) and it hard-errors on style keys it does not know, so putting
+# the option in .clang-format would break `make format` on older releases.
+# A one-byte tail check is portable to any sh, tail, and wc.
 .PHONY: format
 format:
 	@if command -v clang-format >/dev/null 2>&1; then \
 	    echo "Formatting C/C++ with clang-format..."; \
-	    find $(top_srcdir)/src $(top_srcdir)/include $(top_srcdir)/tests $(top_srcdir)/contrib \
-	        \( -name '*.c' -o -name '*.h' \) -print0 \
-	        | xargs -0 clang-format -i; \
+	    $(FORMAT_FIND) | xargs -0 clang-format -i; \
 	else \
 	    echo "clang-format not found - skipping C/C++ formatting." >&2; \
 	fi
+	@$(FORMAT_FIND) | xargs -0 sh -c 'for f in "$$@"; do \
+	    [ -s "$$f" ] || continue; \
+	    if $(FORMAT_EOL_TEST); then \
+	        printf "\n" >> "$$f"; \
+	        echo "  EOL      $${f#$(top_srcdir)/}"; \
+	    fi; \
+	done' sh
 	@if command -v prettier >/dev/null 2>&1; then \
 	    echo "Formatting Markdown with prettier..."; \
 	    find $(top_srcdir) -maxdepth 2 -name '*.md' -print0 \
@@ -62,6 +83,38 @@ format:
 	else \
 	    echo "prettier not found - skipping Markdown formatting." >&2; \
 	fi
+
+# Format check — the read-only twin of `format`: same three passes, but it
+# names the offenders and exits non-zero instead of rewriting them, so CI and
+# a pre-push hook can gate on it. `--dry-run`/`--Werror` need clang-format 10+.
+.PHONY: format-check
+format-check:
+	@status=0; \
+	if command -v clang-format >/dev/null 2>&1; then \
+	    echo "Checking C/C++ formatting with clang-format..."; \
+	    $(FORMAT_FIND) | xargs -0 clang-format --dry-run --Werror || status=1; \
+	else \
+	    echo "clang-format not found - skipping C/C++ format check." >&2; \
+	fi; \
+	$(FORMAT_FIND) | xargs -0 sh -c 'status=0; \
+	    for f in "$$@"; do \
+	        [ -s "$$f" ] || continue; \
+	        if $(FORMAT_EOL_TEST); then \
+	            echo "missing final newline: $${f#$(top_srcdir)/}" >&2; \
+	            status=1; \
+	        fi; \
+	    done; \
+	    exit $$status' sh || status=1; \
+	if command -v prettier >/dev/null 2>&1; then \
+	    echo "Checking Markdown formatting with prettier..."; \
+	    find $(top_srcdir) -maxdepth 2 -name '*.md' -print0 \
+	        | xargs -0 prettier --check || status=1; \
+	else \
+	    echo "prettier not found - skipping Markdown format check." >&2; \
+	fi; \
+	if [ $$status -eq 0 ]; then echo "Format check passed."; \
+	else echo "Format check failed - run \`make -C build format\`." >&2; fi; \
+	exit $$status
 
 # Bear target — produce compile_commands.json for clangd by intercepting
 # the build. Cleans first so bear sees every compile invocation.
