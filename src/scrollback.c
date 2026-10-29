@@ -170,6 +170,18 @@ const CfrPage *cfr_sb_page_for_row(const CfrTerm *vt, int sb_row,
     return find_sb_row(vt, sb_row, out_row_in_page);
 }
 
+const CfrCell *cfr_get_scrollback_row(const CfrTerm *vt, int sb_row,
+                                      int *out_cols)
+{
+    int row_in_page = 0;
+    const CfrPage *p = find_sb_row(vt, sb_row, &row_in_page);
+    if (!p)
+        return NULL;
+    if (out_cols)
+        *out_cols = p->cols;
+    return &p->cells[(size_t)row_in_page * p->cols];
+}
+
 const CfrCell *cfr_get_scrollback_cell(const CfrTerm *vt, int sb_row, int col)
 {
     int row_in_page = 0;

@@ -446,6 +446,11 @@ int cfr_get_scrollback_lines(const CfrTerm *vt);
 /* Configured scrollback capacity in lines (what cfr_set_scrollback_size set, or
  * the built-in default). 0 means scrollback is disabled. */
 int cfr_get_scrollback_capacity(const CfrTerm *vt);
+/* One scrollback row's cells, contiguous. Reads a whole row through this
+ * instead of per-column cfr_get_scrollback_cell() calls: each of those
+ * re-walks the page list, which is quadratic over a full-buffer scan. */
+const CfrCell *cfr_get_scrollback_row(const CfrTerm *vt, int sb_row,
+                                      int *out_cols);
 const CfrCell *cfr_get_scrollback_cell(const CfrTerm *vt, int sb_row, int col);
 bool cfr_get_scrollback_wrapline(const CfrTerm *vt, int sb_row);
 

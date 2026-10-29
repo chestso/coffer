@@ -62,13 +62,32 @@ size_t cfr_row_text(const CfrTerm *vt, int row, char *buf, size_t cap)
     if (row >= rows || row < -cfr_get_scrollback_lines(vt))
         return 0;
 
+    /* Resolve the row once. A scrollback row lives in one page, and the
+     * per-column lookup re-walks the page list for every cell — a
+     * full-buffer scan (wait-for, assert-contains) is quadratic in the
+     * page count without this. The owning page also serves the grapheme
+     * read directly, skipping the page search per multi-codepoint
+     * cluster. */
+    const CfrPage *page = NULL;
+    int row_cols = cols;
+    const CfrCell *row_cells;
+    if (row >= 0) {
+        if (!vt->grid)
+            return 0;
+        page = vt->grid;
+        row_cells = &vt->grid->cells[(size_t)row * cols];
+    } else {
+        int row_in_page = 0;
+        page = cfr_sb_page_for_row(vt, -row - 1, &row_in_page);
+        if (!page)
+            return 0;
+        row_cols = page->cols;
+        row_cells = &page->cells[(size_t)row_in_page * page->cols];
+    }
+
     size_t n = 0;
-    for (int c = 0; c < cols; c++) {
-        const CfrCell *cell = (row >= 0)
-                                  ? cfr_get_cell(vt, row, c)
-                                  : cfr_get_scrollback_cell(vt, -row - 1, c);
-        if (!cell)
-            break;
+    for (int c = 0; c < cols && c < row_cols; c++) {
+        const CfrCell *cell = &row_cells[c];
         if (cell->width == 0)
             continue; /* continuation of a wide cluster, or a cell that
                        * was never written (indistinguishable by design:
@@ -80,7 +99,14 @@ size_t cfr_row_text(const CfrTerm *vt, int row, char *buf, size_t cap)
             continue;
         }
         uint32_t cps[CFR_CLUSTER_MAX];
-        size_t nc = cfr_cell_get_grapheme(vt, cell, cps, CFR_CLUSTER_MAX);
+        size_t nc;
+        if (cell->grapheme_id == 0) {
+            cps[0] = cell->cp;
+            nc = 1;
+        } else {
+            nc = cfr_grapheme_read(page, cell->grapheme_id, cps,
+                                   CFR_CLUSTER_MAX);
+        }
         if (nc == 0) {
             if (n + 1 >= cap)
                 break;

@@ -251,6 +251,34 @@ static void test_find_text_no_wrap_span(void)
     cfr_free(vt);
 }
 
+/* The row accessor behind a fast full-row flatten: it must agree with the
+ * per-column lookup on every cell of every scrollback row. */
+static void test_scrollback_row_matches_per_cell_reads(void)
+{
+    CfrTerm *vt = make_term(2, 5);
+    /* 24 cells into 2 rows of 5: five wrapped rows, three of them
+     * scrolled off into history. */
+    feed(vt, "aaaaabbbbbcccccdddddeeee");
+    ASSERT_TRUE(cfr_get_scrollback_lines(vt) > 0);
+    for (int sb = 0; sb < cfr_get_scrollback_lines(vt); sb++) {
+        int row_cols = 0;
+        const CfrCell *row = cfr_get_scrollback_row(vt, sb, &row_cols);
+        ASSERT_NOT_NULL(row);
+        ASSERT_EQ(row_cols, 5);
+        for (int c = 0; c < row_cols; c++) {
+            ASSERT_EQ(row[c].cp, cfr_get_scrollback_cell(vt, sb, c)->cp);
+            ASSERT_EQ(row[c].width, cfr_get_scrollback_cell(vt, sb, c)->width);
+            ASSERT_EQ(row[c].grapheme_id,
+                      cfr_get_scrollback_cell(vt, sb, c)->grapheme_id);
+        }
+    }
+    /* find_text walks the full history through the row-resolved path. */
+    ASSERT_TRUE(cfr_find_text(vt, "aaaaa", false, NULL));
+    ASSERT_TRUE(cfr_find_text(vt, "ccccc", false, NULL));
+    ASSERT_FALSE(cfr_find_text(vt, "zzzzz", false, NULL));
+    cfr_free(vt);
+}
+
 int main(int argc, char **argv)
 {
     (void)argc;
@@ -270,5 +298,6 @@ int main(int argc, char **argv)
     RUN_TEST(test_find_text_grapheme_needle);
     RUN_TEST(test_find_text_empty_needle_matches);
     RUN_TEST(test_find_text_no_wrap_span);
+    RUN_TEST(test_scrollback_row_matches_per_cell_reads);
     TEST_SUMMARY();
 }
