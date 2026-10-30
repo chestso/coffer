@@ -1057,6 +1057,17 @@ static void test_xtwinops_logical_pixels(void)
     cfr_free(vt);
 }
 
+/* The one conversion every client-facing pixel figure goes through. */
+static void test_cfr_px_logical(void)
+{
+    ASSERT_EQ(cfr_px_logical(10, 1.0f), 10); /* unscaled: identity */
+    ASSERT_EQ(cfr_px_logical(20, 2.0f), 10); /* scaled: halve */
+    ASSERT_EQ(cfr_px_logical(13, 1.5f), 9);  /* round half-up: 8.67 -> 9 */
+    ASSERT_EQ(cfr_px_logical(10, 0.0f), 10); /* unset scale == 1.0 */
+    ASSERT_EQ(cfr_px_logical(1, 3.0f), 1);   /* never below 1 */
+    ASSERT_EQ(cfr_px_logical(0, 2.0f), 1);
+}
+
 static void test_altscreen_save_restore(void)
 {
     CfrTerm *vt = make_term(5, 5);
@@ -1762,6 +1773,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_brick_inline_setup);
     RUN_TEST(test_da1);
     RUN_TEST(test_xtwinops_logical_pixels);
+    RUN_TEST(test_cfr_px_logical);
     RUN_TEST(test_altscreen_save_restore);
     RUN_TEST(test_altscreen_decsc_does_not_clobber_1049);
     RUN_TEST(test_ich_dch);
