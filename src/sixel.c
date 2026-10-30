@@ -74,6 +74,12 @@ struct CfrSixelState
     /* Decode position / extent. */
     int x, y, max_x, max_y;
 
+    /* Declared raster size (the "Pan;Pad;Ph;Pv attributes command), 0
+     * when the image carries none. The pixel data arrives in 6-row
+     * bands, so the last band is usually padded below the picture; the
+     * declaration is what tells us where the picture actually ends. */
+    int raster_w, raster_h;
+
     /* Palette + current register. */
     SxColor palette[SX_MAX_COLORS];
     int cur_color;
@@ -258,13 +264,18 @@ static void sx_finish_color(CfrSixelState *st)
 
 static void sx_finish_raster(CfrTerm *vt, CfrSixelState *st)
 {
-    /* "Pan;Pad;Ph;Pv — aspect num/den + width/height. We render 1:1 like
-     * xterm/foot/wezterm (aspect parsed but not applied) and use Ph/Pv as
-     * a canvas pre-allocation hint. */
+    /* "Pan;Pad;Ph;Pv — aspect num/den + the image's width and height in
+     * pixels. The aspect is parsed but not applied (1:1 like
+     * xterm/foot/wezterm); the declared size is recorded so finish can
+     * end the picture where the encoder says it ends, and doubles as a
+     * canvas pre-allocation hint. */
     if (st->param_count >= 4) {
         int hw = st->params[2], hh = st->params[3];
-        if (hw > 0 && hw < IMG_MAX_DIM && hh > 0 && hh < IMG_MAX_DIM)
+        if (hw > 0 && hw < IMG_MAX_DIM && hh > 0 && hh < IMG_MAX_DIM) {
+            st->raster_w = hw;
+            st->raster_h = hh;
             sx_canvas_ensure(vt, st, hw - 1, hh - 1);
+        }
     }
 }
 
@@ -326,6 +337,7 @@ void cfr_sixel_begin(CfrTerm *vt, const uint32_t *params, int nparams)
     memset(st->canvas, 0, st->canvas_cap);
 
     st->x = st->y = st->max_x = st->max_y = 0;
+    st->raster_w = st->raster_h = 0;
     st->cur_color = 0;
     st->sub = SX_NORMAL;
     st->param_count = 0;
@@ -462,6 +474,22 @@ void cfr_sixel_finish(CfrTerm *vt)
 
     int w = st->max_x + 1;
     int h = st->max_y + 1;
+
+    /* The attributes command declares the picture's real extent, and the
+     * band machinery cannot know it: sixel data travels in 6-row bands,
+     * so a picture whose height is not a multiple of 6 arrives with up to
+     * five padding rows in its last band. Ending the image at the band
+     * bottom instead of at the declaration makes every such sixel taller
+     * than it says it is — at a scaled DPI that is a whole text row of
+     * extra cell occupancy, and the cursor (and the shell prompt after
+     * it) lands a row lower than the same picture sent as kitty or
+     * iTerm2. Clamp to the declaration; it never grows an image past the
+     * pixels that were actually transmitted. */
+    if (st->raster_w > 0 && w > st->raster_w)
+        w = st->raster_w;
+    if (st->raster_h > 0 && h > st->raster_h)
+        h = st->raster_h;
+
     if (w <= 0 || h <= 0 || !st->canvas)
         return;
     if (w > IMG_MAX_DIM)

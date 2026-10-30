@@ -154,6 +154,67 @@ static void test_cursor_advance(void)
     cfr_free(vt);
 }
 
+/* The attributes command ("Pan;Pad;Ph;Pv) declares the picture's real
+ * extent, and sixel data travels in 6-row bands: a picture whose height is
+ * not a multiple of 6 arrives with up to five padding rows in its last
+ * band. Ending the image at the band bottom instead of at the declaration
+ * makes it taller than it says — at a scaled DPI that is a whole extra row
+ * of cell occupancy, so the same PNG renders a row lower (and with the
+ * shell prompt below it) as sixel than as kitty or iTerm2. */
+static void test_raster_attrs_trim_band_padding(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    cfr_set_cell_pixels(vt, 10, 10); /* one 6px band is less than a cell */
+    /* Two bands drawn (12px), two columns wide, declared 2x10. */
+    feed(vt, "\x1bPq\"1;1;2;10#1;2;100;0;0#1~~-#1~~\x1b\\");
+
+    int n = -1;
+    const CfrImage *s = cfr_get_images(vt, &n);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(n, 1);
+    ASSERT_EQ(s[0].width_px, 2);
+    ASSERT_EQ(s[0].height_px, 10); /* the declaration, not the 12px of bands */
+    ASSERT_EQ(s[0].buf_h, 10);     /* padding rows are cropped, not squashed */
+    /* The last transmitted row inside the declared height survives. */
+    ASSERT_EQ(px(&s[0], 1, 9)[3], 255);
+
+    /* Cell occupancy follows the trimmed height: one row, not two. */
+    CfrCursor cur = cfr_get_cursor(vt);
+    ASSERT_EQ(cur.row, 1);
+    cfr_free(vt);
+}
+
+/* Ph trims overlong rows the same way Pv trims the bands. */
+static void test_raster_attrs_trim_width(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    /* Four pixels drawn, declared three wide. */
+    feed(vt, "\x1bPq\"1;1;3;6#1;2;0;100;0#1~~~~\x1b\\");
+
+    int n = -1;
+    const CfrImage *s = cfr_get_images(vt, &n);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(s[0].width_px, 3);
+    ASSERT_EQ(s[0].buf_w, 3);
+    ASSERT_EQ(s[0].height_px, 6);
+    cfr_free(vt);
+}
+
+/* A declaration never invents picture rows: the image is the pixels that
+ * were transmitted, so an oversized Pv leaves the drawn extent alone. */
+static void test_raster_attrs_do_not_invent_rows(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1bPq\"1;1;2;100#1;2;0;100;0#1@\x1b\\");
+
+    int n = -1;
+    const CfrImage *s = cfr_get_images(vt, &n);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(s[0].height_px, 6); /* one band, not the declared 100 */
+    ASSERT_EQ(s[0].buf_h, 6);
+    cfr_free(vt);
+}
+
 /* A sixel anchored on the bottom margin scrolls into view and leaves the
  * cursor below the image. */
 static void test_cursor_advance_at_bottom_margin(void)
@@ -384,6 +445,9 @@ int main(int argc, char *argv[])
     RUN_TEST(test_rle);
     RUN_TEST(test_hls_hue);
     RUN_TEST(test_cursor_advance);
+    RUN_TEST(test_raster_attrs_trim_band_padding);
+    RUN_TEST(test_raster_attrs_trim_width);
+    RUN_TEST(test_raster_attrs_do_not_invent_rows);
     RUN_TEST(test_cursor_advance_at_bottom_margin);
     RUN_TEST(test_inplace_animation);
     RUN_TEST(test_scroll_into_scrollback);
