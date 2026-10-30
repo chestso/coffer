@@ -437,5 +437,13 @@ run in CI).
 - The `content_scale` conversion has exactly ONE home: the display
   fields on the way out (`cfr_img_get`). Never scale the buffer
   fields.
+- Every pixel figure the engine _reports_ back to a client carries the
+  logical cell size (`cfr_cell_logical_px`): XTWINOPS `14t`/`16t`,
+  XTSMGRAPHICS geometry, and OSC 1337 `ReportCellSize`. A client told
+  the physical size packs twice the pixels per cell, and the engine then
+  scales its raster a second time on the way out — a sixel raster ends
+  up at 2x while a cell-count protocol (kitty `c=`/`r=`, iTerm2
+  `width=`/`height=` in cells) stays at 1x, so the same picture renders
+  at two different sizes depending on the protocol.
 - Budget constants live in `src/image_store.h` (`IMG_MAX_IMAGES`,
   `IMG_LIVE_MAX`, `IMG_SPARE_MAX`, `IMG_RETAIN_MAX`).

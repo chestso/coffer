@@ -486,8 +486,10 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
             if (pi == 1) {
                 n = snprintf(buf, sizeof(buf), "\x1b[?1;0;%dS", 256);
             } else if (pi == 2) {
-                int gw = vt->cols * vt->cell_w_px;
-                int gh = vt->rows * vt->cell_h_px;
+                int cell_w = 1, cell_h = 1;
+                cfr_cell_logical_px(vt, &cell_w, &cell_h);
+                int gw = vt->cols * cell_w;
+                int gh = vt->rows * cell_h;
                 if (gw > 10000)
                     gw = 10000;
                 if (gh > 10000)
@@ -670,18 +672,26 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
                              vt->rows, vt->cols);
             cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
         } else if (mode == 14) {
-            /* Report text area size in pixels. */
+            /* Report text area size in pixels. Logical pixels, like the
+             * cell size below: every pixel figure the client measures is
+             * scaled once by the engine on the way back in. */
+            int cell_w = 1, cell_h = 1;
+            cfr_cell_logical_px(vt, &cell_w, &cell_h);
             char buf[32];
-            int px_h = vt->rows * vt->cell_h_px;
-            int px_w = vt->cols * vt->cell_w_px;
+            int px_h = vt->rows * cell_h;
+            int px_w = vt->cols * cell_w;
             int n = snprintf(buf, sizeof(buf), "\x1b[4;%d;%dt",
                              px_h, px_w);
             cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
         } else if (mode == 16) {
-            /* Report cell size in pixels. */
+            /* Report cell size in pixels — logical, so a client that
+             * sizes an image by this figure produces dimensions the
+             * engine can scale once (see cfr_cell_logical_px). */
+            int cell_w = 1, cell_h = 1;
+            cfr_cell_logical_px(vt, &cell_w, &cell_h);
             char buf[32];
             int n = snprintf(buf, sizeof(buf), "\x1b[6;%d;%dt",
-                             vt->cell_h_px, vt->cell_w_px);
+                             cell_h, cell_w);
             cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
         }
         break;

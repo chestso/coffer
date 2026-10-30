@@ -871,12 +871,9 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
      * Use logical cell sizes (physical / content_scale) because px_w/px_h
      * are intended to be logical/unscaled pixels. */
     float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
-    int logical_cell_w = (int)((double)vt->cell_w_px / cscale + 0.5);
-    int logical_cell_h = (int)((double)vt->cell_h_px / cscale + 0.5);
-    if (logical_cell_w < 1)
-        logical_cell_w = 1;
-    if (logical_cell_h < 1)
-        logical_cell_h = 1;
+    int logical_cell_w = 1;
+    int logical_cell_h = 1;
+    cfr_cell_logical_px(vt, &logical_cell_w, &logical_cell_h);
 
     double scale = lt_compute_scale(design_w, design_h,
                                     p_width, p_height,

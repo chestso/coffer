@@ -421,6 +421,30 @@ static inline bool should_log_once(CfrTerm *vt, uint32_t bit)
 /* Internal helpers (cross-file)                                       */
 /* ------------------------------------------------------------------ */
 
+/* The cell's size in LOGICAL (unscaled) pixels: cell_w_px/cell_h_px are
+ * physical and include content_scale, while every pixel dimension a
+ * client hands the engine is logical — the display fields are scaled
+ * once on the way out (cfr_img_get). Anything that *reports* a pixel
+ * quantity back to a client (XTWINOPS 14t/16t, OSC 1337
+ * ReportCellSize) must therefore report the logical figure: a client
+ * told the physical size packs twice the pixels per cell, and its
+ * raster then gets scaled a second time on the way out. */
+static inline void cfr_cell_logical_px(const CfrTerm *vt, int *out_w,
+                                       int *out_h)
+{
+    float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
+    int w = (int)((double)vt->cell_w_px / scale + 0.5);
+    int h = (int)((double)vt->cell_h_px / scale + 0.5);
+    if (w < 1)
+        w = 1;
+    if (h < 1)
+        h = 1;
+    if (out_w)
+        *out_w = w;
+    if (out_h)
+        *out_h = h;
+}
+
 /* Allocator helpers — route through vt->alloc. */
 void *cfr_alloc(CfrTerm *vt, size_t size);
 void *cfr_realloc(CfrTerm *vt, void *ptr, size_t size);

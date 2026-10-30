@@ -118,16 +118,12 @@ static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
 
     /* Compute display dimensions in LOGICAL pixels from the protocol's
      * width/height hints.  vt->cell_w_px is physical (includes
-     * content_scale), so we divide to get the logical cell size before
+     * content_scale), so we take the logical cell size before
      * multiplying by the cell count.  cfr_img_add and cfr_img_get each
      * apply content_scale once to convert logical→physical. */
-    float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
-    int logical_cw = (int)(vt->cell_w_px / cscale + 0.5f);
-    int logical_ch = (int)(vt->cell_h_px / cscale + 0.5f);
-    if (logical_cw < 1)
-        logical_cw = 1;
-    if (logical_ch < 1)
-        logical_ch = 1;
+    int logical_cw = 1;
+    int logical_ch = 1;
+    cfr_cell_logical_px(vt, &logical_cw, &logical_ch);
 
     int disp_w = w;
     int disp_h = h;
@@ -247,18 +243,13 @@ static void handle_capabilities(CfrTerm *vt)
 
 static void handle_report_cell_size(CfrTerm *vt)
 {
-    /* Report LOGICAL cell pixels (physical / content_scale) so chafa
-     * scales images to logical dimensions.  cfr_img_get then converts
-     * to physical for the renderer.  Reporting physical here would
-     * make chafa pack too many pixels per cell, and process_image's
-     * logical cell conversion would then shrink the display. */
-    float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
-    int logical_cw = (int)(vt->cell_w_px / cscale + 0.5f);
-    int logical_ch = (int)(vt->cell_h_px / cscale + 0.5f);
-    if (logical_cw < 1)
-        logical_cw = 1;
-    if (logical_ch < 1)
-        logical_ch = 1;
+    /* Report LOGICAL cell pixels so a client scales images to logical
+     * dimensions; cfr_img_get converts to physical for the renderer.
+     * Reporting the physical size would make the client pack twice the
+     * pixels per cell (see cfr_cell_logical_px). */
+    int logical_cw = 1;
+    int logical_ch = 1;
+    cfr_cell_logical_px(vt, &logical_cw, &logical_ch);
     char buf[64];
     int n = snprintf(buf, sizeof(buf),
                      "\x1b]1337;ReportCellSize=%d;%d;1.0\x07",

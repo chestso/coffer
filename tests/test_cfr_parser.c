@@ -1020,6 +1020,43 @@ static void test_da1(void)
     cfr_free(vt);
 }
 
+/* XTWINOPS pixel reports are LOGICAL pixels, not the physical cell size.
+ *
+ * Every pixel dimension a client hands the engine (a sixel raster, kitty
+ * c=/r=, an iTerm2 px hint) is logical: cfr_img_get() scales the display
+ * fields once on the way out. A client that measures the cell from these
+ * reports therefore has to see the logical size, or its output is scaled
+ * twice — a sixel raster comes out at 2x on a 2x display while a
+ * cell-count protocol (kitty/iTerm2) comes out at 1x, so `chafa` renders
+ * the same PNG at two different sizes depending on the protocol. */
+static void test_xtwinops_logical_pixels(void)
+{
+    CfrTerm *vt = make_term(24, 80); /* cell 10x6, unscaled */
+    g_output_len = 0;
+    feed(vt, "\x1b[16t");
+    ASSERT_STR_EQ(g_output_buf, "\x1b[6;6;10t");
+
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    feed(vt, "\x1b[14t");
+    ASSERT_STR_EQ(g_output_buf, "\x1b[4;144;800t"); /* 24*6, 80*10 */
+
+    /* On a 2x display the cell is 20x12 physical, 10x6 logical. */
+    cfr_set_content_scale(vt, 2.0f);
+    cfr_set_cell_pixels(vt, 20, 12);
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    feed(vt, "\x1b[16t");
+    ASSERT_STR_EQ(g_output_buf, "\x1b[6;6;10t");
+
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    feed(vt, "\x1b[14t");
+    ASSERT_STR_EQ(g_output_buf, "\x1b[4;144;800t");
+
+    cfr_free(vt);
+}
+
 static void test_altscreen_save_restore(void)
 {
     CfrTerm *vt = make_term(5, 5);
@@ -1724,6 +1761,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_cf_byte_replay);
     RUN_TEST(test_brick_inline_setup);
     RUN_TEST(test_da1);
+    RUN_TEST(test_xtwinops_logical_pixels);
     RUN_TEST(test_altscreen_save_restore);
     RUN_TEST(test_altscreen_decsc_does_not_clobber_1049);
     RUN_TEST(test_ich_dch);
