@@ -381,6 +381,26 @@ static void test_capabilities(void)
     cfr_free(vt);
 }
 
+/* XTSMGRAPHICS geometry (CSI ? 2 ; Pa ; Pv S) reports the maximum graphics
+ * area in LOGICAL pixels, like every pixel figure handed to a client. */
+static void test_xtsmgraphics_geometry_is_logical(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    g_out_len = 0;
+    feed(vt, "\x1b[?2;1;0S");
+    ASSERT_STR_EQ(g_out, "\x1b[?2;0;800;144S"); /* 80*10 x 24*6 */
+
+    /* 2x display: physical cell 20x12, logical 10x6 — reply unchanged. */
+    cfr_set_cell_pixels(vt, 20, 12);
+    cfr_set_content_scale(vt, 2.0f);
+    g_out_len = 0;
+    g_out[0] = '\0';
+    feed(vt, "\x1b[?2;1;0S");
+    ASSERT_STR_EQ(g_out, "\x1b[?2;0;800;144S");
+    cfr_free(vt);
+}
+
 /* Hammer the animation path: many same-anchor frames must stay a single
  * image with a reused buffer and a monotonic version. (Run under ASan in
  * the sanitized build to catch any use-after-free in the reuse path.) */
@@ -458,6 +478,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_animation_stress);
     RUN_TEST(test_image_count_cap);
     RUN_TEST(test_capabilities);
+    RUN_TEST(test_xtsmgraphics_geometry_is_logical);
     RUN_TEST(test_csi_s_still_scrolls);
     TEST_SUMMARY();
 }
