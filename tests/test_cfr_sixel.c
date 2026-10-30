@@ -215,6 +215,22 @@ static void test_raster_attrs_do_not_invent_rows(void)
     cfr_free(vt);
 }
 
+/* A huge raster declaration pre-allocates only a bounded canvas; the image
+ * is still the pixels that were transmitted. */
+static void test_raster_attrs_huge_declaration(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1bPq\"1;1;10000;10000#1;2;0;100;0#1@\x1b\\");
+
+    int n = -1;
+    const CfrImage *s = cfr_get_images(vt, &n);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(n, 1);
+    ASSERT_EQ(s[0].width_px, 1);
+    ASSERT_EQ(s[0].height_px, 6); /* one band, not the declared 10000 */
+    cfr_free(vt);
+}
+
 /* A sixel anchored on the bottom margin scrolls into view and leaves the
  * cursor below the image. */
 static void test_cursor_advance_at_bottom_margin(void)
@@ -468,6 +484,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_raster_attrs_trim_band_padding);
     RUN_TEST(test_raster_attrs_trim_width);
     RUN_TEST(test_raster_attrs_do_not_invent_rows);
+    RUN_TEST(test_raster_attrs_huge_declaration);
     RUN_TEST(test_cursor_advance_at_bottom_margin);
     RUN_TEST(test_inplace_animation);
     RUN_TEST(test_scroll_into_scrollback);

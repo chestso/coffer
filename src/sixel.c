@@ -43,6 +43,8 @@ typedef struct CfrSixelState CfrSixelState;
 #define SX_BAND       6   /* pixels per sixel band */
 #define SX_INIT_W     512 /* initial decode canvas */
 #define SX_INIT_H     128
+#define SX_HINT_MAX_W 2048 /* pre-allocation cap for the declared raster size */
+#define SX_HINT_MAX_H 1024
 /* Storage budgets (IMG_MAX_DIM, IMG_LIVE_MAX, etc.) are in image_store.h. */
 
 /* ------------------------------------------------------------------ */
@@ -274,7 +276,13 @@ static void sx_finish_raster(CfrTerm *vt, CfrSixelState *st)
         if (hw > 0 && hw < IMG_MAX_DIM && hh > 0 && hh < IMG_MAX_DIM) {
             st->raster_w = hw;
             st->raster_h = hh;
-            sx_canvas_ensure(vt, st, hw - 1, hh - 1);
+            /* Pre-allocate a bounded hint only: the declaration is
+             * attacker-controlled and sx_draw grows the canvas on demand,
+             * so a huge raster declaration must not buy a huge canvas
+             * before a single pixel arrives. */
+            int hint_w = hw > SX_HINT_MAX_W ? SX_HINT_MAX_W : hw;
+            int hint_h = hh > SX_HINT_MAX_H ? SX_HINT_MAX_H : hh;
+            sx_canvas_ensure(vt, st, hint_w - 1, hint_h - 1);
         }
     }
 }
