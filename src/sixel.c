@@ -550,6 +550,14 @@ void cfr_set_content_scale(CfrTerm *vt, float scale)
     vt->content_scale = scale > 0.0f ? scale : 1.0f;
 }
 
+int cfr_px_logical(int px, float content_scale)
+{
+    if (content_scale <= 0.0f)
+        content_scale = 1.0f;
+    int logical = (int)((double)px / content_scale + 0.5);
+    return logical > 0 ? logical : 1;
+}
+
 const CfrImage *cfr_get_images(CfrTerm *vt, int *out_count)
 {
     if (!vt || !vt->images)

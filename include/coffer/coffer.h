@@ -604,6 +604,17 @@ void cfr_set_cell_pixels(CfrTerm *vt, int cell_w_px, int cell_h_px);
  * cell_px already includes the scale but image pixels are unscaled. */
 void cfr_set_content_scale(CfrTerm *vt, float scale);
 
+/* Physical pixels -> the LOGICAL (unscaled) pixels a client measures in.
+ * A client's pixel dimensions are logical (the display fields are scaled
+ * by content_scale once, in cfr_img_get), so every figure reported back to
+ * a client goes through this. Rounds half-up and never returns below 1.
+ *
+ * At a fractional content scale the logical cell can be +/-1 px off
+ * physical/scale, so an image sized in logical px can overflow its cell
+ * box by a few device px. That is inherent to an integer-cell grid (kitty
+ * and foot behave the same); it is not a defect in the rounding. */
+int cfr_px_logical(int px, float content_scale);
+
 /* Return the live images (sixel, iTerm2, kitty, Lottie). The returned
  * array is owned by the engine and valid until the next mutation;
  * *out_count receives the number of images (0 if none). Returns NULL

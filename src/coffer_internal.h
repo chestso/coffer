@@ -432,17 +432,10 @@ static inline bool should_log_once(CfrTerm *vt, uint32_t bit)
 static inline void cfr_cell_logical_px(const CfrTerm *vt, int *out_w,
                                        int *out_h)
 {
-    float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
-    int w = (int)((double)vt->cell_w_px / scale + 0.5);
-    int h = (int)((double)vt->cell_h_px / scale + 0.5);
-    if (w < 1)
-        w = 1;
-    if (h < 1)
-        h = 1;
     if (out_w)
-        *out_w = w;
+        *out_w = cfr_px_logical(vt->cell_w_px, vt->content_scale);
     if (out_h)
-        *out_h = h;
+        *out_h = cfr_px_logical(vt->cell_h_px, vt->content_scale);
 }
 
 /* Allocator helpers — route through vt->alloc. */
