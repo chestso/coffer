@@ -692,18 +692,24 @@ static double lt_compute_scale(int design_w, int design_h,
     }
 }
 
-/* Emit an APC report (OSC 5556 on Windows) with placement info. */
+/* Emit an APC report (OSC 5556 on Windows) with placement info. The cell
+ * figures are LOGICAL pixels — the unit every client-facing pixel quantity
+ * uses, since a client's pixel dimensions are logical. */
 static void lt_emit_report(CfrTerm *vt, uint64_t id,
                            int row, int col, int rows, int cols,
                            int raster_w, int raster_h)
 {
+    int logical_cw = 1;
+    int logical_ch = 1;
+    cfr_cell_logical_px(vt, &logical_cw, &logical_ch);
+
     char json[200];
     int jn = snprintf(json, sizeof(json),
                       "{\"type\":\"report\",\"id\":%llu,\"row\":%d,\"col\":%d,"
                       "\"rows\":%d,\"cols\":%d,\"raster_w\":%d,\"raster_h\":%d,"
                       "\"cell_w_px\":%d,\"cell_h_px\":%d}",
                       (unsigned long long)id, row, col, rows, cols,
-                      raster_w, raster_h, vt->cell_w_px, vt->cell_h_px);
+                      raster_w, raster_h, logical_cw, logical_ch);
     if (jn <= 0)
         return;
 

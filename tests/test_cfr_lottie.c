@@ -1007,6 +1007,44 @@ static void test_report_on_load(void)
     cfr_free(vt);
 }
 
+/* The report's cell figures are LOGICAL pixels, like every other
+ * client-facing pixel quantity. */
+static void test_report_cell_is_logical(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    /* 2x display: the cell is 20x12 physical, 10x6 logical. */
+    cfr_set_cell_pixels(vt, 20, 12);
+    cfr_set_content_scale(vt, 2.0f);
+    g_out_len = 0;
+    g_out[0] = '\0';
+
+    /* 20x20 design, no constraints → raster=20x20, cells=2x4 */
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":42,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]},"
+                "\"placement\":{\"row\":3,\"col\":5},"
+                "\"report\":true}");
+
+    uint64_t rid = 0;
+    int r_row = -1, r_col = -1, r_rows = -1, r_cols = -1;
+    int r_rw = -1, r_rh = -1, r_cw = -1, r_ch = -1;
+    int rc = parse_report(&rid, &r_row, &r_col, &r_rows, &r_cols,
+                          &r_rw, &r_rh, &r_cw, &r_ch);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ((long long)rid, 42);
+    ASSERT_EQ(r_row, 3);
+    ASSERT_EQ(r_col, 5);
+    ASSERT_EQ(r_rows, 4);
+    ASSERT_EQ(r_cols, 2);
+    ASSERT_EQ(r_rw, 20);
+    ASSERT_EQ(r_rh, 20);
+    ASSERT_EQ(r_cw, 10);
+    ASSERT_EQ(r_ch, 6);
+
+    cfr_free(vt);
+}
+
 /* place emits an APC report with updated fields. */
 static void test_report_on_place(void)
 {
@@ -1345,6 +1383,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_contain_mixed_constraints);
     RUN_TEST(test_region_fit);
     RUN_TEST(test_report_on_load);
+    RUN_TEST(test_report_cell_is_logical);
     RUN_TEST(test_report_on_place);
     RUN_TEST(test_place_rescale_seamless);
 
