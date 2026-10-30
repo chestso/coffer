@@ -243,17 +243,22 @@ static void handle_capabilities(CfrTerm *vt)
 
 static void handle_report_cell_size(CfrTerm *vt)
 {
-    /* Report LOGICAL cell pixels so a client scales images to logical
-     * dimensions; cfr_img_get converts to physical for the renderer.
-     * Reporting the physical size would make the client pack twice the
-     * pixels per cell (see cfr_cell_logical_px). */
+    /* iTerm2's format: ReportCellSize=[height];[width];[scale] — height
+     * and width in POINTS (logical pixels), scale the number of device
+     * pixels per point. The scale is the one figure that lets a client
+     * tell logical from physical: it can size its image in logical pixels
+     * and transmit a raster at scale x that resolution, which the engine
+     * then draws 1:1 into the device-pixel box. The cell figures are the
+     * logical ones (see cfr_cell_logical_px); reporting the physical size
+     * would make the client pack twice the pixels per cell. */
     int logical_cw = 1;
     int logical_ch = 1;
     cfr_cell_logical_px(vt, &logical_cw, &logical_ch);
+    float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
     char buf[64];
     int n = snprintf(buf, sizeof(buf),
-                     "\x1b]1337;ReportCellSize=%d;%d;1.0\x07",
-                     logical_ch, logical_cw);
+                     "\x1b]1337;ReportCellSize=%d;%d;%.1f\x07",
+                     logical_ch, logical_cw, scale);
     if (n > 0)
         cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
 }

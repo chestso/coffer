@@ -122,6 +122,28 @@ static void test_report_cell_size(void)
     /* Cell size is 10x6, so response should contain "6" and "10" */
     ASSERT_TRUE(strstr(g_output_buf, "6") != NULL);
     ASSERT_TRUE(strstr(g_output_buf, "10") != NULL);
+    ASSERT_STR_EQ(g_output_buf, "\x1b]1337;ReportCellSize=6;10;1.0\x07");
+    cfr_free(vt);
+}
+
+/* The third field is iTerm2's scale: device pixels per point. A client
+ * reads it to tell logical from physical — and to send a high-resolution
+ * raster for a logical-sized box, which lands 1:1 in the device-pixel
+ * grid. Reporting 1.0 on a scaled display lied to every such client. */
+static void test_report_cell_size_carries_scale(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    cfr_set_cell_pixels(vt, 20, 12); /* physical: 2x the 10x6 logical cell */
+    cfr_set_content_scale(vt, 2.0f);
+    feed(vt, "\x1b]1337;ReportCellSize\x07");
+    ASSERT_STR_EQ(g_output_buf, "\x1b]1337;ReportCellSize=6;10;2.0\x07");
+
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    cfr_set_content_scale(vt, 1.5f);
+    cfr_set_cell_pixels(vt, 15, 9);
+    feed(vt, "\x1b]1337;ReportCellSize\x07");
+    ASSERT_STR_EQ(g_output_buf, "\x1b]1337;ReportCellSize=6;10;1.5\x07");
     cfr_free(vt);
 }
 
@@ -565,6 +587,7 @@ int main(int argc, char *argv[])
 
     RUN_TEST(test_capabilities);
     RUN_TEST(test_report_cell_size);
+    RUN_TEST(test_report_cell_size_carries_scale);
     RUN_TEST(test_inline_png);
     RUN_TEST(test_download_ignored);
     RUN_TEST(test_inline_scroll);
