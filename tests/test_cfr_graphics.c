@@ -448,6 +448,57 @@ static void test_place_cell_size_from_aspect(void)
     cfr_free(vt);
 }
 
+/* A natural-size placement (no c=/r=) derives its cell box from the image's
+ * DEVICE extent: the client's pixels are logical and the engine scales them
+ * by content_scale exactly once, on the way out. Dropping that scale puts a
+ * HiDPI placement at 1x — half the intended box. */
+static void test_natural_size_placement_scales_with_content_scale(void)
+{
+    /* 12x7 opaque red RGBA. */
+    static uint8_t rgba[12 * 7 * 4];
+    for (size_t i = 0; i < sizeof(rgba); i += 4) {
+        rgba[i + 0] = 255;
+        rgba[i + 1] = 0;
+        rgba[i + 2] = 0;
+        rgba[i + 3] = 255;
+    }
+    char b64[512];
+    char seq[600];
+
+    /* Unscaled: 12x7 device px -> 2x2 cells (cell 10x6). */
+    CfrTerm *vt = make_term(24, 80);
+    b64_encode(rgba, sizeof(rgba), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=12,v=7,i=1;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b_Ga=p,i=1\x1b\\");
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].width_px, 12);
+    ASSERT_EQ(imgs[0].height_px, 7);
+    const CfrImagePlacement *pls = cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_EQ(pls[0].cols, 2);
+    ASSERT_EQ(pls[0].rows, 2);
+    cfr_free(vt);
+
+    /* 2x display: cell 20x12 physical, content_scale 2. The image's device
+     * extent doubles (24x14) and the box is derived from THAT, not from the
+     * unscaled pixels. */
+    vt = make_term(24, 80);
+    cfr_set_cell_pixels(vt, 20, 12);
+    cfr_set_content_scale(vt, 2.0f);
+    b64_encode(rgba, sizeof(rgba), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=12,v=7,i=1;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b_Ga=p,i=1\x1b\\");
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].width_px, 24);
+    ASSERT_EQ(imgs[0].height_px, 14);
+    pls = cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_EQ(pls[0].cols, 2); /* ceil(24 / 20) — NOT ceil(12 / 20) == 1 */
+    ASSERT_EQ(pls[0].rows, 2); /* ceil(14 / 12) — NOT ceil(7 / 12) == 1 */
+    cfr_free(vt);
+}
+
 /* --------------------------------------------------------------- */
 /* 8b. Place uses c=/r= as display size                            */
 /* --------------------------------------------------------------- */
@@ -1773,6 +1824,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_transmit_client_id);
     RUN_TEST(test_place);
     RUN_TEST(test_place_cell_size_from_aspect);
+    RUN_TEST(test_natural_size_placement_scales_with_content_scale);
     RUN_TEST(test_place_cursor_advance);
     RUN_TEST(test_place_virtual);
     RUN_TEST(test_place_relative);
