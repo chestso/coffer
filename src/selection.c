@@ -166,6 +166,7 @@ void cfr_selection_start(CfrTerm *vt, int row, int col, CfrSelectionMode mode)
         return;
 
     CfrSelection *sel = &vt->selection;
+    bool was_active = sel->active;
     sel->active = true;
     sel->mode = mode;
     sel->anchor = (CfrSelectionPoint){ row, col };
@@ -186,8 +187,14 @@ void cfr_selection_start(CfrTerm *vt, int row, int col, CfrSelectionMode mode)
         break;
     }
 
-    if (sel->active)
-        cfr_selection_fire_callback(vt, true);
+    /* selection_changed is an edge, not a level: starting a new selection on
+     * top of an active one (double-click while a word is selected, then a
+     * triple-click) replaces it without leaving the active state, so the
+     * callback must not fire again — a host that pauses work on `true` and
+     * resumes on `false` would otherwise hold one pause per restart and never
+     * get a matching `false` when the selection is finally cleared. */
+    if (sel->active != was_active)
+        cfr_selection_fire_callback(vt, sel->active);
 }
 
 void cfr_selection_update(CfrTerm *vt, int row, int col)

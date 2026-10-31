@@ -338,6 +338,32 @@ static void test_callback_fires_on_start(void)
     cfr_free(vt);
 }
 
+/* Restarting a selection on top of an active one (double-click, then
+ * triple-click) stays active throughout: the callback is an edge, so it must
+ * fire once, not once per restart. */
+static void test_callback_not_fired_on_restart(void)
+{
+    cb_active_count = 0;
+    cb_inactive_count = 0;
+    CfrTerm *vt = make_term(24, 80);
+
+    CfrCallbacks cb = { 0 };
+    cb.selection_changed = tracking_cb;
+    cfr_set_callbacks(vt, &cb, NULL);
+
+    cfr_selection_start(vt, 5, 10, CFR_SEL_CHAR);
+    cfr_selection_start(vt, 5, 10, CFR_SEL_WORD);
+    cfr_selection_start(vt, 5, 10, CFR_SEL_LINE);
+    ASSERT_EQ(cb_active_count, 1);
+    ASSERT_EQ(cb_inactive_count, 0);
+
+    cfr_selection_clear(vt);
+    ASSERT_EQ(cb_active_count, 1);
+    ASSERT_EQ(cb_inactive_count, 1);
+
+    cfr_free(vt);
+}
+
 static void test_callback_fires_on_clear(void)
 {
     cb_active_count = 0;
@@ -548,6 +574,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_selection_altscreen_clears);
 
     RUN_TEST(test_callback_fires_on_start);
+    RUN_TEST(test_callback_not_fired_on_restart);
     RUN_TEST(test_callback_fires_on_clear);
     RUN_TEST(test_callback_not_fired_on_update);
     RUN_TEST(test_callback_fires_on_draw_clear);
