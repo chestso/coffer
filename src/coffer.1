@@ -7,9 +7,45 @@ coffer \- headless PTY inspector for the coffer VT engine
 .SH DESCRIPTION
 .B coffer
 spawns a child process on a pseudo-terminal, pipes its output through
-coffer, and renders the resulting grid as plain text.
-The coffer output callback is wired back to the PTY, so terminal
-queries (DA, DSR, kitty keyboard protocol) receive proper replies.
+the coffer VT engine, and renders the resulting grid as plain text.
+It needs no display server, so it is suited to debugging VT rendering,
+capturing raw PTY output, inspecting individual cells and styles, and
+asserting on what a TUI drew in CI.
+.PP
+The engine's output callback is wired back to the PTY, so terminal
+queries (DA, DSR, kitty keyboard protocol) receive proper replies and
+interactive programs render as they would in a real terminal.
+.PP
+Everything after
+.B \-\-
+is the command to run.
+Without one,
+.B coffer
+starts
+.B $SHELL
+(falling back to
+.BR /bin/sh ;
+.B %COMSPEC%
+or
+.B cmd.exe
+on Windows).
+.PP
+A run goes through these steps:
+.IP 1. 3
+Spawn the child on a PTY of the requested size.
+.IP 2. 3
+Drain its output for the initial wait
+.RB ( \-\-wait ).
+.IP 3. 3
+Execute the script, if
+.B \-\-script
+was given.
+.IP 4. 3
+Dump the final screen (see
+.BR "FINAL DUMP" ),
+unless the script failed.
+.IP 5. 3
+Kill the child if it is still running, and exit.
 .PP
 Script assertions and
 .B wait\-for
@@ -17,7 +53,17 @@ search the
 .B unified buffer
 \(em the scrollback (oldest first) followed by the visible rows \(em so
 a TUI whose transcript scrolls off the screen is still assertable.
+.PP
+Progress and diagnostics (the startup notice, per-command
+.B OK
+/
+.B FAIL
+lines, script errors) go to standard error.
+Grid dumps go to standard output.
 .SH OPTIONS
+Options must precede
+.BR \-\- ;
+short options cannot be combined.
 .TP
 \fB\-\-rows\fR, \fB\-r\fR \fIROWS\fR
 Terminal rows (default: 24).
@@ -26,7 +72,12 @@ Terminal rows (default: 24).
 Terminal columns (default: 80).
 .TP
 \fB\-\-wait\fR, \fB\-w\fR \fISEC\fR
-Initial wait in seconds before reading script or rendering (default: 3).
+Initial wait in seconds before the script runs or the screen is
+rendered (default: 3; accepts decimals).
+The wait always happens, with or without a script; a script that
+synchronizes with
+.B wait\-for
+can pass a small value.
 .TP
 \fB\-\-script\fR, \fB\-f\fR \fIFILE\fR
 Execute commands from a script file. See
@@ -38,23 +89,40 @@ Save raw PTY output to
 .IR FILE .
 .TP
 \fB\-\-show\-row\fR, \fB\-s\fR \fIROW\fR
-Dump a specific row (repeatable). When combined with
+Select a row for the final dump (repeatable, up to 64).
+Without
 .BR \-\-quiet ,
-only specified rows are shown.
+the full screen is still printed and
+.B \-\-show\-row
+only restricts the
+.B \-\-cell\-data
+and
+.B \-\-style\-data
+detail to the selected rows.
 .TP
 \fB\-\-cell\-data\fR, \fB\-d\fR
-Dump raw cell data (codepoint, width) alongside rendered text.
+After the final dump, print per-cell detail (codepoint, width, style,
+hyperlink id), as
+.B render cells
+does, for every row or for the rows selected with
+.BR \-\-show\-row .
 .TP
 \fB\-\-style\-data\fR, \fB\-S\fR
-Dump style information (underline, colors) alongside rendered text.
+After the final dump, print style detail (underline, colors,
+attributes), as
+.B render styles
+does, for every row or the selected rows.
 .TP
 \fB\-\-quiet\fR, \fB\-q\fR
-Suppress rendering of rows not selected with
+With
+.BR \-\-show\-row ,
+print only the selected rows rather than the whole screen.
+Has no effect without
 .BR \-\-show\-row .
 .TP
 \fB\-\-env\fR \fIKEY=VALUE\fR
-Set an environment variable for the child (repeatable). Applied after
-the built-in
+Set an environment variable for the child (repeatable, up to 64).
+Applied after the built-in
 .B TERM
 /
 .B COLORTERM
@@ -65,38 +133,87 @@ an empty
 unsets the variable, including a built-in.
 .TP
 \fB\-\-help\fR, \fB\-h\fR
-Show help and exit.
+Show help (options and script commands) and exit.
 .TP
 \fB\-\-help\-spec\fR
-Emit a machine-readable tab-separated listing for downstream tooling:
-.B FLAG
-lines for the options, and
-.B CMD
-lines naming every script command (the feature-detection seam for a
-driver that needs a command this build may not have).
+Emit a machine-readable, tab-separated listing for downstream tooling
+and exit.
+See
+.BR "FEATURE DETECTION" .
+.SH FINAL DUMP
+When no script is given, or the script finishes without failing
+(including via
+.BR quit ),
+.B coffer
+renders the visible grid to standard output after the script, one row
+per line as
+.RI \(dq "ROW" | "TEXT" \(dq
+(the same output as a bare
+.BR render ).
+.B \-\-show\-row ,
+.BR \-\-cell\-data ,
+.B \-\-style\-data
+and
+.B \-\-quiet
+shape this dump only; they do not affect
+.B render
+commands inside a script.
+When the script fails, the dump is skipped and the exit status is 1.
 .SH SCRIPT FILE
 When run with
 .BR \-\-script ,
-each non-blank, non-comment line is parsed as a command:
+each line is one command; blank lines and lines whose first
+non-blank character is
+.B #
+are ignored.
+A line may be at most 4095 bytes long.
+A parse error (unknown command, bad arguments) is reported with its line
+number and fails the run before the script starts.
+The script engine is part of the coffer library
+.RI ( <coffer/script.h> )
+and is shared with other hosts, which may register extra commands.
+.PP
+Commands that take a
+.I TEXT
+argument accept it with or without one layer of surrounding single or
+double quotes.
 .TP
 .BI "wait " SECONDS
 Drain PTY output for
 .I SECONDS
-seconds (accepts decimals).
+seconds (accepts decimals; a missing or non-positive value means 1).
 .TP
-.BI "wait\-for " "\"TEXT\" [TIMEOUT] [line-end]"
+.BI "wait\-for " "\(dqTEXT\(dq [TIMEOUT] [line-end]"
 Drain until
 .I TEXT
-appears in the unified buffer (default timeout: 600 seconds; a timeout
-is a failure). The needle is matched as UTF-8. The optional trailing
+appears in the unified buffer, polling as output arrives.
+.I TIMEOUT
+is in seconds (default: 600); reaching it is a failure, so the script
+fails rather than hangs.
+The needle is matched as UTF-8 and has backslash escapes expanded (see
+.BR send ).
+The optional trailing
 .B line-end
 keyword anchors the match to a row that ends with
 .IR TEXT .
+.IP
+.I TIMEOUT
+and
+.B line-end
+are trailing tokens, peeled off the end of the line right to left (at
+most one number); anything else is part of the needle.
+Because a match is made against a row's text, a needle that spans a
+soft wrap will not be found \(em use a shorter one.
 .TP
 .BI "send " TEXT
-Send
+Write
 .I TEXT
-to the PTY. Backslash escapes are expanded:
+to the PTY input, that is, the child's standard input.
+The bytes are
+.I not
+fed to coffer's parser: to make the terminal process an escape
+sequence, have the child print it.
+Backslash escapes are expanded:
 .B \en
 = LF,
 .B \er
@@ -109,11 +226,31 @@ to the PTY. Backslash escapes are expanded:
 = byte NN (hex),
 .B \e\e
 = backslash.
+Octal escapes such as
+.B \e033
+are deliberately
+.I not
+expanded; write
+.BR \ee .
+A malformed
+.B \ex
+keeps its backslash.
+A shell only runs what you type once it sees a newline, so end shell
+commands with
+.BR \en .
 .TP
 .BI "sendln " TEXT
 Like
 .BR send ,
 with a trailing CR LF.
+.TP
+.BI "raw " "HEX [HEX ...]"
+Write literal bytes, given as space-separated hex pairs, to the PTY
+input (e.g.\&
+.B raw 03
+for Ctrl-C,
+.B raw ff fc 01
+for a telnet IAC WONT ECHO).
 .TP
 .BI "emit " TEXT
 Feed
@@ -125,17 +262,15 @@ escape expansion as
 .BI "emit\-raw " "HEX [HEX ...]"
 Feed literal bytes straight into coffer's parser.
 .TP
-.BI "raw " "HEX [HEX ...]"
-Send literal bytes specified as space-separated hex pairs
-(e.g.\&
-.BR "raw ff fc 01" ).
-.TP
 .BI "assert\-contains " TEXT
-Fail with exit code 1 if the unified buffer does not contain
+Fail the run if the unified buffer does not contain
 .IR TEXT .
+The text is matched as UTF-8 and, unlike
+.BR wait\-for ,
+is taken literally: no escape expansion.
 .TP
 .BI "assert\-not\-contains " TEXT
-Fail with exit code 1 if the unified buffer contains
+Fail the run if the unified buffer contains
 .IR TEXT .
 .TP
 .BI "await\-exit " "[TIMEOUT]"
@@ -143,59 +278,91 @@ Drain until the child exits (default timeout: 10 seconds; a timeout is
 a failure) and record its exit status.
 .TP
 .BI "assert\-exit " STATUS
-Fail with exit code 1 unless
+Fail the run unless
 .B await\-exit
 recorded
 .IR STATUS .
+It is also a failure if no
+.B await\-exit
+ran first.
 .TP
 .BI "resize " "COLS ROWS"
-Resize the PTY and the grid. On POSIX the child's terminal is resized
-with
+Resize the PTY and the grid; both must be positive.
+On POSIX the size is set on the child's terminal with
 .BR TIOCSWINSZ ,
 so it receives
 .BR SIGWINCH ;
 on Windows
 .B ResizePseudoConsole
-is used.
+is used (Windows 10 1809 or later; under wine it is unimplemented and
+the command fails).
 .TP
 .BI "render " "[visible|scrollback|all]"
 Dump the grid (default:
 .BR visible ).
+Each row is printed as
+.IB ROW | TEXT\fR.
 .B scrollback
 prints the scrollback, oldest first, with unified row numbers (negative
-= scrollback depth);
+= scrollback depth), or
+.B (scrollback empty)\fR;
 .B all
-prints both.
+prints the scrollback followed by the visible rows.
 .TP
 .BI "render cells " "ROW [C0 C1]"
-Dump per-cell detail (codepoint, width, style, hyperlink id) for
+Dump per-cell detail (codepoint, width, attributes, colors, underline,
+hyperlink id) for
 .IR ROW ,
 columns
 .I C0
 through
 .I C1
-(default: the whole row). Rows are unified coordinates: negative values
-address the scrollback
+(default: the whole row).
+Rows are unified coordinates: negative values address the scrollback
 .RB ( \-1
 = most recently scrolled off).
 .TP
 .BI "render styles " ROW
-Dump style detail (underline, colors, attributes) for
-.IR ROW .
+Dump style detail (underline, colors, attributes) for the cells of
+.I ROW
+that carry any.
 .TP
 .B cursor
 Dump the cursor state (row, col, visible, blink).
 .TP
 .B dump\-sixel
-Dump live images and placements (id, anchor row/col, pixel size).
+Dump live images (id, anchor row/col, pixel size) and their placements.
+Coffer assumes a 10x6 pixel cell, which determines the cell footprint
+of a sixel.
 .TP
 .B quit
-End the script run early (success).
+End the script run early, successfully.
+The final dump still happens.
 .TP
 .BI "# " comment
-Lines starting with
-.B #
-are ignored.
+Ignored.
+.SH FEATURE DETECTION
+.B \-\-help\-spec
+prints one line per option and one per script command, with tab-separated
+fields and
+.B \-
+standing for an absent value:
+.PP
+.EX
+FLAG	NAME	ALIAS	TAKES_VALUE	PARAM	DESCRIPTION
+CMD	NAME	ARGS	DESCRIPTION
+.EE
+.PP
+.B render cells
+and
+.B render styles
+get their own
+.B CMD
+lines.
+A driver that needs a command greps for
+.B CMD<TAB>NAME
+and skips when the installed binary predates it, instead of guessing
+from a version number.
 .SH EXAMPLES
 .TP
 Capture the initial screen of crush:
@@ -203,9 +370,19 @@ Capture the initial screen of crush:
 coffer \-c 68 \-r 20 \-w 5 \-\- crush
 .EE
 .TP
+Inspect one row's cells, hiding the rest of the screen:
+.EX
+coffer \-c 68 \-r 20 \-s 18 \-d \-q \-\- crush
+.EE
+.TP
+Capture raw PTY output for offline replay:
+.EX
+coffer \-o /tmp/crush.raw \-\- crush
+.EE
+.TP
 Scripted CI test with assertions:
 .EX
-coffer \-r 24 \-c 80 \-f test.script \-\- sh \-c "echo hello world"
+coffer \-r 24 \-c 80 \-w 0.5 \-f test.script \-\- sh \-c "echo hello world"
 .EE
 where
 .I test.script
@@ -217,10 +394,29 @@ await\-exit 5
 assert\-exit 0
 .EE
 .TP
+Drive an interactive shell and resize mid-run:
+.EX
+wait\-for "$ " 10
+send stty size\en
+wait\-for "24 80" 5
+resize 120 40
+send stty size\en
+wait\-for "40 120" 5
+.EE
+.TP
+Make the terminal handle an escape sequence by having the child print
+it (\fBsend\fR itself goes to the child's stdin, and the shell's
+readline would swallow a literal ESC):
+.EX
+send printf '\e033[?25l'\en
+wait 1
+cursor
+.EE
+.TP
 Pin a color tier by unsetting the built-in
 .BR COLORTERM :
 .EX
-coffer \-\-env COLORTERM= \-\- my-tui
+coffer \-\-env COLORTERM= \-\- my\-tui
 .EE
 .SH EXIT STATUS
 .TP
@@ -228,7 +424,19 @@ coffer \-\-env COLORTERM= \-\- my-tui
 Success; all assertions passed (if any).
 .TP
 .B 1
-An assertion failed, or a runtime error occurred.
+An assertion failed, a
+.B wait\-for
+or
+.B await\-exit
+timed out, the script could not be read or parsed, an option was
+invalid, or another runtime error occurred.
+.PP
+The exit status of the child is not propagated; use
+.B await\-exit
+with
+.B assert\-exit
+to check it.
+A child that cannot be executed exits with status 127 inside the PTY.
 .SH ENVIRONMENT
 .TP
 .B TERM
@@ -242,9 +450,17 @@ The child process sees
 .B TERM_PROGRAM
 The child process sees
 .BR ghostty .
+.TP
+.B SHELL
+The program started when no command is given (POSIX).
 .PP
-All three can be overridden with
+The first three can be overridden with
 .BR \-\-env .
+.SH PLATFORMS
+POSIX systems use
+.BR forkpty (3).
+Windows (MSYS2 UCRT64) uses ConPTY, with a background thread reading
+the pseudo-console output pipe.
 .SH BUGS
 No interactive input \(em all input is scripted via
 .BR \-\-script .
@@ -256,3 +472,11 @@ and
 search the whole unified buffer (scrollback included), not just the
 visible screen; that is a change from the visible-only search of
 earlier releases.
+.SH SEE ALSO
+.BR pty (7),
+.BR forkpty (3)
+.PP
+.I docs/coffer-cli.md
+and
+.I include/coffer/script.h
+in the coffer source tree.
