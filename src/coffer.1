@@ -462,6 +462,12 @@ POSIX systems use
 Windows (MSYS2 UCRT64) uses ConPTY, with a background thread reading
 the pseudo-console output pipe.
 .SH BUGS
+On Windows, a
+.B \-\-env
+override is silently dropped if it has no
+.BR = ,
+its key is 128 characters or longer, or its value is 512 or longer.
+.PP
 No interactive input \(em all input is scripted via
 .BR \-\-script .
 No mouse support.
