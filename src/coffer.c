@@ -534,7 +534,7 @@ PtyCtx *pty_spawn(int rows, int cols, char *const argv[], char *const env[],
      * variables minus every key already decided above. */
     enum
     {
-        MAX_OV = 32,
+        MAX_OV = 64, /* matches the 64-entry cap on --env in main() */
         OV_KEY_MAX = 128,
         OV_VAL_MAX = 512
     };
