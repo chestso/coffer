@@ -29,7 +29,7 @@ on. Order is roughly priority, not strict dependency.
   (the engine reports CFR_SCRIPT_FAILED and the app quits, but exit 0);
   and in portty, `await-exit` races the app's own PTY-close quit path
   (the child exiting quits the app before the script observes it).
-  Neither affects cfr-debug, where both work end to end.
+  Neither affects the `coffer` CLI, where both work end to end.
 
 - **Wrapped-line behavioral spec + differential fuzz.** The internal
   representation of soft wraps is now margin-cell `CFR_CELL_WRAPLINE`

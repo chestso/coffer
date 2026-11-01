@@ -1,11 +1,11 @@
-.TH Cfr-Debug 1 "2026-10-14" "coffer" "User Commands"
+.TH COFFER 1 "2026-11-01" "coffer" "User Commands"
 .SH NAME
-cfr-debug \- headless coffer PTY inspector
+coffer \- headless PTY inspector for the coffer VT engine
 .SH SYNOPSIS
-.B cfr-debug
+.B coffer
 [\fI\,options\/\fR] [\fB\-\-\fR \fI\,command args...\/\fR]
 .SH DESCRIPTION
-.B cfr-debug
+.B coffer
 spawns a child process on a pseudo-terminal, pipes its output through
 coffer, and renders the resulting grid as plain text.
 The coffer output callback is wired back to the PTY, so terminal
@@ -200,12 +200,12 @@ are ignored.
 .TP
 Capture the initial screen of crush:
 .EX
-cfr-debug \-c 68 \-r 20 \-w 5 \-\- crush
+coffer \-c 68 \-r 20 \-w 5 \-\- crush
 .EE
 .TP
 Scripted CI test with assertions:
 .EX
-cfr-debug \-r 24 \-c 80 \-f test.script \-\- sh \-c "echo hello world"
+coffer \-r 24 \-c 80 \-f test.script \-\- sh \-c "echo hello world"
 .EE
 where
 .I test.script
@@ -220,7 +220,7 @@ assert\-exit 0
 Pin a color tier by unsetting the built-in
 .BR COLORTERM :
 .EX
-cfr-debug \-\-env COLORTERM= \-\- my-tui
+coffer \-\-env COLORTERM= \-\- my-tui
 .EE
 .SH EXIT STATUS
 .TP
@@ -245,8 +245,6 @@ The child process sees
 .PP
 All three can be overridden with
 .BR \-\-env .
-.SH SEE ALSO
-.BR coffer (7)
 .SH BUGS
 No interactive input \(em all input is scripted via
 .BR \-\-script .

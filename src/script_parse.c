@@ -1,10 +1,10 @@
 /*
  * coffer — script engine: script file parser.
  *
- * Parses the line-oriented script vocabulary shared by cfr-debug and
- * portty into an immutable command list. One command per line, `#`
- * comments, blank lines skipped. Unknown commands are a parse error
- * unless the host whitelisted them as extensions (ext_names).
+ * Parses the line-oriented script vocabulary shared by the coffer CLI
+ * (src/coffer.c) and portty into an immutable command list. One command
+ * per line, `#` comments, blank lines skipped. Unknown commands are a
+ * parse error unless the host whitelisted them as extensions (ext_names).
  *
  * Escape set (expanded at parse time in send/sendln/emit/wait-for
  * payloads): \n \r \t \e \\ \xNN. `\033` is deliberately NOT expanded.

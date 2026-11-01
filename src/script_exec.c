@@ -5,7 +5,7 @@
  * hosts call cfr_script_step() once per frame and fold
  * cfr_script_wait_ms() into their event deadline (portty); batch hosts
  * call cfr_script_run_blocking() with a pump that drains their PTY
- * (cfr-debug). All state lives on the run object — no file-static
+ * (src/coffer.c). All state lives on the run object — no file-static
  * wait deadlines.
  */
 

@@ -3,8 +3,8 @@
  *
  * Optional public header for the script engine that ships inside
  * libcoffer.a. Include it alongside coffer.h when embedding the
- * script runner (cfr-debug and portty's -S mode are the reference
- * hosts). No other internal headers are needed.
+ * script runner (the coffer CLI and portty's -S mode are the
+ * reference hosts). No other internal headers are needed.
  *
  * A script is a line-oriented command file (`wait`, `wait-for`,
  * `send`, `assert-contains`, `render`, ... — see cfr_script_commands()
@@ -16,7 +16,7 @@
  *   - event-loop hosts call cfr_script_step() once per frame and fold
  *     cfr_script_wait_ms() into their event deadline (portty);
  *   - batch hosts call cfr_script_run_blocking() with a pump callback
- *     that drains their PTY (cfr-debug).
+ *     that drains their PTY (the coffer CLI, src/coffer.c).
  */
 
 #ifndef COFFER_SCRIPT_H

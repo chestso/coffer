@@ -1,7 +1,8 @@
-# cfr-debug — headless coffer PTY inspector
+# coffer — headless PTY inspector for the coffer VT engine
 
-`cfr-debug` spawns a child process on a pseudo-terminal, pipes its
-output through coffer, and renders the resulting grid as plain text.
+`coffer` spawns a child process on a pseudo-terminal, pipes its
+output through the coffer engine, and renders the resulting grid as
+plain text.
 It is useful for:
 
 - Debugging VT rendering without a display server
@@ -23,19 +24,20 @@ From a coffer build tree:
 ./autogen.sh && ./configure && make
 ```
 
-On Windows (MSYS2 UCRT64), use `scripts/build-ucrt64.sh`. cfr-debug
+On Windows (MSYS2 UCRT64), use `scripts/build-ucrt64.sh`. The tool
 uses ConPTY on Windows and `forkpty` on POSIX. On Windows, a
 background reader thread does blocking `ReadFile` on the ConPTY
 output pipe and signals an event when data arrives, because
 anonymous pipes cannot be waited on with `WaitForMultipleObjects`.
 
-The `cfr-debug` binary is installed alongside the library via
-`make install`.
+The binary is built from `src/coffer.c` and linked against
+`libcoffer.a`; `make` builds both, and `make install` installs the
+binary alongside the library.
 
 ## Usage
 
 ```
-cfr-debug [options] [-- command args...]
+coffer [options] [-- command args...]
 ```
 
 ### Options
@@ -60,7 +62,7 @@ cfr-debug [options] [-- command args...]
 built-in, which is how a test pins a color tier:
 
 ```sh
-cfr-debug --env COLORTERM= -- my-tui
+coffer --env COLORTERM= -- my-tui
 ```
 
 ### Script file
@@ -138,7 +140,7 @@ A driver that needs a command greps for `CMD	<name>` and skips (77)
 when the installed binary predates it, instead of guessing from a
 version number.
 
-If no `-f`/`--script` is given, cfr-debug waits `-w`/`--wait` seconds, then renders the
+If no `-f`/`--script` is given, coffer waits `-w`/`--wait` seconds, then renders the
 grid once and exits.
 
 #### `send` vs `raw`
@@ -183,37 +185,37 @@ Key points:
 **Interactive shell:**
 
 ```sh
-cfr-debug -- bash -l
+coffer -- bash -l
 ```
 
 **Capture initial screen of crush (short flags):**
 
 ```sh
-cfr-debug -c 68 -r 20 -w 5 -- crush
+coffer -c 68 -r 20 -w 5 -- crush
 ```
 
 **Capture initial screen of crush (long flags):**
 
 ```sh
-cfr-debug --cols 68 --rows 20 --wait 5 -- crush
+coffer --cols 68 --rows 20 --wait 5 -- crush
 ```
 
 **Capture raw output:**
 
 ```sh
-cfr-debug -c 68 -r 20 -o /tmp/crush.raw -- crush
+coffer -c 68 -r 20 -o /tmp/crush.raw -- crush
 ```
 
 **Inspect a specific row with cell data:**
 
 ```sh
-cfr-debug -c 68 -r 20 -s 18 -d -q -- crush
+coffer -c 68 -r 20 -s 18 -d -q -- crush
 ```
 
 **Scripted interaction with assertions (CI):**
 
 ```sh
-cfr-debug -r 24 -c 80 -f test.script -- mudlark carrionfields.net 4449
+coffer -r 24 -c 80 -f test.script -- mudlark carrionfields.net 4449
 ```
 
 Where `test.script` contains:
@@ -249,13 +251,14 @@ resize 120 40
 wait-for "120 columns" 10
 ```
 
-`cfr-debug --help` shows all options with descriptions.
-`cfr-debug --help-spec` emits a tab-separated flag + command listing for
+`coffer --help` shows all options with descriptions.
+`coffer --help-spec` emits a tab-separated flag + command listing for
 downstream tooling.
 
 ## Man page
 
-`cfr-debug.1` is installed alongside the binary via `make install`.
+`src/coffer.1` documents the tool; it is installed as `coffer(1)` via
+`make install`.
 
 ## How it works
 

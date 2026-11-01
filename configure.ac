@@ -151,8 +151,6 @@ AC_CONFIG_FILES([
     src/Makefile
     include/Makefile
     tests/Makefile
-    contrib/Makefile
-    contrib/cfr-debug/Makefile
     data/Makefile
     coffer.pc
 ])

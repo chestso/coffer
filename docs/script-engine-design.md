@@ -13,7 +13,7 @@ Last updated: 2026-10-15
 
 ## Goal
 
-`cfr-debug` (coffer) and `portty -S` (portty) each implement a debug /
+The `coffer` CLI (this repo) and `portty -S` (portty) each implement a debug /
 automation script engine. The parsers, escape expanders, hex decoders,
 grid-text searches, clocks, and half the command vocabulary are
 duplicated. Consolidate:
@@ -29,7 +29,7 @@ duplicated. Consolidate:
 
 ## Current state (survey, 2026-10-15)
 
-### coffer: `contrib/cfr-debug/cfr_debug.c` (single-file, blocking)
+### coffer CLI: `src/coffer.c` (single-file, blocking)
 
 - Line-at-a-time interpreter inside `run_script()`; drains the PTY in
   blocking `poll()`/`WaitForSingleObject` loops.
@@ -55,7 +55,7 @@ duplicated. Consolidate:
   array; `portty_script_step()` is called once per frame by the
   backend's main loop (non-blocking; a static wait deadline +
   `portty_script_wait_remaining_ms()` fold into the event-loop timer).
-- Commands overlapping cfr-debug: `wait`, `wait-for`, `send`, `raw`,
+- Commands overlapping coffer: `wait`, `wait-for`, `send`, `raw`,
   `assert-contains`, `assert-not-contains`, `resize`.
 - portty-only, **engine-shaped** (candidates to move to coffer):
   `sendln`, `emit` / `emit-raw` (feed bytes straight into the VT
@@ -73,10 +73,10 @@ duplicated. Consolidate:
   - Search scope: portty scans the **visible grid only**; coffer
     searches the **unified buffer**. Unify on unified buffer
     (assert-not-contains becomes stricter in portty).
-  - `wait-for` timeout: portty warns and **continues**; cfr-debug
+  - `wait-for` timeout: portty warns and **continues**; coffer
     **fails**. Unify on fail.
   - Vocabulary: portty `dumpgrid` ≈ coffer `render`;
-    portty has `sendln`, cfr-debug relies on `send ...\n`.
+    portty has `sendln`, coffer relies on `send ...\n`.
   - Escapes: union set `\n \r \t \e \\ \xNN`; `\033` stays unexpanded
     in both (documented gotcha).
 
@@ -103,7 +103,7 @@ same `coffer.pc`. **File names are unprefixed** for this module
 ### Architecture: parse once, step incrementally, host provides I/O
 
 portty's structure (parse-up-front + incremental step) is the one that
-serves both hosts; cfr-debug's blocking interpreter becomes a thin
+serves both hosts; coffer's blocking interpreter becomes a thin
 runner on top. One executor object, no statics (portty's current
 static wait deadline goes away):
 
@@ -149,7 +149,7 @@ CfrScriptStatus cfr_script_step(CfrScriptRun *);
  * (replaces portty_script_wait_remaining_ms). UINT32_MAX = not waiting. */
 uint32_t cfr_script_wait_ms(const CfrScriptRun *);
 
-/* Blocking convenience runner (cfr-debug): loops step(); between steps
+/* Blocking convenience runner (coffer): loops step(); between steps
  * calls pump(ud, cfr_script_wait_ms(run)) so the host drains its PTY.
  * Returns the final status. */
 typedef void (*CfrScriptPump)(void *ud, uint32_t max_ms);
@@ -163,7 +163,7 @@ Key properties:
   (`line N: ...`) becomes the shared behavior. **Decision (Q5):
   unknown commands fail at parse time.** The host's extension registry
   is passed to `cfr_script_load()`, so a typo'd UI command is a load
-  error, not a runtime surprise. cfr-debug's warn-and-skip behavior is
+  error, not a runtime surprise. coffer's warn-and-skip behavior is
   dropped.
 - **Host supplies the `CfrTerm *`.** portty already exposes it:
   `term_cfr_get_cfr_term()` in `term_cfr.h`.
@@ -173,7 +173,7 @@ Key properties:
   a NUL-terminated `text` (truncates at NUL — documented hack). The new
   command struct gets `const uint8_t *data; size_t len`.
 - **`--help-spec` stays**, extended: the engine exposes its core command
-  table so cfr-debug can keep emitting `CMD` lines, and portty can
+  table so coffer can keep emitting `CMD` lines, and portty can
   enumerate core + registered extensions.
 
 ### Command split
@@ -190,7 +190,7 @@ Key properties:
 | `resize COLS ROWS`                        | coffer core | via `resize` hook (PTY + grid)                                                                         |
 | `render [visible\|scrollback\|all]`       | coffer core | text dump to `host.out`                                                                                |
 | `render cells ROW [C0 C1]`                | coffer core | per-cell detail dump — absorbs portty's `dumprow` / `dumpcells` (**Q3**: rendering info is not UI)     |
-| `render styles ROW`                       | coffer core | style detail dump (scriptable form of cfr-debug's `-S` flag) (**Q3**)                                  |
+| `render styles ROW`                       | coffer core | style detail dump (scriptable form of coffer's `-S` flag) (**Q3**)                                     |
 | `cursor`                                  | coffer core |                                                                                                        |
 | `quit`                                    | coffer core | ends the run early, status DONE; hosts treat run-end as exit (**Q6**: kept even though semi-redundant) |
 | `dump-sixel`                              | coffer core | sixel store is engine state (**Q2 confirmed**)                                                         |
@@ -209,11 +209,11 @@ Key properties:
   search through `cfr_find_text()`. `portty_debug_grid_contains/find`
   and `grid_build_row_text` are deleted.
 - `wait-for` timeout **fails the run** (exit 1 / script FAILED), as in
-  cfr-debug. portty scripts that relied on warn-and-continue must be
+  coffer. portty scripts that relied on warn-and-continue must be
   audited (`portty-scripts/*.portty`).
 - Escape set is the **union**: `\n \r \t \e \\ \xNN`. `\033` remains
   deliberately unexpanded (README documents why).
-- cfr-debug keeps `send` + explicit `\n`; portty's `sendln` becomes a
+- coffer keeps `send` + explicit `\n`; portty's `sendln` becomes a
   core command available to both.
 
 ### Additions made during integration (phases 3–4)
@@ -224,7 +224,7 @@ were added while wiring them and are part of the shipped header
 
 - `cfr_script_dump(vt, out, mode, row, col_start, col_end)` — the
   render/cursor/dump-sixel output as a call, so a host can dump without a
-  script (cfr-debug's `-s/-d/-S/-q` flags call it for its final dump).
+  script (coffer's `-s/-d/-S/-q` flags call it for its final dump).
   Modes mirror the `render …` / `cursor` / `dump-sixel` commands.
 - `cfr_script_expand_escapes(text)` — the engine's escape expander
   (`\n \r \t \e \\ \xNN`) applied to a copy, for hosts expanding the raw
@@ -254,7 +254,7 @@ How to work this plan:
 
 ### Phase 0 — survey and design (done)
 
-- [x] **0.1** Survey both implementations (`cfr_debug.c`,
+- [x] **0.1** Survey both implementations (`coffer.c`,
       `portty_script.c`, both README/AGENTS sections).
 - [x] **0.2** Write this design doc; commit it on its own.
 
@@ -305,30 +305,30 @@ How to work this plan:
 - [x] **2.7** `make -C build format`; commit (`script: parser +
 executor, folded into libcoffer`).
 
-### Phase 3 — cfr-debug migrates to the module
+### Phase 3 — coffer migrates to the module
 
 - [x] **3.1** Replace `run_script()` and its helpers
       (`parse_wait_for`, `expand_escapes`, `parse_hex_bytes`,
-      `wait_for`, `await_exit`) in `cfr_debug.c` with
+      `wait_for`, `await_exit`) in `coffer.c` with
       `cfr_script_load` (no ext names) + `CfrScriptHost` wired to
       `PtyCtx` + `cfr_script_run_blocking()` with the existing `drain()`
       as the pump.
 - [x] **3.2** Delete the now-duplicated grid render/search helpers in
-      `cfr_debug.c` that moved into the engine (`render_grid`,
+      `coffer.c` that moved into the engine (`render_grid`,
       `render_scrollback`, `render_row_cells`, `render_row_styles`);
       keep the CLI flag handling (`-s/-d/-S/-q`) by translating flags
       into engine render modes for the final dump.
-- [x] **3.3** cfr-debug gains the new core commands for free; wire the
+- [x] **3.3** coffer gains the new core commands for free; wire the
       `emit` hook to `cfr_input_write()` and expose `sendln` in help.
       Extend `--help-spec` `CMD` lines (`sendln`, `emit`, `emit-raw`,
       `render cells`, `render styles`, `quit`, `dump-sixel`) and
       `SCRIPT_COMMANDS[]`/`--help` accordingly — the table should be
       generated from the engine's command registry, not hand-duplicated.
-- [x] **3.4** `contrib/cfr-debug/test-cfr-debug.sh` green via
+- [x] **3.4** `tests/test-coffer.sh` green via
       `make check`; manual smoke: scripted session against `bash -l`
       with `sendln`, `wait-for ... line-end`, `resize`, `render`,
       `await-exit`/`assert-exit`.
-- [x] **3.5** Format; commit (`cfr-debug: run scripts through the
+- [x] **3.5** Format; commit (`coffer: run scripts through the
 script engine`).
 
 ### Phase 4 — portty adopts the engine
@@ -389,8 +389,8 @@ engine, keep UI commands as extensions`).
 
 ### Phase 6 — docs
 
-- [x] **6.1** coffer: `contrib/cfr-debug/README.md` script table
-      (new commands, `render cells`/`render styles`), `cfr-debug.1`
+- [x] **6.1** coffer: `docs/coffer-cli.md` script table
+      (new commands, `render cells`/`render styles`), `coffer.1`
       man page.
 - [x] **6.2** coffer: `README.md` feature list mentions the script
       engine; `AGENTS.md` gains `script_parse.c` /
@@ -411,12 +411,12 @@ engine, keep UI commands as extensions`).
       `>= 0.8.0`, with the three CI pins bumped to the tag and README's
       quoted minimum.
 - [x] **7.3** Final cross-repo verification: coffer `make check`,
-      portty `make check`, one `-S` run, one `cfr-debug -f` run. → 21/21
+      portty `make check`, one `-S` run, one `coffer -f` run. → 21/21
       and 32/32 green; `portty -S` on `test-hover-scroll.portty`
       (core: `wait-for`, `assert-hover`, `render cells`, `quit`) and
       `panel-demo.portty` (extensions: `panel`, `panel_hide`) plus
       `diagonal_seam.portty` (`emit` with `\xNN`, `screendump`) exit 0;
-      `cfr-debug -f` script exercising `sendln`, `wait-for … line-end`,
+      `coffer -f` script exercising `sendln`, `wait-for … line-end`,
       `resize`, `render`, `await-exit 7`, `assert-exit 7` exits 0.
 - [x] **7.4** Commit; mark this section complete.
 

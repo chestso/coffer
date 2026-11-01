@@ -21,6 +21,7 @@ Makefile.in
 # --- Project-generated ---
 /version
 /coffer.pc
+/src/coffer
 /tests/test_cfr_parser
 /tests/test_cfr_keys
 /tests/test_cfr_pty

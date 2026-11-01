@@ -143,7 +143,7 @@ compositing. See the portty README for renderer-side details.
   executor (`wait-for`, `send`/`emit`, `assert-*`, `render`, ...).
   Event-loop hosts drive it with `cfr_script_step()`; batch hosts with
   `cfr_script_run_blocking()`. Hosts register UI-specific commands as
-  extensions. cfr-debug and portty's `-S` mode share it.
+  extensions. The `coffer` CLI and portty's `-S` mode share it.
 - **UTF-8 display width** — `cfr_utf8_display_width()` computes the
   cell width of a UTF-8 string without a `CfrTerm*`, useful for
   pre-measuring output before writing to the terminal.
@@ -398,12 +398,12 @@ and the variation selectors escaped as `\uXXXX` so the joiners stay visible
 version, the SHA-256 of the data file and of the generator, and the exact
 command that produced it. Never hand-edit it.
 
-## cfr-debug
+## coffer (CLI)
 
-A headless PTY inspector tool (`contrib/cfr-debug/`) that spawns a child
-process on a real PTY, pipes its output through the coffer engine, and
-renders the resulting grid as text. Useful for testing how coffer
-interprets real-world terminal output without a renderer.
+A headless PTY inspector built alongside the library (`src/coffer.c`) that
+spawns a child process on a real PTY, pipes its output through the coffer
+engine, and renders the resulting grid as text. Useful for testing how
+coffer interprets real-world terminal output without a renderer.
 
 Features include script-driven testing (`-f`/`--script FILE` with `wait`,
 `wait-for`, `send`/`sendln`, `raw`, `emit`/`emit-raw`, `assert-contains`,
@@ -411,11 +411,10 @@ Features include script-driven testing (`-f`/`--script FILE` with `wait`,
 `cursor`, `dump-sixel`, `quit` commands), raw PTY capture
 (`-o`/`--output FILE`), cell data inspection (`-d`/`--cell-data`),
 specific row dumping (`-s`/`--show-row`), and a machine-readable flag
-listing (`--help-spec`). A man page (`cfr-debug.1`) is installed with
+listing (`--help-spec`). A man page (`src/coffer.1`) is installed with
 `make install`. Cross-platform: ConPTY on Windows, `forkpty` on POSIX.
 
-See [`contrib/cfr-debug/README.md`](contrib/cfr-debug/README.md) for full
-usage details.
+See [`docs/coffer-cli.md`](docs/coffer-cli.md) for full usage details.
 
 ## Linking
 

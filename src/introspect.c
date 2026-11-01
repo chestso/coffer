@@ -5,8 +5,8 @@
  * UTF-8 text; cfr_find_text() searches the whole unified buffer for a
  * needle. These are the primitives behind scriptable assertions
  * (assert-contains, wait-for) and text dumps in host tooling — lifted
- * from contrib/cfr-debug so every consumer shares one grapheme-aware
- * implementation.
+ * from the coffer CLI (src/coffer.c) so every consumer shares one
+ * grapheme-aware implementation.
  */
 
 #include "coffer_internal.h"

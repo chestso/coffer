@@ -3,6 +3,12 @@
 check_PROGRAMS = test_cfr_parser test_cfr_keys test_cfr_pty test_cfr_sixel test_cfr_lottie test_cfr_altscreen test_cfr_sgr test_cfr_log test_cfr_rep test_cfr_stubs test_cfr_width test_cfr_image_store test_cfr_osc_1337 test_cfr_graphics test_cfr_selection test_cfr_wrap_erase test_cfr_lines test_cfr_wrap_width test_cfr_zwj test_cfr_introspect test_cfr_ascii_run test_script
 TESTS = $(check_PROGRAMS)
 
+# Regression test for the coffer CLI itself (script driver + render path).
+# It needs a POSIX pty and a shell, so ConPTY builds skip it.
+if !HOST_WINDOWS
+TESTS += test-coffer.sh
+endif
+
 AM_TESTS_ENVIRONMENT = srcdir='$(srcdir)'; export srcdir;
 LDADD = $(top_builddir)/src/libcoffer.a -lm
 
@@ -49,4 +55,5 @@ test_cfr_introspect_SOURCES = test_cfr_introspect.c test_common.c
 test_cfr_ascii_run_SOURCES = test_cfr_ascii_run.c test_common.c
 test_script_SOURCES = test_script.c test_common.c
 
-EXTRA_DIST = test_helpers.h common.h coffer_pty.h pty_w32.c zwj_sequences.h
+EXTRA_DIST = test_helpers.h common.h coffer_pty.h pty_w32.c zwj_sequences.h \
+    test-coffer.sh

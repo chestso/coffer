@@ -1,5 +1,5 @@
 #!/bin/sh
-# test-cfr-debug.sh - regression test for the cfr-debug binary.
+# test-coffer.sh - regression test for the coffer CLI.
 #
 # Exercises the render path (-q/--show-row: -q must restrict output to the
 # specified rows, never suppress the render entirely) and the script
@@ -8,14 +8,16 @@
 # assert-exit, resize, and --env overrides.
 #
 # Requires a POSIX pty; skipped on Windows and in CI environments
-# without a shell. The cfr-debug binary is taken from the build tree
-# ($CFR_DEBUG, default: $top_builddir/contrib/cfr-debug/cfr-debug).
+# without a shell. The binary is taken from the build tree
+# ($COFFER_BIN, default: ../src/coffer, falling back to this script's
+# sibling ../src/coffer).
 
 # The automake test driver runs from the build dir but may pass the
-# script by its srcdir path, so try cwd first, then $0's directory.
-CFR_DEBUG=${CFR_DEBUG:-./cfr-debug}
-if [ ! -x "$CFR_DEBUG" ]; then
-	CFR_DEBUG="$(dirname "$0")"/cfr-debug
+# script by its srcdir path, so try cwd-relative first, then relative
+# to $0.
+COFFER=${COFFER_BIN:-../src/coffer}
+if [ ! -x "$COFFER" ]; then
+	COFFER="$(dirname "$0")"/../src/coffer
 fi
 
 fail=0
@@ -24,8 +26,8 @@ say_fail() {
 	fail=$((fail + 1))
 }
 
-if [ ! -x "$CFR_DEBUG" ]; then
-	echo "SKIP: cfr-debug binary not found ($CFR_DEBUG)" >&2
+if [ ! -x "$COFFER" ]; then
+	echo "SKIP: coffer binary not found ($COFFER)" >&2
 	exit 77
 fi
 
@@ -36,21 +38,21 @@ trap 'rm -rf "$tmp"' EXIT
 CHILD='printf "row-zero-marker\nrow-one-marker\n"; sleep 1'
 
 # --- 1. plain render shows the marker -------------------------------
-out=$("$CFR_DEBUG" -c 40 -r 6 -w 2 -- sh -c "$CHILD" 2>/dev/null)
+out=$("$COFFER" -c 40 -r 6 -w 2 -- sh -c "$CHILD" 2>/dev/null)
 case "$out" in
 *row-zero-marker*) ;;
 *) say_fail "plain render missing row-zero-marker" ;;
 esac
 
 # --- 2. -q without -s is a full dump (no rows to filter to) ----------
-out=$("$CFR_DEBUG" -c 40 -r 6 -w 2 -q -- sh -c "$CHILD" 2>/dev/null)
+out=$("$COFFER" -c 40 -r 6 -w 2 -q -- sh -c "$CHILD" 2>/dev/null)
 case "$out" in
 *row-zero-marker*) ;;
 *) say_fail "-q without -s suppressed the render" ;;
 esac
 
 # --- 3. -q with -s dumps only the requested row (the regression) ----
-out=$("$CFR_DEBUG" -c 40 -r 6 -w 2 -q -s 1 -- sh -c "$CHILD" 2>/dev/null)
+out=$("$COFFER" -c 40 -r 6 -w 2 -q -s 1 -- sh -c "$CHILD" 2>/dev/null)
 case "$out" in
 *row-one-marker*) ;;
 *) say_fail "-q -s 1 missing the requested row 1" ;;
@@ -60,7 +62,7 @@ case "$out" in
 esac
 
 # --- 4. -s without -q dumps the requested row too --------------------
-out=$("$CFR_DEBUG" -c 40 -r 6 -w 2 -s 1 -- sh -c "$CHILD" 2>/dev/null)
+out=$("$COFFER" -c 40 -r 6 -w 2 -s 1 -- sh -c "$CHILD" 2>/dev/null)
 case "$out" in
 *row-one-marker*) ;;
 *) say_fail "-s 1 missing the requested row 1" ;;
@@ -68,7 +70,7 @@ esac
 
 # --- 5. --help-spec lists the script vocabulary ----------------------
 # (the feature-detection seam downstream drivers use)
-spec=$("$CFR_DEBUG" --help-spec 2>/dev/null)
+spec=$("$COFFER" --help-spec 2>/dev/null)
 for c in wait wait-for send raw assert-contains assert-not-contains \
 	await-exit assert-exit resize render cursor; do
 	case "$spec" in
@@ -85,7 +87,7 @@ assert-not-contains "NEVER-PRESENT"
 await-exit 5
 assert-exit 7
 EOF
-if ! "$CFR_DEBUG" -c 40 -r 6 -w 0 -f "$tmp/exit.script" \
+if ! "$COFFER" -c 40 -r 6 -w 0 -f "$tmp/exit.script" \
 	-- sh -c 'echo EXIT-MARKER; exit 7' >/dev/null 2>&1; then
 	say_fail "wait-for/assert-exit round trip failed (want exit 7, rc 0)"
 fi
@@ -95,7 +97,7 @@ cat >"$tmp/exit-bad.script" <<'EOF'
 await-exit 5
 assert-exit 0
 EOF
-if "$CFR_DEBUG" -c 40 -r 6 -w 0 -f "$tmp/exit-bad.script" \
+if "$COFFER" -c 40 -r 6 -w 0 -f "$tmp/exit-bad.script" \
 	-- sh -c 'exit 7' >/dev/null 2>&1; then
 	say_fail "assert-exit accepted the wrong status"
 fi
@@ -104,7 +106,7 @@ fi
 cat >"$tmp/exit-none.script" <<'EOF'
 assert-exit 0
 EOF
-if "$CFR_DEBUG" -c 40 -r 6 -w 0 -f "$tmp/exit-none.script" \
+if "$COFFER" -c 40 -r 6 -w 0 -f "$tmp/exit-none.script" \
 	-- sh -c 'sleep 0.2' >/dev/null 2>&1; then
 	say_fail "assert-exit passed with no recorded status"
 fi
@@ -118,7 +120,7 @@ assert-contains "SB-0"
 wait-for "SB-19" 5
 render scrollback
 EOF
-out=$("$CFR_DEBUG" -c 40 -r 6 -w 0 -f "$tmp/scroll.script" \
+out=$("$COFFER" -c 40 -r 6 -w 0 -f "$tmp/scroll.script" \
 	-- sh -c 'i=0; while [ $i -lt 20 ]; do echo "SB-$i"; i=$((i+1)); done; sleep 0.3' 2>/dev/null)
 case "$out" in
 *SB-0*) ;;
@@ -131,7 +133,7 @@ wait-for "❯" 5
 wait-for "·" 5
 assert-contains "❯ ok ·"
 EOF
-if ! "$CFR_DEBUG" -c 40 -r 4 -w 0 -f "$tmp/utf8.script" \
+if ! "$COFFER" -c 40 -r 4 -w 0 -f "$tmp/utf8.script" \
 	-- sh -c 'printf "\342\235\257 ok \302\267\n"; sleep 0.2' >/dev/null 2>&1; then
 	say_fail "UTF-8 needle (U+276F / U+00B7) not matched"
 fi
@@ -140,11 +142,11 @@ fi
 cat >"$tmp/line-end.script" <<'EOF'
 wait-for "ANCHOR" 5 line-end
 EOF
-if ! "$CFR_DEBUG" -c 40 -r 4 -w 0 -f "$tmp/line-end.script" \
+if ! "$COFFER" -c 40 -r 4 -w 0 -f "$tmp/line-end.script" \
 	-- sh -c 'echo ANCHOR' >/dev/null 2>&1; then
 	say_fail "line-end did not match a row ending with the needle"
 fi
-if "$CFR_DEBUG" -c 40 -r 4 -w 0 -f "$tmp/line-end.script" \
+if "$COFFER" -c 40 -r 4 -w 0 -f "$tmp/line-end.script" \
 	-- sh -c 'echo ANCHOR-and-more' >/dev/null 2>&1; then
 	say_fail "line-end matched a row with a suffix"
 fi
@@ -156,7 +158,7 @@ wait-for "RS-START" 5
 resize 60 10
 wait-for "10 60" 5
 EOF
-	if ! "$CFR_DEBUG" -c 40 -r 6 -w 0 -f "$tmp/resize.script" \
+	if ! "$COFFER" -c 40 -r 6 -w 0 -f "$tmp/resize.script" \
 		-- sh -c 'echo RS-START; while :; do stty size; sleep 0.2; done' \
 		>/dev/null 2>&1; then
 		say_fail "resize did not reach the child (stty size never showed 10 60)"
@@ -164,7 +166,7 @@ EOF
 fi
 
 # --- 11. --env overrides (and an empty value unsets) -----------------
-out=$("$CFR_DEBUG" -c 60 -r 4 -w 2 --env CFRTEST=yes --env COLORTERM= \
+out=$("$COFFER" -c 60 -r 4 -w 2 --env CFRTEST=yes --env COLORTERM= \
 	-- sh -c 'echo "CFRTEST=$CFRTEST"; echo "COLORTERM=[$COLORTERM]"' 2>/dev/null)
 case "$out" in
 *CFRTEST=yes*) ;;
@@ -176,8 +178,8 @@ case "$out" in
 esac
 
 if [ "$fail" -ne 0 ]; then
-	echo "test-cfr-debug.sh: $fail failure(s)" >&2
+	echo "test-coffer.sh: $fail failure(s)" >&2
 	exit 1
 fi
-echo "test-cfr-debug.sh: all checks passed" >&2
+echo "test-coffer.sh: all checks passed" >&2
 exit 0

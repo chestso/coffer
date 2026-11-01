@@ -1,5 +1,5 @@
 /*
- * cfr-debug — headless coffer PTY inspector.
+ * coffer — headless PTY inspector for the coffer VT engine.
  *
  * Spawns a child process on a PTY (forkpty on POSIX, ConPTY on
  * Windows), pipes its output through coffer, and renders the
@@ -103,8 +103,8 @@ static int find_flag(const char *arg)
 
 static void print_help(void)
 {
-    printf("cfr-debug — headless coffer PTY inspector\n\n");
-    printf("Usage: cfr-debug [options] [-- command args...]\n\n");
+    printf("coffer — headless PTY inspector for the coffer VT engine\n\n");
+    printf("Usage: coffer [options] [-- command args...]\n\n");
     printf("Spawn a child process on a pseudo-terminal, pipe its output\n"
            "through coffer, and render the resulting grid as plain text.\n\n");
     printf("Options:\n");
@@ -142,10 +142,10 @@ static void print_help(void)
            "  assert-* and wait-for search the UNIFIED buffer: scrollback\n"
            "  (oldest first) then the visible rows.\n");
     printf("\nExamples:\n");
-    printf("  cfr-debug -- bash -l\n");
-    printf("  cfr-debug -c 68 -r 20 -w 5 -- crush\n");
-    printf("  cfr-debug -r 24 -c 80 -f test.script -- mudlark carrionfields.net 4449\n");
-    printf("\nRun 'cfr-debug --help-spec' for machine-readable flag listing.\n");
+    printf("  coffer -- bash -l\n");
+    printf("  coffer -c 68 -r 20 -w 5 -- crush\n");
+    printf("  coffer -r 24 -c 80 -f test.script -- mudlark carrionfields.net 4449\n");
+    printf("\nRun 'coffer --help-spec' for machine-readable flag listing.\n");
 }
 
 static void print_help_spec(void)
@@ -1080,7 +1080,7 @@ int main(int argc, char *argv[])
 
         if (fi < 0) {
             fprintf(stderr, "Unknown option: %s\n", arg);
-            fprintf(stderr, "Try 'cfr-debug --help' for more information.\n");
+            fprintf(stderr, "Try 'coffer --help' for more information.\n");
             return 1;
         }
 

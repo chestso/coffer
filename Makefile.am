@@ -1,6 +1,6 @@
 # Top-level Makefile.am for coffer
 
-SUBDIRS = src include tests contrib data
+SUBDIRS = src include tests data
 
 ACLOCAL_AMFLAGS = -I m4
 
@@ -46,7 +46,7 @@ dist-hook:
 # The C sources the format targets own, as a NUL-separated find command.
 # third_party/ is deliberately excluded; it is vendored verbatim.
 FORMAT_FIND = find $(top_srcdir)/src $(top_srcdir)/include $(top_srcdir)/tests \
-	$(top_srcdir)/contrib \( -name '*.c' -o -name '*.h' \) -print0
+	\( -name '*.c' -o -name '*.h' \) -print0
 
 # True when file $f has something in it that does not end in a newline.
 # `tail -c 1 | wc -l` is the portable predicate: no od/xxd, no GNU-only
