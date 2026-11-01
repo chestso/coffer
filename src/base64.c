@@ -13,9 +13,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Append n bytes to a growing buffer, doubling capacity as needed. The
- * buffer is not NUL-terminated. Returns 0 on success, -1 on allocation
- * failure. */
+/* Append n bytes to a growing buffer, doubling capacity as needed. One
+ * byte is always kept past the appended data and set to '\0', so a
+ * caller can treat the accumulator as a C string without reserving the
+ * terminator itself (the payload is still counted in *len, which is
+ * what cfr_base64_decode is given). Returns 0 on success, -1 on
+ * allocation failure. */
 int cfr_buf_append(uint8_t **buf, size_t *len, size_t *cap,
                    const void *data, size_t n)
 {
@@ -25,9 +28,9 @@ int cfr_buf_append(uint8_t **buf, size_t *len, size_t *cap,
      * with a NULL destination. */
     if (n == 0)
         return 0;
-    if (*len + n > *cap) {
+    if (*len + n + 1 > *cap) {
         size_t ncap = *cap ? *cap : 256;
-        while (ncap < *len + n)
+        while (ncap < *len + n + 1)
             ncap *= 2;
         uint8_t *nb = realloc(*buf, ncap);
         if (!nb)
@@ -37,6 +40,7 @@ int cfr_buf_append(uint8_t **buf, size_t *len, size_t *cap,
     }
     memcpy(*buf + *len, data, n);
     *len += n;
+    (*buf)[*len] = '\0';
     return 0;
 }
 

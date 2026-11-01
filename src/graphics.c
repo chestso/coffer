@@ -603,11 +603,10 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         if (cfr_buf_append((uint8_t **)&g_chunk.b64, &g_chunk.len,
                            &g_chunk.cap, payload, payload_len) != 0)
             return;
-        /* A transfer whose first chunk carries only control data (no
-         * ';' — chafa emits "ESC _ G a=T,...,m=1,q=2 ESC \") never
-         * appends any bytes, so the buffer may still be unallocated. */
-        if (g_chunk.b64)
-            g_chunk.b64[g_chunk.len] = '\0';
+        /* cfr_buf_append keeps the accumulator NUL-terminated; a first
+         * chunk carrying only control data (no ';' — chafa emits
+         * "ESC _ G a=T,...,m=1,q=2 ESC \") appends no bytes at all and
+         * leaves it unallocated. */
         g_chunk.active = 1;
         return;
     }

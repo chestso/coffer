@@ -809,6 +809,81 @@ static void test_chunked_transmit_control_only_first(void)
     cfr_free(vt);
 }
 
+/* Chunked transmit whose accumulated payload lands exactly on a
+ * capacity boundary. The accumulator doubles from 256 and always keeps
+ * one spare byte for the NUL terminator, so after an append of a chunk
+ * that fills the capacity exactly (256 or 4096 bytes) *len + 1 must
+ * still fit inside *cap. Sized for the data alone, the terminator is the
+ * first byte past the allocation — portty's diagnostics report ships
+ * its logo in 4096-byte APC chunks, which is that case. */
+static void test_chunked_transmit_capacity_boundary(void)
+{
+    const size_t chunk_sizes[] = { 256, 4096 };
+
+    for (size_t cs = 0; cs < sizeof(chunk_sizes) / sizeof(chunk_sizes[0]); cs++) {
+        size_t chunk = chunk_sizes[cs];
+        CfrTerm *vt = make_term(24, 80);
+
+        /* 32x32 RGBA → 4096 raw bytes → 5464 base64 chars, enough to
+         * need several 4096-byte chunks. */
+        const int dim = 32;
+        uint8_t *rgba = make_rgba(dim, dim, 10, 20, 30, 255);
+        char *b64 = malloc((size_t)dim * dim * 4 * 2);
+        ASSERT_NOT_NULL(b64);
+        b64_encode(rgba, (size_t)dim * dim * 4, b64);
+        size_t b64_len = strlen(b64);
+        ASSERT_TRUE(b64_len > chunk);
+
+        char *seq = malloc(b64_len + 256);
+        ASSERT_NOT_NULL(seq);
+
+        /* First chunk carries the metadata. */
+        int hdr = snprintf(seq, b64_len + 256,
+                           "\x1b_Ga=T,f=32,s=%d,v=%d,i=9,c=4,r=4,m=1;",
+                           dim, dim);
+        memcpy(seq + hdr, b64, chunk);
+        seq[hdr + (int)chunk] = '\0';
+        strcat(seq, "\x1b\\");
+        feed(vt, seq);
+
+        size_t off = chunk;
+        while (b64_len - off > chunk) {
+            snprintf(seq, b64_len + 256, "\x1b_Gm=1;");
+            size_t n = strlen(seq);
+            memcpy(seq + n, b64 + off, chunk);
+            seq[n + chunk] = '\0';
+            strcat(seq, "\x1b\\");
+            feed(vt, seq);
+            off += chunk;
+        }
+
+        /* Final chunk completes the transfer. */
+        snprintf(seq, b64_len + 256, "\x1b_Gm=0;");
+        size_t n = strlen(seq);
+        memcpy(seq + n, b64 + off, b64_len - off);
+        seq[n + (b64_len - off)] = '\0';
+        strcat(seq, "\x1b\\");
+        feed(vt, seq);
+
+        int count = 0;
+        const CfrImage *imgs = cfr_get_images(vt, &count);
+        ASSERT_NOT_NULL(imgs);
+        ASSERT_EQ(count, 1);
+        ASSERT_EQ(imgs[0].width_px, dim);
+        ASSERT_EQ(imgs[0].height_px, dim);
+        ASSERT_EQ(imgs[0].rgba[0], 10);
+        ASSERT_EQ(imgs[0].rgba[1], 20);
+        ASSERT_EQ(imgs[0].rgba[2], 30);
+        ASSERT_EQ(imgs[0].rgba[3], 255);
+        ASSERT_TRUE(strstr(g_output, "EINVAL") == NULL);
+
+        free(seq);
+        free(b64);
+        free(rgba);
+        cfr_free(vt);
+    }
+}
+
 /* --------------------------------------------------------------- */
 /* 11. Animation: a=a control (sets current frame) + a=f frame data */
 /* --------------------------------------------------------------- */
@@ -1833,6 +1908,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_chunked_transmit);
     RUN_TEST(test_chunked_transmit_no_action);
     RUN_TEST(test_chunked_transmit_control_only_first);
+    RUN_TEST(test_chunked_transmit_capacity_boundary);
     RUN_TEST(test_animate_put_frame);
     RUN_TEST(test_zlib_transmit);
     RUN_TEST(test_compose_accepted);
