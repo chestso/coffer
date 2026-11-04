@@ -408,11 +408,13 @@ coffer interprets real-world terminal output without a renderer.
 Features include script-driven testing (`-f`/`--script FILE` with `wait`,
 `wait-for`, `send`/`sendln`, `raw`, `emit`/`emit-raw`, `assert-contains`,
 `assert-not-contains`, `await-exit`/`assert-exit`, `resize`, `render`,
-`cursor`, `dump-sixel`, `quit` commands), raw PTY capture
-(`-o`/`--output FILE`), cell data inspection (`-d`/`--cell-data`),
-specific row dumping (`-s`/`--show-row`), and a machine-readable flag
-listing (`--help-spec`). A man page (`src/coffer.1`) is installed with
-`make install`. Cross-platform: ConPTY on Windows, `forkpty` on POSIX.
+`cursor`, `dump-sixel`, `dump-kbd`, `quit` commands), replay of a capture
+with no child (`--feed FILE`), raw PTY capture (`-o`/`--output FILE`),
+cell data inspection (`-d`/`--cell-data`), kitty keyboard protocol
+introspection (`-k`/`--kbd-data`), specific row dumping
+(`-s`/`--show-row`), and a machine-readable flag listing (`--help-spec`).
+A man page (`src/coffer.1`) is installed with `make install`.
+Cross-platform: ConPTY on Windows, `forkpty` on POSIX.
 
 See [`docs/coffer-cli.md`](docs/coffer-cli.md) for full usage details.
 

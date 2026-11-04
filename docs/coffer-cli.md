@@ -6,7 +6,7 @@ plain text.
 It needs no display server, and is useful for:
 
 - Debugging VT rendering
-- Capturing raw PTY output for offline replay
+- Capturing raw PTY output, and replaying the capture with `--feed`
 - Inspecting individual grid cells (character, codepoint, width, style)
 - Validating that TUI applications render correctly through coffer
 - CI assertions: verify that specific text appears on screen
@@ -51,7 +51,8 @@ combined.
 
 ### A run, step by step
 
-1. Spawn the child on a PTY of the requested size.
+1. Spawn the child on a PTY of the requested size, unless the run is a
+   replay (see [Replaying a capture](#replaying-a-capture)).
 2. Drain its output for the initial wait (`--wait`).
 3. Execute the script, if `--script` was given.
 4. Dump the final screen (see [Final dump](#final-dump)), unless the
@@ -70,17 +71,20 @@ output.
 | `-c`, `--cols COLS`    | Terminal columns (default: 80)                                  |
 | `-w`, `--wait SEC`     | Initial wait before the script or render (default: 3; decimals) |
 | `-f`, `--script FILE`  | Script file (one command per line, see below)                   |
+| `--feed FILE`          | Feed FILE's bytes to the parser (replay; no child unless `--`)  |
 | `-o`, `--output FILE`  | Save raw PTY output to file                                     |
 | `-s`, `--show-row ROW` | Select a row for the final dump (repeatable, up to 64)          |
 | `-d`, `--cell-data`    | After the final dump, print per-cell detail                     |
 | `-S`, `--style-data`   | After the final dump, print style detail                        |
+| `-k`, `--kbd-data`     | With the final dump, print the kitty keyboard protocol state    |
 | `-q`, `--quiet`        | With `-s`, print only the selected rows                         |
 | `--env KEY=VALUE`      | Set a child env var (repeatable, up to 64)                      |
 | `-h`, `--help`         | Show help (options and script commands) and exit                |
 | `--help-spec`          | Emit machine-readable flag + command listing and exit           |
 
 The initial wait always happens, with or without a script; a script that
-synchronizes with `wait-for` can pass a small value (`-w 0.5`).
+synchronizes with `wait-for` can pass a small value (`-w 0.5`). A replay
+with no child has nothing to drain, so the wait is skipped there.
 
 `--show-row` without `--quiet` still prints the full screen: it only
 restricts the `--cell-data` / `--style-data` detail to the selected
@@ -97,15 +101,69 @@ built-in, which is how a test pins a color tier:
 coffer --env COLORTERM= -- my-tui
 ```
 
+### Replaying a capture
+
+`--feed FILE` reads `FILE` whole and writes it to the parser in chunks,
+in order, as if the child had printed it. No child is spawned unless a
+command follows `--`; if one does, the file is fed first and the child's
+output follows. The replay is byte-exact, so the terminal state it
+produces is the one the capture produced.
+
+A replay with no child has no PTY side, so the PTY commands degrade:
+`send`, `sendln`, `raw` and `emit` warn and skip, `await-exit` and
+`resize` fail the run, and `assert-exit` fails because no status can be
+recorded. Everything that reads the terminal works against the replayed
+screen — `wait`, `wait-for`, `assert-contains`, `assert-not-contains`,
+`render`, `render cells`, `render styles`, `cursor`, `dump-sixel` and
+`dump-kbd` — so a capture can be asserted on without re-running the
+program that produced it:
+
+```sh
+# capture once, where the TUI is installed
+coffer -c 68 -r 20 -o crush.raw -- crush
+
+# assert anywhere else
+coffer --feed crush.raw -f check.script
+
+# or just look at what the capture left on screen
+coffer -c 68 -r 20 --feed crush.raw
+```
+
+Chunking is an implementation detail, not a semantic one: the parser is
+incremental, so a feed split differently from the original PTY reads
+still yields the same grid. Because the initial wait has nothing to
+drain, it is skipped on a feed-only run; `--output` records drained PTY
+bytes, so it creates an empty file there.
+
 ### Final dump
 
 When no script is given, or the script finishes without failing
 (including via `quit`), coffer renders the visible grid to standard
 output after the script, one row per line as `ROW|TEXT` (the same
-output as a bare `render`). `--show-row`, `--cell-data`, `--style-data`
-and `--quiet` shape this dump only; they do not affect `render`
-commands inside a script. When the script fails, the dump is skipped
-and the exit status is 1.
+output as a bare `render`). `--show-row`, `--cell-data`, `--style-data`,
+`--kbd-data` and `--quiet` shape this dump only; they do not affect
+`render` commands inside a script. When the script fails, the dump is
+skipped and the exit status is 1.
+
+### Kitty keyboard state
+
+`-k`/`--kbd-data` puts one line ahead of the dumped rows:
+
+```
+kbd: flags=0x1 (1) depth=0 on
+```
+
+`flags` is the mask the kitty keyboard protocol currently encodes keys
+with (the same value `cfr_get_kitty_kb_flags()` returns), and `depth` is
+how many entries the protocol stack holds above its zero baseline. The
+depth is the tell: a program that pushes flags with `CSI > Nu` and dies
+without popping them leaves the depth non-zero, and the shell that takes
+over then receives `CSI u` keys it never asked for. The script command
+`dump-kbd` prints the same line to the script's output, so a driver can
+grep the run's standard output. `assert-contains` cannot: it searches
+the grid, not the dump.
+
+The line is printed before the rows and is not suppressed by `--quiet`.
 
 ### Script file
 
@@ -141,6 +199,7 @@ layer of surrounding single or double quotes.
 | `render styles ROW`                    | Dump style detail (underline, colors, attrs) for the cells of ROW that carry any |
 | `cursor`                               | Dump cursor state (row, col, visible, blink)                                     |
 | `dump-sixel`                           | Dump live images and placements (id, anchor row/col, pixel size)                 |
+| `dump-kbd`                             | Dump kitty keyboard flags and stack depth (the `kbd:` line)                      |
 | `quit`                                 | End the script run early (success); the final dump still happens                 |
 | `# comment`                            | Skipped                                                                          |
 
@@ -154,6 +213,10 @@ the whole row).
 
 `dump-sixel` assumes a 10x6 pixel cell, which determines the cell
 footprint of a sixel.
+
+`dump-kbd` writes the same `kbd: flags=... depth=...` line as
+`--kbd-data`, at the point in the script where it runs, so a script can
+sample the keyboard protocol before and after a program exits.
 
 `send`, `sendln` and `emit` expand backslash escapes in their argument:
 `\n` (LF), `\r` (CR), `\t` (TAB), `\e` (ESC), `\xNN` (byte NN, hex) and
@@ -329,6 +392,26 @@ send stty size\n
 wait-for "40 120" 5
 ```
 
+**Replay a capture and check what it left behind** (no child, no PTY):
+
+```sh
+coffer -c 68 -r 20 --feed crush.raw -k
+```
+
+**Assert on a capture in CI**, where the program that produced it is not
+installed:
+
+```sh
+coffer --feed crush.raw -f check.script
+```
+
+Where `check.script` is:
+
+```
+render
+dump-kbd
+```
+
 ## Exit status
 
 | Status | Meaning                                                                                                                                                       |
@@ -365,10 +448,13 @@ tooling.
 
 ## How it works
 
-1. Creates a PTY with the requested terminal size
+1. With `--feed`, reads the file whole and writes it to
+   `cfr_input_write()` in 64 KiB chunks. Otherwise creates a PTY with
+   the requested terminal size:
    - POSIX: `forkpty`
    - Windows: `CreatePseudoConsole` (ConPTY)
-2. Forks and execs the child process (status 127 if the exec fails)
+2. Forks and execs the child process (status 127 if the exec fails),
+   unless the run is a feed-only replay
 3. Sets `TERM=xterm-256color`, `COLORTERM=truecolor`,
    `TERM_PROGRAM=ghostty` in the child environment, then applies the
    `--env` overrides
@@ -400,3 +486,7 @@ it calls `ResizePseudoConsole`.
 - A `wait-for` needle is matched against a row's text; a match spanning
   a soft wrap is two rows' text and will not be found (use the shorter
   needle)
+- A feed-only replay has no child, so `send`, `sendln`, `raw` and `emit`
+  warn and skip while `await-exit`, `assert-exit` and `resize` fail;
+  `--output` creates an empty file, since there is no PTY output to
+  record

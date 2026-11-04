@@ -194,6 +194,7 @@ Key properties:
 | `cursor`                                  | coffer core |                                                                                                        |
 | `quit`                                    | coffer core | ends the run early, status DONE; hosts treat run-end as exit (**Q6**: kept even though semi-redundant) |
 | `dump-sixel`                              | coffer core | sixel store is engine state (**Q2 confirmed**)                                                         |
+| `dump-kbd`                                | coffer core | kitty keyboard stack is engine state; catches a leaked protocol push                                   |
 | `screendump`, `renderdump`                | portty      | presented framebuffer / offscene render — pure renderer                                                |
 | `record-start` / `record-stop`            | portty      | QOI frame recorder, GL-frame cadence                                                                   |
 | `panel` / `panel_hide`                    | portty      | notification panels                                                                                    |
@@ -223,9 +224,10 @@ were added while wiring them and are part of the shipped header
 (`include/coffer/script.h`):
 
 - `cfr_script_dump(vt, out, mode, row, col_start, col_end)` — the
-  render/cursor/dump-sixel output as a call, so a host can dump without a
-  script (coffer's `-s/-d/-S/-q` flags call it for its final dump).
-  Modes mirror the `render …` / `cursor` / `dump-sixel` commands.
+  render/cursor/dump-sixel/dump-kbd output as a call, so a host can dump
+  without a script (coffer's `-s/-d/-S/-k/-q` flags call it for its final
+  dump). Modes mirror the `render …` / `cursor` / `dump-sixel` /
+  `dump-kbd` commands.
 - `cfr_script_expand_escapes(text)` — the engine's escape expander
   (`\n \r \t \e \\ \xNN`) applied to a copy, for hosts expanding the raw
   args of their **extension** commands (extension args arrive

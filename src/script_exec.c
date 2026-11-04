@@ -147,7 +147,7 @@ uint32_t cfr_script_wait_ms(CfrScriptRun *run)
 }
 
 /* ------------------------------------------------------------------ */
-/* Grid dumps (render / cursor / dump-sixel)                          */
+/* Grid dumps (render / cursor / dump-sixel / dump-kbd)               */
 /* ------------------------------------------------------------------ */
 
 static void dump_row_text(CfrTerm *vt, FILE *out, char *buf, size_t cap,

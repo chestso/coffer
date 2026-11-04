@@ -1,4 +1,4 @@
-.TH COFFER 1 "2026-11-01" "coffer" "User Commands"
+.TH COFFER 1 "2026-11-04" "coffer" "User Commands"
 .SH NAME
 coffer \- headless PTY inspector for the coffer VT engine
 .SH SYNOPSIS
@@ -28,11 +28,15 @@ starts
 .B %COMSPEC%
 or
 .B cmd.exe
-on Windows).
+on Windows), unless
+.B \-\-feed
+is replaying a capture, which needs no child.
 .PP
 A run goes through these steps:
 .IP 1. 3
-Spawn the child on a PTY of the requested size.
+Spawn the child on a PTY of the requested size, unless the run is a
+replay (see
+.BR "REPLAY" ).
 .IP 2. 3
 Drain its output for the initial wait
 .RB ( \-\-wait ).
@@ -78,15 +82,29 @@ The wait always happens, with or without a script; a script that
 synchronizes with
 .B wait\-for
 can pass a small value.
+A replay with no child has nothing to drain, so the wait is skipped
+there.
 .TP
 \fB\-\-script\fR, \fB\-f\fR \fIFILE\fR
 Execute commands from a script file. See
 .B SCRIPT FILE
 below.
 .TP
+\fB\-\-feed\fR \fIFILE\fR
+Feed
+.IR FILE 's
+bytes into the terminal parser as terminal output, before the initial
+wait and the script.
+No child is spawned unless a command follows
+.BR \-\- .
+See
+.BR "REPLAY" .
+.TP
 \fB\-\-output\fR, \fB\-o\fR \fIFILE\fR
 Save raw PTY output to
 .IR FILE .
+This records bytes drained from the PTY; a replay with no child
+produces none, so the file is created empty.
 .TP
 \fB\-\-show\-row\fR, \fB\-s\fR \fIROW\fR
 Select a row for the final dump (repeatable, up to 64).
@@ -112,6 +130,17 @@ After the final dump, print style detail (underline, colors,
 attributes), as
 .B render styles
 does, for every row or the selected rows.
+.TP
+\fB\-\-kbd\-data\fR, \fB\-k\fR
+Before the final dump's rows, print the kitty keyboard protocol state
+as a
+.B kbd:
+line: the active flags and how many entries the protocol stack holds
+above its zero baseline.
+A non-zero depth for a program that has exited means it leaked the
+protocol \(em the shell then reads
+.B CSI\ u
+keys.
 .TP
 \fB\-\-quiet\fR, \fB\-q\fR
 With
@@ -152,13 +181,63 @@ per line as
 .BR render ).
 .B \-\-show\-row ,
 .BR \-\-cell\-data ,
-.B \-\-style\-data
+.BR \-\-style\-data ,
+.B \-\-kbd\-data
 and
 .B \-\-quiet
 shape this dump only; they do not affect
 .B render
 commands inside a script.
+.B \-\-kbd\-data
+writes its
+.B kbd:
+line ahead of the rows, and under
+.BR \-\-quiet
+it is printed alongside the selected rows.
 When the script fails, the dump is skipped and the exit status is 1.
+.SH REPLAY
+With
+.BR \-\-feed ,
+.B coffer
+replays a captured session instead of, or as well as, running a child:
+.I FILE
+is read whole and written to the parser in chunks, in order, so the
+terminal state is the one the capture produced.
+No child is spawned unless a command follows
+.BR \-\- ;
+if one does, the file is fed first and the child's output follows.
+.PP
+A replay with no child has no PTY side, so the commands that need one
+degrade:
+.B send
+and
+.B sendln
+warn and skip (as do
+.B raw
+and
+.BR emit ),
+.B await\-exit
+and
+.B resize
+fail the run, and
+.B assert\-exit
+fails because no status can be recorded.
+Everything that reads the terminal works against the replayed screen:
+.BR wait ,
+.BR wait\-for ,
+.BR assert\-contains ,
+.BR assert\-not\-contains ,
+.BR cursor ,
+.BR dump\-sixel ,
+.BR dump\-kbd ,
+.B render
+and
+.BR "render cells" ,
+so a capture can be asserted on in CI without re-running the program
+that produced it.
+.PP
+Because there is nothing to drain, the initial wait is skipped in a
+replay with no child.
 .SH SCRIPT FILE
 When run with
 .BR \-\-script ,
@@ -335,6 +414,19 @@ Dump live images (id, anchor row/col, pixel size) and their placements.
 Coffer assumes a 10x6 pixel cell, which determines the cell footprint
 of a sixel.
 .TP
+.B dump\-kbd
+Dump the kitty keyboard protocol state on one
+.B kbd:
+line: the active flags (hex, decimal, and
+.B on
+or
+.BR off )
+and the stack depth.
+This is what
+.B \-\-kbd\-data
+prints, and it is the way to catch a program that pushed the protocol
+and died before popping it.
+.TP
 .B quit
 End the script run early, successfully.
 The final dump still happens.
@@ -378,6 +470,23 @@ coffer \-c 68 \-r 20 \-s 18 \-d \-q \-\- crush
 Capture raw PTY output for offline replay:
 .EX
 coffer \-o /tmp/crush.raw \-\- crush
+.EE
+.TP
+Replay a capture and check the keyboard protocol state:
+.EX
+coffer \-c 68 \-r 20 \-\-feed /tmp/crush.raw \-k
+.EE
+.TP
+Assert on a capture instead of re-running the program:
+.EX
+coffer \-\-feed /tmp/crush.raw \-f check.script
+.EE
+where
+.I check.script
+might be:
+.EX
+assert\-contains "crush"
+dump\-kbd
 .EE
 .TP
 Scripted CI test with assertions:

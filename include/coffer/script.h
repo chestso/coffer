@@ -52,7 +52,8 @@ typedef enum
  * (assert-*, wait-for, await-exit, resize). */
 typedef struct
 {
-    /* Grid for wait-for / assert-* / render / cursor / dump-sixel. */
+    /* Grid for wait-for / assert-* / render / cursor / dump-sixel /
+     * dump-kbd. */
     CfrTerm *term;
 
     /* `send`/`sendln`/`raw`: write to the child's stdin. */
@@ -73,7 +74,8 @@ typedef struct
      * stderr. `line` is the 1-based script line number. */
     void (*log)(void *ud, int line, const char *msg);
 
-    /* Destination for render/cursor/dump-sixel dumps. NULL = stdout. */
+    /* Destination for render/cursor/dump-sixel/dump-kbd dumps. NULL =
+     * stdout. */
     FILE *out;
 
     /* Extension dispatch: commands named in `ext_names` at load time
@@ -149,7 +151,7 @@ CfrScriptStatus cfr_script_run_blocking(CfrScriptRun *run,
 /* ------------------------------------------------------------------ */
 
 /* Dump modes for cfr_script_dump() — the same output the `render`,
- * `cursor` and `dump-sixel` script commands produce. */
+ * `cursor`, `dump-sixel` and `dump-kbd` script commands produce. */
 typedef enum
 {
     CFR_SCRIPT_DUMP_VISIBLE,    /* visible rows as text (row ignored) */
