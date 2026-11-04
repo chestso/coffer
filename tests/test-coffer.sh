@@ -5,7 +5,9 @@
 # specified rows, never suppress the render entirely) and the script
 # vocabulary: wait-for (incl. the line-end anchor and UTF-8 needles), the
 # unified buffer search that reaches the scrollback, await-exit /
-# assert-exit, resize, and --env overrides.
+# assert-exit, resize, and --env overrides. Also covers replaying a capture
+# with no child (--feed, incl. the PTY commands that degrade without one)
+# and the kitty keyboard protocol dump (-k / dump-kbd).
 #
 # Requires a POSIX pty; skipped on Windows and in CI environments
 # without a shell. The binary is taken from the build tree
@@ -72,12 +74,23 @@ esac
 # (the feature-detection seam downstream drivers use)
 spec=$("$COFFER" --help-spec 2>/dev/null)
 for c in wait wait-for send raw assert-contains assert-not-contains \
-	await-exit assert-exit resize render cursor; do
+	await-exit assert-exit resize render cursor dump-sixel dump-kbd; do
 	case "$spec" in
 	*"$(printf 'CMD\t%s' "$c")"*) ;;
 	*) say_fail "--help-spec lacks CMD $c" ;;
 	esac
 done
+# The options a driver probes for before passing them.
+for f in --feed --kbd-data; do
+	case "$spec" in
+	*"$(printf 'FLAG\t%s' "$f")"*) ;;
+	*) say_fail "--help-spec lacks FLAG $f" ;;
+	esac
+done
+case "$spec" in
+*"$(printf 'FLAG\t--kbd-data\t-k')"*) ;;
+*) say_fail "--help-spec lost the -k alias for --kbd-data" ;;
+esac
 
 # --- 6. wait-for + await-exit + assert-exit --------------------------
 cat >"$tmp/exit.script" <<'EOF'
@@ -175,6 +188,108 @@ esac
 case "$out" in
 *"COLORTERM=[]"*) ;;
 *) say_fail "--env COLORTERM= did not unset the built-in" ;;
+esac
+
+# --- 12. --feed replays a capture with no child ----------------------
+# The file carries what a child would have printed. With no command after
+# --, nothing is spawned, so the grid comes from the file alone.
+printf 'fed-zero\nfed-one\n' >"$tmp/feed.raw"
+out=$("$COFFER" -c 40 -r 6 --feed "$tmp/feed.raw" 2>/dev/null)
+case "$out" in
+*"0|fed-zero"*) ;;
+*) say_fail "--feed did not replay fed-zero onto row 0" ;;
+esac
+case "$out" in
+*"1|fed-one"*) ;;
+*) say_fail "--feed did not replay fed-one onto row 1" ;;
+esac
+
+# A script can read the replayed grid: this is the CI use of --feed.
+cat >"$tmp/feed.script" <<'EOF'
+assert-contains "fed-one"
+EOF
+if ! "$COFFER" -c 40 -r 6 --feed "$tmp/feed.raw" -f "$tmp/feed.script" \
+	>/dev/null 2>&1; then
+	say_fail "a script could not assert on the replayed grid"
+fi
+
+# A command after -- still spawns a child, and the file is fed first.
+out=$("$COFFER" -c 40 -r 6 -w 1 --feed "$tmp/feed.raw" \
+	-- sh -c 'echo child-marker' 2>/dev/null)
+case "$out" in
+*"0|fed-zero"*) ;;
+*) say_fail "--feed with a command lost the fed row 0" ;;
+esac
+case "$out" in
+*"2|child-marker"*) ;;
+*) say_fail "--feed with a command lost the child's output" ;;
+esac
+
+# --- 13. the PTY side degrades on a feed-only run --------------------
+# send warns and skips instead of failing; await-exit and resize fail,
+# because there is no child to wait for and no tty to resize.
+cat >"$tmp/feed-send.script" <<'EOF'
+send "ignored\n"
+EOF
+if ! err=$("$COFFER" -c 40 -r 6 --feed "$tmp/feed.raw" \
+	-f "$tmp/feed-send.script" 2>&1 >/dev/null); then
+	say_fail "send on a feed-only run failed the run"
+fi
+case "$err" in
+*"WARN: send"*) ;;
+*) say_fail "send on a feed-only run did not warn" ;;
+esac
+
+for cmd in 'await-exit 5' 'resize 60 10'; do
+	printf '%s\n' "$cmd" >"$tmp/feed-pty.script"
+	if "$COFFER" -c 40 -r 6 --feed "$tmp/feed.raw" \
+		-f "$tmp/feed-pty.script" >/dev/null 2>&1; then
+		say_fail "$cmd passed with no PTY behind it"
+	fi
+done
+
+# --output records bytes drained from the PTY, so a feed leaves it empty.
+"$COFFER" -c 40 -r 6 --feed "$tmp/feed.raw" -o "$tmp/feed.out" \
+	>/dev/null 2>&1
+if [ ! -e "$tmp/feed.out" ]; then
+	say_fail "--output did not create its file on a feed-only run"
+elif [ -s "$tmp/feed.out" ]; then
+	say_fail "--output recorded bytes on a feed-only run"
+fi
+
+# --- 14. -k reports the kitty keyboard protocol state ----------------
+printf '\033[>1u' >"$tmp/kbd-push.raw"
+printf '\033[>1u\033[<1u' >"$tmp/kbd-pop.raw"
+
+out=$("$COFFER" -c 40 -r 4 --feed "$tmp/feed.raw" -k 2>/dev/null)
+case "$out" in
+"kbd: flags=0x0 (0) depth=0 off"*) ;;
+*) say_fail "-k did not report an untouched keyboard protocol" ;;
+esac
+
+# CSI > 1 u pushes the disambiguate flag. The stack depth is what tells a
+# leak (a program that died without popping) from a clean exit.
+out=$("$COFFER" -c 40 -r 4 --feed "$tmp/kbd-push.raw" -k 2>/dev/null)
+case "$out" in
+*"kbd: flags=0x1 (1) depth=1 on"*) ;;
+*) say_fail "-k missed a pushed kitty keyboard protocol" ;;
+esac
+
+out=$("$COFFER" -c 40 -r 4 --feed "$tmp/kbd-pop.raw" -k 2>/dev/null)
+case "$out" in
+*"depth=0 off"*) ;;
+*) say_fail "-k did not see the protocol popped back to the baseline" ;;
+esac
+
+# --- 15. dump-kbd reports the same state from a script ---------------
+cat >"$tmp/kbd.script" <<'EOF'
+dump-kbd
+EOF
+out=$("$COFFER" -c 40 -r 4 --feed "$tmp/kbd-push.raw" \
+	-f "$tmp/kbd.script" 2>/dev/null)
+case "$out" in
+*"kbd: flags=0x1 (1) depth=1 on"*) ;;
+*) say_fail "dump-kbd did not print the protocol state" ;;
 esac
 
 if [ "$fail" -ne 0 ]; then
