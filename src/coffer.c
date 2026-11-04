@@ -69,6 +69,11 @@ static const FlagDef OPTIONS[] = {
     { "--cell-data", "-d", 0, NULL, "Dump raw cell data alongside text" },
     { "--style-data", "-S", 0, NULL, "Dump style info (underline, colors)" },
     { "--quiet", "-q", 0, NULL, "Only dump specified rows" },
+    { "--kbd-data", "-k", 0, NULL,
+      "Dump the kitty keyboard protocol state with the final dump" },
+    { "--feed", NULL, 1, "FILE",
+      "Feed FILE's bytes into the VT as terminal output before the "
+      "script (no child is spawned unless a command follows --)" },
     { "--env", NULL, 1, "KEY=VAL",
       "Set a child env var (repeatable; applied after the built-ins; "
       "an empty value unsets it)" },
@@ -946,6 +951,8 @@ static int host_poll_exit(void *ud, int *status)
 static int host_resize(void *ud, int cols, int rows)
 {
     HostCtx *hc = ud;
+    if (!hc->pty)
+        return -1;
     /* TIOCSWINSZ on the slave (SIGWINCHes the child), then the grid. */
     if (pty_resize(hc->pty, rows, cols) != 0)
         return -1;
@@ -953,11 +960,47 @@ static int host_resize(void *ud, int cols, int rows)
     return 0;
 }
 
-/* Blocking pump: drain the PTY into coffer for up to max_ms. */
+/* Blocking pump: drain the PTY into coffer for up to max_ms. With no
+ * child (a --feed run) there is nothing to drain: the wait is the
+ * clock's alone. */
 static void host_pump(void *ud, uint32_t max_ms)
 {
     HostCtx *hc = ud;
+    if (!hc->pty) {
+#ifdef _WIN32
+        Sleep(max_ms);
+#else
+        struct timespec ts = { (time_t)(max_ms / 1000),
+                               (long)(max_ms % 1000) * 1000000L };
+        nanosleep(&ts, NULL);
+#endif
+        return;
+    }
     drain(hc->vt, hc->pty, max_ms / 1000.0);
+}
+
+/* Read `path` whole and feed it into the VT parser as terminal output.
+ * The replay is byte-exact and chunked, so a capture of a live session
+ * reaches the parser in the same order (its state machine is
+ * incremental either way). Returns 0 on success. */
+static int feed_file(CfrTerm *vt, const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        perror(path);
+        return -1;
+    }
+    uint8_t buf[65536];
+    size_t n;
+    int rc = 0;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        cfr_input_write(vt, buf, n);
+    if (ferror(f)) {
+        perror(path);
+        rc = -1;
+    }
+    fclose(f);
+    return rc;
 }
 
 static int run_script(HostCtx *hc, const char *script_path)
@@ -972,10 +1015,12 @@ static int run_script(HostCtx *hc, const char *script_path)
 
     CfrScriptHost host = {
         .term = hc->vt,
-        .pty_write = host_pty_write,
+        /* No child, no PTY side: send/raw warn and skip, await-exit has
+         * nothing to await, resize fails. A --feed run is the VT's. */
+        .pty_write = hc->pty ? host_pty_write : NULL,
         .emit = host_emit,
-        .poll_exit = host_poll_exit,
-        .resize = host_resize,
+        .poll_exit = hc->pty ? host_poll_exit : NULL,
+        .resize = hc->pty ? host_resize : NULL,
         .ud = hc,
     };
     CfrScriptRun *run = cfr_script_run_new(script, &host);
@@ -1005,10 +1050,13 @@ static void dump_one_row_text(CfrTerm *vt, int row, int cols)
 }
 
 static void final_dump(CfrTerm *vt, const int *show_rows, int n_show,
-                       int show_cells, int show_styles, int quiet)
+                       int show_cells, int show_styles, int show_kbd,
+                       int quiet)
 {
     int rows = 0, cols = 0;
     cfr_get_dimensions(vt, &rows, &cols);
+    if (show_kbd)
+        cfr_script_dump(vt, stdout, CFR_SCRIPT_DUMP_KBD, 0, 0, 0);
 
     if (quiet && n_show > 0) {
         /* Only the requested rows. */
@@ -1056,9 +1104,10 @@ int main(int argc, char *argv[])
     double initial_wait = 3.0;
     const char *script_path = NULL;
     const char *outfile = NULL;
+    const char *feed_path = NULL;
     int show_rows[64];
     int n_show = 0;
-    int show_cells = 0, show_styles = 0, quiet = 0;
+    int show_cells = 0, show_styles = 0, show_kbd = 0, quiet = 0;
     const char *envs[64];
     int n_env = 0;
 
@@ -1108,6 +1157,8 @@ int main(int argc, char *argv[])
                 script_path = val;
             else if (strcmp(f->name, "--output") == 0)
                 outfile = val;
+            else if (strcmp(f->name, "--feed") == 0)
+                feed_path = val;
             else if (strcmp(f->name, "--show-row") == 0 && n_show < 64)
                 show_rows[n_show++] = atoi(val);
             else if (strcmp(f->name, "--env") == 0) {
@@ -1121,6 +1172,8 @@ int main(int argc, char *argv[])
                 show_cells = 1;
             else if (strcmp(f->name, "--style-data") == 0)
                 show_styles = 1;
+            else if (strcmp(f->name, "--kbd-data") == 0)
+                show_kbd = 1;
             else if (strcmp(f->name, "--quiet") == 0)
                 quiet = 1;
         }
@@ -1146,28 +1199,40 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    PtyCtx *pty = pty_spawn(rows, cols, cmd_argv, (char *const *)envs, n_env);
-    if (!pty) {
-        cfr_free(vt);
-        return 1;
+    /* A --feed run is a replay: the parser gets the file's bytes and no
+     * child is spawned unless the command line asks for one. */
+    int spawn = !feed_path || cmd_argv != NULL;
+
+    PtyCtx *pty = NULL;
+    if (spawn) {
+        pty = pty_spawn(rows, cols, cmd_argv, (char *const *)envs, n_env);
+        if (!pty) {
+            cfr_free(vt);
+            return 1;
+        }
+        g_pty = pty;
     }
-    g_pty = pty;
 
     CfrCallbacks cb = { .output = cb_output };
     cfr_set_callbacks(vt, &cb, NULL);
 
-    fprintf(stderr, "Waiting %.1fs for startup...\n", initial_wait);
-    drain(vt, pty, initial_wait);
+    int rc = 0;
+    if (feed_path && feed_file(vt, feed_path) != 0) {
+        rc = 1;
+    } else if (spawn) {
+        fprintf(stderr, "Waiting %.1fs for startup...\n", initial_wait);
+        drain(vt, pty, initial_wait);
+    }
 
     HostCtx hc = { .vt = vt, .pty = pty };
 
-    int rc = 0;
-    if (script_path)
+    if (rc == 0 && script_path)
         rc = run_script(&hc, script_path);
 
     /* Final dump if no script ran, or the script passed */
-    if (!script_path || rc == 0)
-        final_dump(vt, show_rows, n_show, show_cells, show_styles, quiet);
+    if (rc == 0)
+        final_dump(vt, show_rows, n_show, show_cells, show_styles, show_kbd,
+                   quiet);
 
     if (outfile) {
         fclose(g_raw_out);
@@ -1175,7 +1240,8 @@ int main(int argc, char *argv[])
     }
 
     g_pty = NULL;
-    pty_kill(pty);
+    if (pty)
+        pty_kill(pty);
     cfr_free(vt);
     return rc;
 }

@@ -79,6 +79,17 @@ uint32_t cfr_get_kitty_kb_flags(const CfrTerm *vt)
     return vt->kitty_kb_stack[vt->kitty_kb_depth];
 }
 
+int cfr_get_kitty_kb_state(const CfrTerm *vt, uint32_t *flags, int *depth)
+{
+    if (!vt)
+        return 0;
+    if (flags)
+        *flags = vt->kitty_kb_stack[vt->kitty_kb_depth];
+    if (depth)
+        *depth = (int)vt->kitty_kb_depth;
+    return 1;
+}
+
 /* Emit a kitty `CSI <code>;<mod>u` sequence. The mod parameter is
  * omitted when no modifier is held (`CSI <code>u`), matching the
  * kitty spec. */

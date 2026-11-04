@@ -279,6 +279,22 @@ static void dump_cursor(CfrTerm *vt, FILE *out)
             c.col, c.visible, c.blink);
 }
 
+/* The kitty keyboard protocol stack: the active mask (what keys are
+ * encoded with) and how many entries sit above the zero baseline. A
+ * non-zero depth after the program that pushed them has exited is a
+ * leaked protocol — the shell then reads CSI-u keys. */
+static void dump_kbd(CfrTerm *vt, FILE *out)
+{
+    uint32_t flags = 0;
+    int depth = 0;
+    if (!cfr_get_kitty_kb_state(vt, &flags, &depth)) {
+        fprintf(out, "kbd: no terminal\n");
+        return;
+    }
+    fprintf(out, "kbd: flags=0x%x (%u) depth=%d %s\n", (unsigned)flags,
+            (unsigned)flags, depth, flags ? "on" : "off");
+}
+
 static void dump_sixel(CfrTerm *vt, FILE *out)
 {
     int count = 0;
@@ -328,6 +344,9 @@ void cfr_script_dump(CfrTerm *vt, FILE *out, CfrScriptDumpMode mode,
         break;
     case CFR_SCRIPT_DUMP_SIXEL:
         dump_sixel(vt, out);
+        break;
+    case CFR_SCRIPT_DUMP_KBD:
+        dump_kbd(vt, out);
         break;
     }
 }
@@ -561,6 +580,14 @@ CfrScriptStatus cfr_script_step(CfrScriptRun *run)
             break;
         cfr_script_dump(run->host.term, run_out(run),
                         CFR_SCRIPT_DUMP_SIXEL, 0, 0, 0);
+        run_advance(run);
+        break;
+
+    case CFR_CMD_DUMP_KBD:
+        if (!require_term(run, cmd, "dump-kbd"))
+            break;
+        cfr_script_dump(run->host.term, run_out(run), CFR_SCRIPT_DUMP_KBD, 0,
+                        0, 0);
         run_advance(run);
         break;
 

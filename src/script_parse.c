@@ -56,6 +56,8 @@ static const CfrScriptCmdDef COMMANDS[] = {
     { "render styles", "ROW", "Dump style detail for ROW" },
     { "cursor", NULL, "Dump cursor state (row, col, visible, blink)" },
     { "dump-sixel", NULL, "Dump live images and placements" },
+    { "dump-kbd", NULL,
+      "Dump the kitty keyboard protocol flags and stack depth" },
     { "quit", NULL, "End the script run early (status DONE)" },
     { NULL, NULL, NULL }
 };
@@ -444,6 +446,10 @@ static bool parse_command(CfrScript *s, char *line, int line_num,
     }
     if (strcmp(cmd_name, "dump-sixel") == 0) {
         cmd->type = CFR_CMD_DUMP_SIXEL;
+        return true;
+    }
+    if (strcmp(cmd_name, "dump-kbd") == 0) {
+        cmd->type = CFR_CMD_DUMP_KBD;
         return true;
     }
     if (strcmp(cmd_name, "quit") == 0) {

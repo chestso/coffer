@@ -159,6 +159,7 @@ typedef enum
     CFR_SCRIPT_DUMP_STYLES,     /* style detail for `row`              */
     CFR_SCRIPT_DUMP_CURSOR,     /* cursor state                        */
     CFR_SCRIPT_DUMP_SIXEL,      /* live images and placements          */
+    CFR_SCRIPT_DUMP_KBD,        /* kitty keyboard flags and stack depth */
 } CfrScriptDumpMode;
 
 /* Dump a grid view to `out` (NULL = stdout). Rows are unified

@@ -430,6 +430,14 @@ uint32_t cfr_get_kitty_kb_flags(const CfrTerm *vt);
  * resets the flags to zero, per the kitty keyboard protocol spec. */
 void cfr_kitty_kb_pop(CfrTerm *vt, int levels);
 
+/* The whole kitty keyboard protocol stack state, for diagnostics: the
+ * active mask (`*flags`, the same value cfr_get_kitty_kb_flags returns)
+ * and how many entries sit above the zero baseline (`*depth`; 0 = the
+ * program in the terminal pushed nothing, so a non-zero `*depth` with
+ * the program gone is a leaked protocol). Either out pointer may be
+ * NULL. Returns 0 when `vt` is NULL. */
+int cfr_get_kitty_kb_state(const CfrTerm *vt, uint32_t *flags, int *depth);
+
 /* ------------------------------------------------------------------ */
 /* Queries                                                             */
 /* ------------------------------------------------------------------ */

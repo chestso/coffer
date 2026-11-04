@@ -27,6 +27,7 @@ typedef enum
     CFR_CMD_RENDER,
     CFR_CMD_CURSOR,
     CFR_CMD_DUMP_SIXEL,
+    CFR_CMD_DUMP_KBD,
     CFR_CMD_QUIT,
     CFR_CMD_EXT,
 } CfrScriptCmdType;
