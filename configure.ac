@@ -6,7 +6,7 @@ AC_INIT([coffer],
         m4_esyscmd_s([cat version 2>/dev/null || echo "0.0.0-unknown"]),
         [thomasc1971@hotmail.com],
         [coffer],
-        [https://github.com/thomas-christensen/coffer])
+        [https://github.com/chestso/coffer])
 AC_CONFIG_SRCDIR([src/term.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([build-aux])
