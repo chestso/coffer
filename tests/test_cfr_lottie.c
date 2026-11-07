@@ -7,6 +7,7 @@
 #include "coffer_internal.h"
 #include "test_helpers.h"
 #include <coffer/coffer.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -464,6 +465,237 @@ static void test_tick_paused_no_advance(void)
     const CfrLottie *lotties = cfr_get_lotties(vt, &count);
     ASSERT_EQ(lotties[0].current_frame, 0);
 
+    cfr_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tests: stateless sampler (cfr_lottie_present)                      */
+/* ------------------------------------------------------------------ */
+
+/* Load a looping animation of `op` frames at `fr` fps with zero layers. */
+static CfrTerm *load_anim(double fr, int op, double speed, bool loop)
+{
+    char json[512];
+    snprintf(json, sizeof(json),
+             "{\"cmd\":\"load\",\"id\":1,"
+             "\"lottie\":{\"v\":\"5.6.0\",\"fr\":%g,\"ip\":0,\"op\":%d,"
+             "\"w\":40,\"h\":24,\"layers\":[]},"
+             "\"play\":{\"speed\":%g,\"loop\":%s}}",
+             fr, op, speed, loop ? "true" : "false");
+    CfrTerm *vt = make_term(24, 80);
+    feed_lottie(vt, json);
+    return vt;
+}
+
+static int cur_frame(CfrTerm *vt)
+{
+    int n = 0;
+    const CfrLottie *l = cfr_get_lotties(vt, &n);
+    return (n > 0) ? l[0].current_frame : -1;
+}
+
+static uint32_t cur_version(CfrTerm *vt)
+{
+    int n = 0;
+    const CfrLottie *l = cfr_get_lotties(vt, &n);
+    return (n > 0) ? l[0].version : 0;
+}
+
+/* The frame the closed form gives `dt_us` after the anchor. */
+static int closed_form(double fr, double speed, int op, uint64_t dt_us)
+{
+    long double pos = (long double)dt_us * speed * fr / 1e6L;
+    long double span = op;
+    long double wrapped = pos - span * floorl(pos / span);
+    return (int)wrapped;
+}
+
+static void test_present_closed_form(void)
+{
+    const double rates[] = { 24.0, 30.0, 60.0 };
+    const double speeds[] = { 0.5, 1.0, 2.0 };
+    for (size_t ri = 0; ri < 3; ri++) {
+        for (size_t si = 0; si < 3; si++) {
+            const int op = 97; /* odd, so loop wraps land off a boundary */
+            CfrTerm *vt = load_anim(rates[ri], op, speeds[si], true);
+            const uint64_t t0 = 5000000;
+            cfr_lottie_present(vt, t0, 0); /* anchors */
+            for (uint64_t k = 1; k < 3000; k++) {
+                uint64_t dt = k * 7919; /* 7.919 ms: never lines up with a frame */
+                cfr_lottie_present(vt, t0 + dt, 0);
+                ASSERT_EQ(cur_frame(vt),
+                          closed_form(rates[ri], speeds[si], op, dt));
+            }
+            cfr_free(vt);
+        }
+    }
+}
+
+static void test_present_no_loop_end(void)
+{
+    CfrTerm *vt = load_anim(10.0, 10, 1.0, false);
+    cfr_lottie_present(vt, 1000000, 0);
+    cfr_lottie_present(vt, 1950000, 0); /* 0.95 s -> frame 9, still playing */
+    ASSERT_EQ(cur_frame(vt), 9);
+    ASSERT_EQ(cfr_lottie_playing_count(vt), 1);
+    cfr_lottie_present(vt, 2000000, 0); /* exactly the end */
+    ASSERT_EQ(cur_frame(vt), 9);
+    ASSERT_EQ(cfr_lottie_playing_count(vt), 0);
+    cfr_free(vt);
+}
+
+static void test_present_version_stable_on_same_frame(void)
+{
+    CfrTerm *vt = load_anim(30.0, 60, 1.0, true);
+    cfr_lottie_present(vt, 1000000, 0);
+    cfr_lottie_present(vt, 1040000, 0); /* frame 1 */
+    ASSERT_EQ(cur_frame(vt), 1);
+    uint32_t v = cur_version(vt);
+    ASSERT_FALSE(cfr_lottie_present(vt, 1050000, 0)); /* still frame 1 */
+    ASSERT_FALSE(cfr_lottie_present(vt, 1060000, 0));
+    ASSERT_EQ(cur_version(vt), v);
+    ASSERT_TRUE(cfr_lottie_present(vt, 1080000, 0)); /* frame 2 */
+    ASSERT_TRUE(cur_version(vt) != v);
+    cfr_free(vt);
+}
+
+static void test_present_resume_does_not_jump(void)
+{
+    CfrTerm *vt = load_anim(30.0, 300, 1.0, true);
+    cfr_lottie_present(vt, 1000000, 0);
+    cfr_lottie_present(vt, 2000000, 0); /* frame 30 */
+    ASSERT_EQ(cur_frame(vt), 30);
+    feed_lottie(vt, "{\"cmd\":\"pause\",\"id\":1}");
+    ASSERT_EQ(cfr_lottie_playing_count(vt), 0);
+    ASSERT_FALSE(cfr_lottie_present(vt, 50000000, 0));
+    ASSERT_EQ(cur_frame(vt), 30);
+
+    /* Resume long after the pause: the clock anchors at the next present, so
+     * the animation continues from frame 30, not from wherever wall time
+     * would have put it. */
+    feed_lottie(vt, "{\"cmd\":\"play\",\"id\":1}");
+    ASSERT_EQ(cfr_lottie_playing_count(vt), 1);
+    cfr_lottie_present(vt, 100000000, 0);
+    ASSERT_EQ(cur_frame(vt), 30);
+    cfr_lottie_present(vt, 101000000, 0); /* +1 s */
+    ASSERT_EQ(cur_frame(vt), 60);
+    cfr_free(vt);
+}
+
+static void test_present_seek_reanchors(void)
+{
+    CfrTerm *vt = load_anim(30.0, 300, 1.0, true);
+    cfr_lottie_present(vt, 1000000, 0);
+    cfr_lottie_present(vt, 3000000, 0); /* frame 60 */
+    feed_lottie(vt, "{\"cmd\":\"seek\",\"id\":1,\"frame\":200}");
+    ASSERT_EQ(cur_frame(vt), 200);
+    cfr_lottie_present(vt, 3500000, 0); /* anchors here, frame 200 */
+    ASSERT_EQ(cur_frame(vt), 200);
+    cfr_lottie_present(vt, 4500000, 0); /* +1 s */
+    ASSERT_EQ(cur_frame(vt), 230);
+    cfr_free(vt);
+}
+
+static void test_present_speed_change_keeps_position(void)
+{
+    CfrTerm *vt = load_anim(30.0, 3000, 1.0, true);
+    cfr_lottie_present(vt, 1000000, 0);
+    /* 0.5 s at 30 fps = 15 frames; 0.51 s keeps a fractional half frame. */
+    cfr_lottie_present(vt, 1516667, 0);
+    ASSERT_EQ(cur_frame(vt), 15);
+    feed_lottie(vt, "{\"cmd\":\"play\",\"id\":1,\"speed\":2.0}");
+    ASSERT_EQ(cur_frame(vt), 15);       /* no jump */
+    cfr_lottie_present(vt, 1600000, 0); /* anchors */
+    ASSERT_EQ(cur_frame(vt), 15);
+    cfr_lottie_present(vt, 2600000, 0); /* +1 s at 2x = +60 frames from 15.5 */
+    ASSERT_EQ(cur_frame(vt), 75);
+    cfr_free(vt);
+}
+
+static void test_present_hold_gives_uniform_holds(void)
+{
+    /* 30 fps content on a 60 Hz display with +-3 ms of jitter on the
+     * presentation times: every frame is held for exactly 2 presents. */
+    const uint64_t period = 16667;
+    CfrTerm *vt = load_anim(30.0, 300, 1.0, true);
+    uint32_t lcg = 12345;
+    int last = -1;
+    int run = 0;
+    int bad = 0;
+    int runs = 0;
+    for (int k = 0; k < 600; k++) {
+        lcg = lcg * 1664525u + 1013904223u;
+        int jitter = (int)((lcg >> 16) % 6001) - 3000; /* -3000..3000 us */
+        uint64_t t = 10000000 + (uint64_t)k * period + (uint64_t)(jitter + 3000);
+        cfr_lottie_present(vt, t, period);
+        int f = cur_frame(vt);
+        if (f == last) {
+            run++;
+        } else {
+            if (last >= 0) {
+                runs++;
+                if (run != 2)
+                    bad++;
+            }
+            last = f;
+            run = 1;
+        }
+    }
+    ASSERT_TRUE(runs > 250);
+    ASSERT_EQ(bad, 0);
+    cfr_free(vt);
+}
+
+static void test_present_hold_60fps_one_per_present(void)
+{
+    const uint64_t period = 16667;
+    CfrTerm *vt = load_anim(60.0, 600, 1.0, true);
+    int prev = -1;
+    for (int k = 0; k < 500; k++) {
+        cfr_lottie_present(vt, 10000000 + (uint64_t)k * period, period);
+        int f = cur_frame(vt);
+        if (prev >= 0)
+            ASSERT_EQ(f, prev + 1);
+        prev = f;
+    }
+    cfr_free(vt);
+}
+
+static void test_present_no_drift_over_many_samples(void)
+{
+    const double fr = 24.0;
+    const int op = 1000;
+    CfrTerm *vt = load_anim(fr, op, 1.0, true);
+    const uint64_t t0 = 1000000;
+    cfr_lottie_present(vt, t0, 0);
+    for (uint64_t k = 1; k <= 1000000; k++) {
+        uint64_t dt = k * 41667; /* ~24 Hz, a rounded microsecond period */
+        cfr_lottie_present(vt, t0 + dt, 0);
+        if (k % 99991 == 0)
+            ASSERT_EQ(cur_frame(vt), closed_form(fr, 1.0, op, dt));
+    }
+    uint64_t dt = 1000000ull * 41667;
+    ASSERT_EQ(cur_frame(vt), closed_form(fr, 1.0, op, dt));
+    cfr_free(vt);
+}
+
+static void test_playing_count(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    ASSERT_EQ(cfr_lottie_playing_count(vt), 0);
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":1,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":24,\"layers\":[]}}");
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":2,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":40,\"h\":24,\"layers\":[]},"
+                "\"play\":{\"autostart\":false}}");
+    ASSERT_EQ(cfr_lottie_active_count(vt), 2);
+    ASSERT_EQ(cfr_lottie_playing_count(vt), 1);
+    feed_lottie(vt, "{\"cmd\":\"stop\",\"id\":1}");
+    ASSERT_EQ(cfr_lottie_playing_count(vt), 0);
     cfr_free(vt);
 }
 
@@ -1369,6 +1601,16 @@ int main(int argc, char *argv[])
     RUN_TEST(test_tick_loops);
     RUN_TEST(test_tick_no_loop_stops);
     RUN_TEST(test_tick_paused_no_advance);
+    RUN_TEST(test_present_closed_form);
+    RUN_TEST(test_present_no_loop_end);
+    RUN_TEST(test_present_version_stable_on_same_frame);
+    RUN_TEST(test_present_resume_does_not_jump);
+    RUN_TEST(test_present_seek_reanchors);
+    RUN_TEST(test_present_speed_change_keeps_position);
+    RUN_TEST(test_present_hold_gives_uniform_holds);
+    RUN_TEST(test_present_hold_60fps_one_per_present);
+    RUN_TEST(test_present_no_drift_over_many_samples);
+    RUN_TEST(test_playing_count);
     RUN_TEST(test_scroll_cull);
     RUN_TEST(test_clear_display_rows_foreground);
     RUN_TEST(test_clear_preserves_background);

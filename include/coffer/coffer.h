@@ -738,11 +738,33 @@ const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count);
 const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
                                                     int *out_count);
 
-/* Advance all playing Lottie animations to the frame appropriate for
- * the given timestamp (microseconds). Re-rasterizes any whose frame
- * changed. Call once per frame before cfr_get_lotties(). Returns true
- * if any animation advanced (pixel data changed). */
+/* Advance all playing Lottie animations to the frame that should be on
+ * screen at the given presentation time, re-rasterizing any whose frame
+ * changed. Returns true if any animation advanced (pixel data changed).
+ *
+ * The frame is a pure function of time: position = anchor + elapsed *
+ * speed * frame rate, so how often the host calls this, and how late a call
+ * runs, changes nothing about which frame is chosen. The clock is anchored
+ * at the first call after a record starts playing, resumes, seeks or
+ * changes speed.
+ *
+ * `present_us` (microseconds, any monotonic clock the host keeps using) is
+ * when the frame about to be drawn reaches the screen; `hold_us` is how
+ * long it stays there, normally one display refresh period. The frame is
+ * chosen at `present_us + hold_us / 2`, so a frame boundary that lands on a
+ * refresh (30 fps on a 60 Hz display) has half a refresh of margin against
+ * jitter. A host without a display clock passes `hold_us = 0` (a point
+ * sample at `present_us`). Call it once per presented frame, before
+ * cfr_get_lotties(). */
+bool cfr_lottie_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us);
+
+/* Point-sample form: cfr_lottie_present(vt, now_us, 0). */
 bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us);
+
+/* Number of animations that are currently playing (not paused, stopped, or
+ * finished). Zero-allocation. Hosts use it to decide whether frame pacing
+ * should run; cfr_lottie_active_count() also counts paused animations. */
+int cfr_lottie_playing_count(CfrTerm *vt);
 
 /* Notify the Lottie subsystem of a scroll event (cull scrolled-off
  * placements). Called automatically after scroll; also available for

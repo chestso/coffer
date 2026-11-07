@@ -80,8 +80,10 @@ compositing. See the portty README for renderer-side details.
   ownership model as the shared image store, which now backs Lottie too. The
   host fetches animations via
   `cfr_get_lotties()` / `cfr_get_lottie_placements()` and advances frames
-  with `cfr_lottie_tick()`. `cfr_lottie_active_count()` provides a
-  zero-allocation count for adaptive timer scheduling, and
+  with `cfr_lottie_present()` (the frame is a pure function of presentation
+  time; `cfr_lottie_tick()` is its point-sample form).
+  `cfr_lottie_active_count()` and `cfr_lottie_playing_count()` provide
+  zero-allocation counts for adaptive timer scheduling, and
   `cfr_have_lottie()` checks build-time ThorVG availability.
   Rasterization is handled by ThorVG (optional
   dependency, auto-detected at configure time); when ThorVG is absent the APC

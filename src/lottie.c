@@ -90,8 +90,16 @@ typedef struct
     bool loop;
     bool dirty; /* frame changed, rgba needs re-upload */
 
-    /* Timing */
-    uint64_t last_tick_us;
+    /* Timing. Playback position is a pure function of presentation time:
+     *   pos(t) = pos0 + (t - anchor_us) * speed * frame_fr / 1e6
+     * in frames from frame_ip. The anchor is taken at the first
+     * cfr_lottie_present() after the record starts playing, resumes, seeks
+     * or changes speed (anchored == false until then), so a frame's duration
+     * never depends on when the host happened to call. */
+    uint64_t anchor_us;
+    double pos0;     /* frames from frame_ip at anchor_us */
+    double last_pos; /* wrapped position at the last present (re-anchor point) */
+    bool anchored;
 
     /* ThorVG rasterization state (only when HAVE_THORVG) */
 #ifdef HAVE_THORVG
@@ -204,6 +212,23 @@ static uint8_t *lt_rgba(CfrTerm *vt, uint64_t handle)
 /* ------------------------------------------------------------------ */
 /* Record management                                                  */
 /* ------------------------------------------------------------------ */
+
+/* Restart timing from the frame currently shown: the next present anchors
+ * the clock and playback continues from the start of that frame. */
+static void lt_anchor_at_frame(LtRec *r)
+{
+    r->pos0 = (double)(r->current_frame - r->frame_ip);
+    r->last_pos = r->pos0;
+    r->anchored = false;
+}
+
+/* Restart timing from the exact position of the last present (keeps the
+ * fractional frame), for a speed or loop change on a running animation. */
+static void lt_anchor_keep_position(LtRec *r)
+{
+    r->pos0 = r->last_pos;
+    r->anchored = false;
+}
 
 static LtRec *lt_find_by_id(struct CfrLottieState *st, uint64_t id)
 {
@@ -1030,6 +1055,7 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     rec->speed = speed;
     rec->loop = loop;
     rec->playing = autostart;
+    lt_anchor_at_frame(rec);
     rec->dirty = true;
 
 #ifdef HAVE_THORVG
@@ -1276,8 +1302,14 @@ static void lt_cmd_play(struct CfrLottieState *st, CfrTerm *vt,
     if (!rec)
         return;
 
+    /* A play on a running animation (a speed or loop change) continues from
+     * the exact position of the last present; otherwise it starts from the
+     * frame on screen. Either way the next present sets the anchor. */
+    if (rec->playing && rec->anchored)
+        lt_anchor_keep_position(rec);
+    else
+        lt_anchor_at_frame(rec);
     rec->playing = true;
-    rec->last_tick_us = 0;
 
     val = lt_json_find_key(json, json_len, "speed", &vlen);
     if (val)
@@ -1307,6 +1339,7 @@ static void lt_cmd_pause(struct CfrLottieState *st, CfrTerm *vt,
         return;
 
     rec->playing = false;
+    lt_anchor_at_frame(rec);
     rec->version++;
     lt_damage_all_placements(vt, rec);
 }
@@ -1328,6 +1361,7 @@ static void lt_cmd_stop(struct CfrLottieState *st, CfrTerm *vt,
 
     rec->playing = false;
     rec->current_frame = rec->frame_ip;
+    lt_anchor_at_frame(rec);
     rec->dirty = true;
     lt_rasterize(vt, rec);
     rec->version++;
@@ -1363,6 +1397,7 @@ static void lt_cmd_seek(struct CfrLottieState *st, CfrTerm *vt,
         rec->dirty = true;
         lt_rasterize(vt, rec);
     }
+    lt_anchor_at_frame(rec);
     rec->version++;
     lt_damage_all_placements(vt, rec);
 }
@@ -1584,12 +1619,17 @@ void cfr_lottie_apc_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
 /* Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us)
+bool cfr_lottie_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us)
 {
     struct CfrLottieState *st = vt->lottie;
     if (!st || st->rec_count == 0)
         return false;
 
+    /* The frame is on screen for [present_us, present_us + hold_us); sample
+     * its middle. A frame boundary that coincides with a refresh (30 fps on
+     * a 60 Hz display: every one does) is then half a refresh from the
+     * rounding edge instead of exactly on it. */
+    const uint64_t sample_us = present_us + hold_us / 2;
     bool any_advanced = false;
 
     for (int i = 0; i < st->rec_count; i++) {
@@ -1597,43 +1637,61 @@ bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us)
         if (!r->playing)
             continue;
 
-        if (r->last_tick_us == 0) {
-            r->last_tick_us = now_us;
+        const double span = (double)(r->frame_op - r->frame_ip);
+        if (r->speed <= 0.0 || r->frame_fr <= 0.0 || span <= 0.0)
             continue;
+
+        if (!r->anchored) {
+            r->anchor_us = present_us;
+            r->anchored = true;
         }
 
-        uint64_t elapsed = now_us - r->last_tick_us;
-        double frame_delta = (double)elapsed * r->speed * r->frame_fr / 1e6;
-        int delta_int = (int)frame_delta;
-        if (delta_int <= 0)
-            continue;
-
-        int new_frame = r->current_frame + delta_int;
-        if (new_frame >= r->frame_op) {
+        const uint64_t dt = sample_us > r->anchor_us ? sample_us - r->anchor_us : 0;
+        double pos = r->pos0 + (double)dt * r->speed * r->frame_fr / 1e6;
+        if (pos >= span) {
             if (r->loop) {
-                new_frame = r->frame_ip +
-                            (new_frame - r->frame_ip) %
-                                (r->frame_op - r->frame_ip);
+                pos = fmod(pos, span);
             } else {
-                new_frame = r->frame_op - 1;
+                pos = span;
                 r->playing = false;
             }
         }
+        r->last_pos = pos;
+
+        int idx = (int)pos;
+        if (idx >= (int)span)
+            idx = (int)span - 1;
+        int new_frame = r->frame_ip + idx;
 
         if (new_frame != r->current_frame) {
             r->current_frame = new_frame;
             r->dirty = true;
             lt_rasterize(vt, r);
             lt_damage_all_placements(vt, r);
+            r->version++;
             any_advanced = true;
         }
-
-        r->last_tick_us += (uint64_t)((double)delta_int * 1e6 /
-                                      (r->speed * r->frame_fr));
-        r->version++;
     }
 
     return any_advanced;
+}
+
+bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us)
+{
+    return cfr_lottie_present(vt, now_us, 0);
+}
+
+int cfr_lottie_playing_count(CfrTerm *vt)
+{
+    struct CfrLottieState *st = vt->lottie;
+    if (!st)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < st->rec_count; i++) {
+        if (st->recs[i].playing)
+            n++;
+    }
+    return n;
 }
 
 const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count)

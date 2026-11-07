@@ -576,20 +576,33 @@ const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
                                                     int *out_count);
 ```
 
-### 4.3 Tick Function
+### 4.3 Frame Advancement
 
 ```c
-/* Advance all playing animations to the frame appropriate for now_us.
- * Re-rasterize any whose frame changed. Call once per frame before
- * cfr_get_lotties(). Returns true if any animation advanced. */
+/* Advance all playing animations to the frame that should be on screen at
+ * the given presentation time. Re-rasterize any whose frame changed.
+ * present_us: when the frame about to be drawn reaches the screen.
+ * hold_us:    how long it stays (normally one display refresh period);
+ *             0 = point sample. Returns true if any animation advanced. */
+bool cfr_lottie_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us);
+
+/* cfr_lottie_present(vt, now_us, 0). */
 bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us);
+
+/* Number of animations currently playing (excludes paused, stopped and
+ * finished ones). */
+int cfr_lottie_playing_count(CfrTerm *vt);
 ```
 
-The first call to `cfr_lottie_tick()` for a given animation establishes the
-baseline timestamp (`last_tick_us`). The second call actually advances frames
-based on elapsed time. This means the host must call `cfr_lottie_tick()` on
-every frame, even if no animations have been loaded yet (the function is a
-no-op when `vt->lottie == NULL`).
+The frame is a pure function of time (see §5.1): how often the host calls
+`cfr_lottie_present()`, and how late a call runs, changes nothing about which
+frame is chosen. The first call after an animation starts playing, resumes,
+seeks or changes speed anchors its clock and does not advance it. A host that
+paces to a display passes the refresh period as `hold_us` so that the frame is
+chosen at the middle of its time on screen; a host without a display clock
+passes `0` (or calls `cfr_lottie_tick()`). The function is a no-op when no
+animation has been loaded (`vt->lottie == NULL`), so it can be called
+unconditionally.
 
 ### 4.4 Scroll and Clear Functions
 
@@ -624,7 +637,7 @@ bool cfr_have_lottie(void);
 | `CfrSixel.id` / `.version`       | `CfrLottie.id` / `.version`                 | Same cache-key pattern                  |
 | `CfrSixel.rgba`                  | `CfrLottie.rgba`                            | Engine-owned, valid until next mutation |
 | `CfrSixel.row/col/layer`         | `CfrLottiePlacement.row/col/layer`          | Separate placement query API            |
-| N/A                              | `cfr_lottie_tick(vt, now_us)`               | Frame advancement                       |
+| N/A                              | `cfr_lottie_present(vt, t, hold)`           | Frame advancement                       |
 | N/A                              | `cfr_get_lottie_placements(vt, id, &count)` | Separate placement query with `.row`    |
 | `cfr_sixel_note_scroll()`        | `cfr_lottie_note_scroll()`                  | Same cull logic                         |
 | `cfr_sixel_clear_display_rows()` | `cfr_lottie_clear_display_rows()`           | Same clear logic                        |
@@ -633,32 +646,41 @@ bool cfr_have_lottie(void);
 
 ## 5. Frame Advancement and Rasterization
 
-### 5.1 Tick Algorithm
+### 5.1 Sampling Algorithm
 
-`cfr_lottie_tick(vt, now_us)` advances all playing animations:
+Each playing `LtRec` keeps an anchor: `anchor_us` (the `present_us` of the
+first call after it started playing, resumed, seeked or changed speed) and
+`pos0` (its position in frames from `ip` at that moment). `cfr_lottie_present()`
+evaluates a closed form, with no state carried between calls:
 
 ```
 For each LtRec where playing == true:
-    elapsed = now_us - last_tick_us
-    frame_delta = elapsed × speed × fr / 1_000_000
-    new_frame = current_frame + floor(frame_delta)
-    if new_frame >= op:
-        if loop:
-            new_frame = ip + (new_frame - ip) % (op - ip)
-        else:
-            new_frame = op - 1
-            playing = false
+    anchor on the first call (anchor_us = present_us)
+    t   = present_us + hold_us / 2
+    pos = pos0 + (t - anchor_us) × speed × fr / 1_000_000   // frames from ip
+    span = op - ip
+    if pos >= span:
+        if loop:  pos = fmod(pos, span)
+        else:     pos = span; playing = false
+    new_frame = ip + min(floor(pos), span - 1)
     if new_frame != current_frame:
         current_frame = new_frame
         lt_rasterize(rec)            // re-rasterize into rec->rgba
         rec->dirty = true
         rec->version++
-    last_tick_us += frame_delta × 1_000_000 / (speed × fr)
+    last_pos = pos
 ```
 
-**Important**: the first tick establishes `last_tick_us` and returns `false`
-(no frame advance). The second tick computes elapsed time and actually advances
-frames. Hosts must call `cfr_lottie_tick()` every frame.
+`last_pos` is the re-anchor point for a `play` that changes `speed` or `loop`
+on a running animation, so the position carries over, fractional frame
+included. `pause`, `stop` and `seek` anchor at the frame currently shown.
+`version` changes only when the frame does.
+
+**Why `hold_us / 2`**: for 30 fps content on a 60 Hz display every frame
+boundary is a refresh boundary. Sampling at the refresh would put `pos` on an
+integer, where rounding noise decides between a 2- and a 3-refresh hold.
+Sampling at the middle of the refresh leaves a quarter frame of margin each
+way.
 
 ### 5.2 Rasterization Pipeline
 
