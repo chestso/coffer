@@ -305,7 +305,7 @@ How to work this plan:
 - [x] **2.6** Register the test in `tests/Makefile.am`; `make check`
       green.
 - [x] **2.7** `make -C build format`; commit (`script: parser +
-executor, folded into libcoffer`).
+      executor, folded into libcoffer`).
 
 ### Phase 3 — coffer migrates to the module
 
@@ -331,7 +331,7 @@ executor, folded into libcoffer`).
       with `sendln`, `wait-for ... line-end`, `resize`, `render`,
       `await-exit`/`assert-exit`.
 - [x] **3.5** Format; commit (`coffer: run scripts through the
-script engine`).
+      script engine`).
 
 ### Phase 4 — portty adopts the engine
 
@@ -373,7 +373,7 @@ script engine`).
       exercises an extension command (`screendump`) and one that
       exercises a core command (`wait-for`).
 - [x] **4.8** Format; commit (`script: adopt coffer's script
-engine, keep UI commands as extensions`).
+      engine, keep UI commands as extensions`).
 
 ### Phase 5 — portty script audit
 

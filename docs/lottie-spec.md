@@ -200,7 +200,7 @@ This means animations scroll with text — identical to sixel images.
   the region. The host renderer additionally centers the rasterized texture
   within the cell box with transparent padding — this is automatic.
 - The rasterization pixel dimensions are `design_w * scale` by `design_h *
-scale` — always aspect-correct.
+  scale` — always aspect-correct.
 - `abs_line = sixel_abs_top + row` at the time of placement.
 
 ### 2.3 `place` — Add or update a placement

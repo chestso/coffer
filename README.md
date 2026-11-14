@@ -343,7 +343,7 @@ Build mode flags for `./configure` (all platforms):
 Optional targets:
 
 ```sh
-make format       # clang-format on src/, include/, tests/; prettier on *.md
+make format       # clang-format on src/, include/, tests/; dprint on *.md
 make bear         # produce compile_commands.json for clangd
 make distcheck    # build, test, and verify the dist tarball is self-contained
 ```

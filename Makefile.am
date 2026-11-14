@@ -53,7 +53,7 @@ FORMAT_FIND = find $(top_srcdir)/src $(top_srcdir)/include $(top_srcdir)/tests \
 # `sed -i`, and it needs no perl.
 FORMAT_EOL_TEST = [ "$$(tail -c 1 "$$f" | wc -l)" -eq 0 ]
 
-# Format target — runs clang-format on C/C++ and prettier on Markdown.
+# Format target — runs clang-format on C/C++ and dprint on Markdown.
 # Requires the tools to be installed; logs a warning if they are not.
 #
 # The final-newline pass is separate on purpose. clang-format only gained
@@ -76,12 +76,12 @@ format:
 	        echo "  EOL      $${f#$(top_srcdir)/}"; \
 	    fi; \
 	done' sh
-	@if command -v prettier >/dev/null 2>&1; then \
-	    echo "Formatting Markdown with prettier..."; \
-	    find $(top_srcdir) -maxdepth 2 -name '*.md' -print0 \
-	        | xargs -0 prettier --write; \
+	@if command -v dprint >/dev/null 2>&1; then \
+	    echo "Formatting Markdown with dprint..."; \
+	    find $(top_srcdir) -maxdepth 2 -name '*.md' -not -path '*/node_modules/*' -print0 \
+	        | xargs -0 -r dprint fmt; \
 	else \
-	    echo "prettier not found - skipping Markdown formatting." >&2; \
+	    echo "dprint not found - skipping Markdown formatting." >&2; \
 	fi
 
 # Format check — the read-only twin of `format`: same three passes, but it
@@ -105,12 +105,12 @@ format-check:
 	        fi; \
 	    done; \
 	    exit $$status' sh || status=1; \
-	if command -v prettier >/dev/null 2>&1; then \
-	    echo "Checking Markdown formatting with prettier..."; \
-	    find $(top_srcdir) -maxdepth 2 -name '*.md' -print0 \
-	        | xargs -0 prettier --check || status=1; \
+	if command -v dprint >/dev/null 2>&1; then \
+	    echo "Checking Markdown formatting with dprint..."; \
+	    find $(top_srcdir) -maxdepth 2 -name '*.md' -not -path '*/node_modules/*' -print0 \
+	        | xargs -0 -r dprint check || status=1; \
 	else \
-	    echo "prettier not found - skipping Markdown format check." >&2; \
+	    echo "dprint not found - skipping Markdown format check." >&2; \
 	fi; \
 	if [ $$status -eq 0 ]; then echo "Format check passed."; \
 	else echo "Format check failed - run \`make -C build format\`." >&2; fi; \
