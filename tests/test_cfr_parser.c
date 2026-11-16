@@ -169,14 +169,206 @@ static void test_osc11_query_bel(void)
     cfr_free(vt);
 }
 
-static void test_osc_color_set_ignored(void)
+/* Dynamic colors (xterm OSC 10/11/12): set, query, reset. The set form
+ * replies nothing — only "?" queries do. */
+static void test_osc11_bg_set_and_query(void)
 {
-    /* OSC 10/11 with a payload (not "?") should be silently ignored
-     * — we don't implement color overrides yet. */
     CfrTerm *vt = make_term(24, 80);
-    g_output_len = 0;
     feed(vt, "\x1b]11;rgb:ff/00/00\x1b\\");
     ASSERT_EQ(g_output_len, (size_t)0);
+
+    feed(vt, "\x1b]11;?\x1b\\");
+    ASSERT_STR_EQ(g_output_buf, "\x1b]11;rgb:ffff/0000/0000\x1b\\");
+    cfr_free(vt);
+}
+
+/* All the XParseColor RGB forms land on the same value. */
+static void test_osc10_spec_forms(void)
+{
+    static const char *const specs[] = {
+        "rgb:f/0/0",
+        "rgb:ff/0/0",
+        "#f00",
+        "#ff0000",
+        "#ffff00000000",
+    };
+    for (size_t i = 0; i < sizeof(specs) / sizeof(specs[0]); i++) {
+        CfrTerm *vt = make_term(24, 80);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "\x1b]10;%s\x1b\\", specs[i]);
+        feed(vt, buf);
+        g_output_len = 0;
+        g_output_buf[0] = '\0';
+        feed(vt, "\x1b]10;?\x1b\\");
+        ASSERT_STR_EQ(g_output_buf, "\x1b]10;rgb:ffff/0000/0000\x1b\\");
+        cfr_free(vt);
+    }
+}
+
+/* XParseColor scaling: a 1-digit component covers 0..15 and is scaled
+ * up — rgb:8 is #88, not #08. */
+static void test_osc10_component_scaling(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b]10;rgb:8/8/8\x1b\\");
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    feed(vt, "\x1b]10;?\x1b\\");
+    ASSERT_STR_EQ(g_output_buf, "\x1b]10;rgb:8888/8888/8888\x1b\\");
+    cfr_free(vt);
+}
+
+/* xterm chaining: each successive parameter advances to the next
+ * color in the list, so OSC 10 ; fg ; bg ; cursor sets all three. */
+static void test_osc_color_chain(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b]10;rgb:11/22/33;rgb:44/55/66;rgb:77/88/99\x1b\\");
+
+    uint32_t rgb = 0;
+    bool set = false;
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 10, &rgb, &set));
+    ASSERT_EQ(rgb, 0x112233u);
+    ASSERT_TRUE(set);
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 11, &rgb, &set));
+    ASSERT_EQ(rgb, 0x445566u);
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 12, &rgb, &set));
+    ASSERT_EQ(rgb, 0x778899u);
+    ASSERT_TRUE(set);
+    cfr_free(vt);
+}
+
+static void test_osc12_cursor_color(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* Unset: *out_set is false (reverse-video default) and the query
+     * reports the foreground — xterm's cursorColor default is
+     * XtDefaultForeground. */
+    uint32_t rgb = 0;
+    bool set = true;
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 12, &rgb, &set));
+    ASSERT_FALSE(set);
+    ASSERT_EQ(rgb, cfr_default_fg_rgb());
+    feed(vt, "\x1b]12;?\x1b\\");
+    ASSERT_STR_EQ(g_output_buf, "\x1b]12;rgb:f8f8/f8f8/f2f2\x1b\\");
+
+    feed(vt, "\x1b]12;#00ff00\x1b\\");
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 12, &rgb, &set));
+    ASSERT_EQ(rgb, 0x00ff00u);
+    ASSERT_TRUE(set);
+
+    /* OSC 112 resets to the reverse-video default. */
+    feed(vt, "\x1b]112\x1b\\");
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 12, &rgb, &set));
+    ASSERT_FALSE(set);
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    feed(vt, "\x1b]12;?\x1b\\");
+    ASSERT_STR_EQ(g_output_buf, "\x1b]12;rgb:f8f8/f8f8/f2f2\x1b\\");
+    cfr_free(vt);
+}
+
+/* OSC 110/111/112 reset to the CfrConfig seeds, not to the built-in
+ * defaults. */
+static void test_osc110_111_reset_to_config(void)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.fg_color = (CfrColorValue){ true, 0x123456 };
+    cfg.cursor_color = (CfrColorValue){ true, 0xabcdef };
+    CfrTerm *vt = cfr_new(&cfg);
+    CfrCallbacks cb = { 0 };
+    cb.output = on_output;
+    cfr_set_callbacks(vt, &cb, NULL);
+
+    uint32_t rgb = 0;
+    bool set = false;
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 10, &rgb, &set));
+    ASSERT_EQ(rgb, 0x123456u);
+
+    feed(vt, "\x1b]10;#ffffff\x1b\\");
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 10, &rgb, NULL));
+    ASSERT_EQ(rgb, 0xffffffu);
+
+    feed(vt, "\x1b]110\x1b\\");
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 10, &rgb, NULL));
+    ASSERT_EQ(rgb, 0x123456u);
+
+    /* The cursor seed is an explicit color: OSC 112 returns to it. */
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 12, &rgb, &set));
+    ASSERT_EQ(rgb, 0xabcdefu);
+    ASSERT_TRUE(set);
+    feed(vt, "\x1b]12;#000000\x1b\\");
+    feed(vt, "\x1b]112\x1b\\");
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 12, &rgb, &set));
+    ASSERT_EQ(rgb, 0xabcdefu);
+    ASSERT_TRUE(set);
+    cfr_free(vt);
+}
+
+/* Unparseable specs (X color names, malformed rgb:) are ignored, not
+ * fatal, and leave the color alone. */
+static void test_osc_color_bad_spec_ignored(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b]11;DarkSlateGray\x1b\\");
+    feed(vt, "\x1b]11;rgb:zz/00/00\x1b\\");
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    feed(vt, "\x1b]11;?\x1b\\");
+    ASSERT_STR_EQ(g_output_buf, "\x1b]11;rgb:0000/0000/0000\x1b\\");
+    cfr_free(vt);
+}
+
+static int g_color_calls;
+static int g_color_last_code;
+static uint32_t g_color_last_rgb;
+static bool g_color_last_set;
+
+static void on_set_color(int code, uint32_t rgb, bool set, void *u)
+{
+    (void)u;
+    g_color_calls++;
+    g_color_last_code = code;
+    g_color_last_rgb = rgb;
+    g_color_last_set = set;
+}
+
+/* The host hears about every dynamic color change — once per real
+ * change. */
+static void test_set_color_callback(void)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    CfrTerm *vt = cfr_new(&cfg);
+    CfrCallbacks cb = { 0 };
+    cb.output = on_output;
+    cb.set_color = on_set_color;
+    cfr_set_callbacks(vt, &cb, NULL);
+    g_color_calls = 0;
+
+    feed(vt, "\x1b]11;rgb:ff/00/00\x1b\\");
+    ASSERT_EQ(g_color_calls, 1);
+    ASSERT_EQ(g_color_last_code, 11);
+    ASSERT_EQ(g_color_last_rgb, 0xff0000u);
+    ASSERT_TRUE(g_color_last_set);
+
+    /* Same value again: no change, no callback. */
+    feed(vt, "\x1b]11;rgb:ff/00/00\x1b\\");
+    ASSERT_EQ(g_color_calls, 1);
+
+    /* Reset reports the seed with `set` per the seed. */
+    feed(vt, "\x1b]111\x1b\\");
+    ASSERT_EQ(g_color_calls, 2);
+    ASSERT_EQ(g_color_last_rgb, cfr_default_bg_rgb());
+    ASSERT_FALSE(g_color_last_set);
     cfr_free(vt);
 }
 
@@ -1726,7 +1918,14 @@ int main(int argc, char *argv[])
     RUN_TEST(test_osc11_bg_query);
     RUN_TEST(test_osc10_fg_query);
     RUN_TEST(test_osc11_query_bel);
-    RUN_TEST(test_osc_color_set_ignored);
+    RUN_TEST(test_osc11_bg_set_and_query);
+    RUN_TEST(test_osc10_spec_forms);
+    RUN_TEST(test_osc10_component_scaling);
+    RUN_TEST(test_osc_color_chain);
+    RUN_TEST(test_osc12_cursor_color);
+    RUN_TEST(test_osc110_111_reset_to_config);
+    RUN_TEST(test_osc_color_bad_spec_ignored);
+    RUN_TEST(test_set_color_callback);
     RUN_TEST(test_utf8_basic);
     RUN_TEST(test_utf8_replacement);
     RUN_TEST(test_osc8_marks_cell);

@@ -274,9 +274,10 @@ static void dump_styles(CfrTerm *vt, FILE *out, int row)
 
 static void dump_cursor(CfrTerm *vt, FILE *out)
 {
+    static const char *const shapes[] = { "block", "underline", "bar" };
     CfrCursor c = cfr_get_cursor(vt);
-    fprintf(out, "cursor: row=%d col=%d visible=%d blink=%d\n", c.row,
-            c.col, c.visible, c.blink);
+    fprintf(out, "cursor: row=%d col=%d visible=%d blink=%d shape=%s\n",
+            c.row, c.col, c.visible, c.blink, shapes[c.shape]);
 }
 
 /* The kitty keyboard protocol stack: the active mask (what keys are

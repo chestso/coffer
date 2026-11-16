@@ -492,6 +492,23 @@ static void test_altscreen_no_mode_restore_on_47(void)
     cfr_free(vt);
 }
 
+/* The DECSCUSR cursor shape is a mode-ish attribute like blink: a
+ * full 1049 save/restore brings back the pre-altscreen shape. */
+static void test_altscreen_restores_cursor_shape(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    feed(vt, "\x1b[5 q"); /* bar in the main screen */
+    feed(vt, "\x1b[?1049h");
+    feed(vt, "\x1b[3 q"); /* underline in the alt screen */
+    ASSERT_EQ(cfr_get_cursor(vt).shape, CFR_CURSOR_UNDERLINE);
+    feed(vt, "\x1b[?1049l");
+
+    ASSERT_EQ(cfr_get_cursor(vt).shape, CFR_CURSOR_BAR);
+
+    cfr_free(vt);
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -512,6 +529,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_altscreen_restores_visible_mode);
     RUN_TEST(test_altscreen_restores_modes_array);
     RUN_TEST(test_altscreen_no_mode_restore_on_47);
+    RUN_TEST(test_altscreen_restores_cursor_shape);
 
     TEST_SUMMARY();
 }

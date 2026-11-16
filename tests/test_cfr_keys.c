@@ -510,13 +510,205 @@ static void test_xtversion_custom_name(void)
     cfr_free(vt);
 }
 
-/* DECSCUSR (CSI ? Ps q) shares the final byte 'q' but has '?' intermediate,
- * so it must NOT trigger an XTVERSION response. */
-static void test_decscusr_does_not_emit_xtversion(void)
+/* `CSI ? Ps q` is NOT the xterm DECSCUSR form (that is `CSI Ps SP q`):
+ * the private variant is unknown here and must stay completely silent
+ * — no XTVERSION reply, no cursor change. */
+static void test_private_q_stays_silent(void)
 {
     CfrTerm *vt = make_term();
     feed(vt, "\x1b[?3q");
     ASSERT_EQ(g_output_len, 0);
+    ASSERT_EQ(cfr_get_cursor(vt).shape, CFR_CURSOR_BLOCK);
+    cfr_free(vt);
+}
+
+/* DECSCUSR (CSI Ps SP q), xterm's Ps table: 0/1 blinking block,
+ * 2 steady block, 3 blinking underline, 4 steady underline,
+ * 5 blinking bar, 6 steady bar. */
+static void test_decscusr_style_table(void)
+{
+    static const struct
+    {
+        int ps;
+        CfrCursorShape shape;
+        bool blink;
+    } cases[] = {
+        { 0, CFR_CURSOR_BLOCK, true },
+        { 1, CFR_CURSOR_BLOCK, true },
+        { 2, CFR_CURSOR_BLOCK, false },
+        { 3, CFR_CURSOR_UNDERLINE, true },
+        { 4, CFR_CURSOR_UNDERLINE, false },
+        { 5, CFR_CURSOR_BAR, true },
+        { 6, CFR_CURSOR_BAR, false },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        CfrTerm *vt = make_term();
+        char buf[16];
+        snprintf(buf, sizeof(buf), "\x1b[%d q", cases[i].ps);
+        feed(vt, buf);
+        CfrCursor c = cfr_get_cursor(vt);
+        ASSERT_EQ(c.shape, cases[i].shape);
+        ASSERT_TRUE(c.blink == cases[i].blink);
+        cfr_free(vt);
+    }
+
+    /* A missing Ps behaves like 0. */
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[2 q");
+    feed(vt, "\x1b[ q");
+    CfrCursor c = cfr_get_cursor(vt);
+    ASSERT_EQ(c.shape, CFR_CURSOR_BLOCK);
+    ASSERT_TRUE(c.blink);
+    cfr_free(vt);
+}
+
+/* Ps = 7 restores the initial (CfrConfig) style — xterm's
+ * "initial resources". Out-of-range Ps is ignored. */
+static void test_decscusr_initial_and_invalid(void)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.cursor_shape = CFR_CURSOR_BAR;
+    cfg.cursor_blink = 0; /* steady */
+    CfrTerm *vt = cfr_new(&cfg);
+    CfrCallbacks cb = { 0 };
+    cb.output = on_output;
+    cfr_set_callbacks(vt, &cb, NULL);
+
+    feed(vt, "\x1b[3 q"); /* blinking underline */
+    ASSERT_EQ(cfr_get_cursor(vt).shape, CFR_CURSOR_UNDERLINE);
+    ASSERT_TRUE(cfr_get_cursor(vt).blink);
+
+    feed(vt, "\x1b[7 q");
+    ASSERT_EQ(cfr_get_cursor(vt).shape, CFR_CURSOR_BAR);
+    ASSERT_FALSE(cfr_get_cursor(vt).blink);
+
+    feed(vt, "\x1b[8 q"); /* out of range: ignored */
+    ASSERT_EQ(cfr_get_cursor(vt).shape, CFR_CURSOR_BAR);
+    ASSERT_FALSE(cfr_get_cursor(vt).blink);
+    cfr_free(vt);
+}
+
+/* DECSCUSR and the AT&T blink mode (?12) share one blink state —
+ * mirrored into CFR_MODE_CURSOR_BLINK, with set_mode on real changes
+ * only. Modes 13/14 are user-preference in xterm and ignored there. */
+static void test_blink_state_is_shared(void)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    CfrTerm *vt = cfr_new(&cfg);
+    CfrCallbacks cb = { 0 };
+    cb.output = on_output;
+    cb.set_mode = on_set_mode;
+    cfr_set_callbacks(vt, &cb, NULL);
+    g_set_mode_calls = 0;
+
+    feed(vt, "\x1b[2 q"); /* steady block */
+    ASSERT_FALSE(cfr_get_cursor(vt).blink);
+    ASSERT_FALSE(cfr_get_mode(vt, CFR_MODE_CURSOR_BLINK));
+    ASSERT_EQ(g_set_mode_calls, 1);
+
+    /* Redundant set: the state is unchanged, so no callback. */
+    feed(vt, "\x1b[?12l");
+    ASSERT_EQ(g_set_mode_calls, 1);
+
+    feed(vt, "\x1b[?12h"); /* start blinking again */
+    ASSERT_TRUE(cfr_get_cursor(vt).blink);
+    ASSERT_TRUE(cfr_get_mode(vt, CFR_MODE_CURSOR_BLINK));
+    ASSERT_EQ(g_set_mode_calls, 2);
+
+    feed(vt, "\x1b[?13l");
+    feed(vt, "\x1b[?14h");
+    ASSERT_TRUE(cfr_get_cursor(vt).blink);
+    ASSERT_EQ(g_set_mode_calls, 2);
+    cfr_free(vt);
+}
+
+static int g_movecursor_calls;
+static int g_damage_calls;
+static CfrRect g_damage_rect;
+
+static void on_movecursor(CfrCursor cur, void *u)
+{
+    (void)cur;
+    (void)u;
+    g_movecursor_calls++;
+}
+static void on_damage(CfrRect rect, void *u)
+{
+    (void)u;
+    g_damage_calls++;
+    g_damage_rect = rect;
+}
+
+/* A style change repaints the cursor cell (the damage flush watches
+ * only row/col/visibility) and re-reports the cursor. */
+static void test_style_change_damages_cursor_cell(void)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    CfrTerm *vt = cfr_new(&cfg);
+    CfrCallbacks cb = { 0 };
+    cb.output = on_output;
+    cb.movecursor = on_movecursor;
+    cb.damage = on_damage;
+    cfr_set_callbacks(vt, &cb, NULL);
+
+    feed(vt, "\x1b[5;10H"); /* row 4, col 9 */
+    cfr_damage_flush(vt);   /* settle the move's fold-in damage */
+    g_damage_calls = 0;
+    g_movecursor_calls = 0;
+
+    feed(vt, "\x1b[5 q"); /* blinking bar */
+    ASSERT_EQ(g_movecursor_calls, 1);
+    cfr_damage_flush(vt);
+    ASSERT_EQ(g_damage_calls, 1);
+    ASSERT_EQ(g_damage_rect.start_row, 4);
+    ASSERT_EQ(g_damage_rect.end_row, 4);
+    ASSERT_EQ(g_damage_rect.start_col, 9);
+    ASSERT_EQ(g_damage_rect.end_col, 9);
+    cfr_free(vt);
+}
+
+/* RIS restores the configured cursor style and dynamic colors. */
+static void test_ris_restores_style_and_colors(void)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.cursor_shape = CFR_CURSOR_UNDERLINE;
+    cfg.cursor_blink = 0; /* steady */
+    cfg.fg_color = (CfrColorValue){ true, 0x112233 };
+    CfrTerm *vt = cfr_new(&cfg);
+    CfrCallbacks cb = { 0 };
+    cb.output = on_output;
+    cfr_set_callbacks(vt, &cb, NULL);
+
+    feed(vt, "\x1b[5 q");
+    feed(vt, "\x1b]10;#ffffff\x1b\\");
+    feed(vt, "\x1b]12;#ff00ff\x1b\\");
+    feed(vt, "\x1b"
+             "c"); /* RIS */
+
+    ASSERT_EQ(cfr_get_cursor(vt).shape, CFR_CURSOR_UNDERLINE);
+    ASSERT_FALSE(cfr_get_cursor(vt).blink);
+    uint32_t rgb = 0;
+    bool set = false;
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 10, &rgb, &set));
+    ASSERT_EQ(rgb, 0x112233u);
+    ASSERT_TRUE(cfr_get_dynamic_color(vt, 12, &rgb, &set));
+    ASSERT_FALSE(set);
     cfr_free(vt);
 }
 
@@ -676,7 +868,12 @@ int main(int argc, char **argv)
     RUN_TEST(test_bare_csi_u_still_restores);
     RUN_TEST(test_xtversion_default_name);
     RUN_TEST(test_xtversion_custom_name);
-    RUN_TEST(test_decscusr_does_not_emit_xtversion);
+    RUN_TEST(test_private_q_stays_silent);
+    RUN_TEST(test_decscusr_style_table);
+    RUN_TEST(test_decscusr_initial_and_invalid);
+    RUN_TEST(test_blink_state_is_shared);
+    RUN_TEST(test_style_change_damages_cursor_cell);
+    RUN_TEST(test_ris_restores_style_and_colors);
     RUN_TEST(test_reset_input_state_clears_kitty_stack);
     RUN_TEST(test_reset_input_state_keeps_screen);
     RUN_TEST(test_reset_input_state_clears_decckm);

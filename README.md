@@ -91,12 +91,21 @@ compositing. See the portty README for renderer-side details.
   player ([plotty](https://github.com/chestso/portty/tree/master/contrib/plotty))
   provides interactive playback with keyboard controls for pause, seek,
   speed, opacity, and layer toggling.
-- **Background/foreground color queries (OSC 10/11)** — `OSC 11 ; ? ST`
-  (and `OSC 10 ; ? ST`) responds with the terminal background/foreground
-  color as `rgb:RRRR/GGGG/BBBB`. Image viewers such as chafa and viu query
-  the background color before encoding to sixel so they can alpha-composite
-  semi-transparent pixels against it; without a response, partial
-  transparency was lost.
+- **Dynamic colors (OSC 10/11/12)** — set, query (`?`) and reset
+  (`OSC 110/111/112`) for the default foreground, the default background
+  and the cursor color, per xterm. `OSC 11 ; ? ST` responds with the
+  terminal background as `rgb:RRRR/GGGG/BBBB`, and successive parameters
+  chain through the color list (`OSC 10 ; fg ; bg ; cursor`). Image
+  viewers such as chafa and viu query the background color before
+  encoding to sixel so they can alpha-composite semi-transparent pixels
+  against it; without a response, partial transparency was lost. The
+  colors are seeded from `CfrConfig` (`.fg_color` / `.bg_color` /
+  `.cursor_color`) and read back with `cfr_get_dynamic_color()`.
+- **Cursor style (DECSCUSR)** — `CSI Ps SP q` sets the cursor shape
+  (block / underline / bar) and its blinking per xterm's Ps table,
+  tracked in `CfrCursor.shape` / `.blink`; Ps = 7 restores the initial
+  `CfrConfig` style. `CSI ? 12 h/l` (AT&T 610 blink) shares the same
+  blink state.
 - **Window-size queries (XTWINOPS)** — `CSI 14 t`, `CSI 16 t`, and
   `CSI 18 t` report the text area in pixels, cell size in pixels, and text
   area in character cells respectively, matching xterm responses.

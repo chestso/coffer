@@ -83,18 +83,22 @@ CfrTerm *cfr_new_with_allocator(const CfrConfig *cfg, const CfrAllocator *alloc)
     vt->reflow_enabled = cfg->reflow;
     vt->ambiguous_wide = cfg->ambiguous_wide;
     vt->terminal_name = cfg->terminal_name;
+    vt->default_shape = cfg->cursor_shape;
+    vt->default_blink = (cfg->cursor_blink >= 0) ? (cfg->cursor_blink != 0) : true;
     vt->cursor.visible = true;
-    vt->cursor.blink = true;
+    vt->cursor.blink = vt->default_blink;
+    vt->cursor.shape = vt->default_shape;
     /* Mirror the initial cursor so the first flush doesn't spuriously damage. */
     vt->dmg_cursor_visible = true;
     vt->cursor.pen.color_flags =
         CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_BG | CFR_COLOR_DEFAULT_UL;
     vt->modes[CFR_MODE_CURSOR_VISIBLE] = true;
-    vt->modes[CFR_MODE_CURSOR_BLINK] = true;
+    vt->modes[CFR_MODE_CURSOR_BLINK] = vt->default_blink;
     vt->modes[CFR_MODE_DECAWM] = true;
     vt->charset[0] = vt->charset[1] = vt->charset[2] = vt->charset[3] = 'B';
     vt->charset_active = 0;
 
+    cfr_dyn_color_init(vt, cfg);
     cfr_parser_init(&vt->parser);
 
     /* Tab stops every 8 columns by default. */
@@ -261,6 +265,7 @@ CfrCursor cfr_get_cursor(const CfrTerm *vt)
     out.col = vt->cursor.col >= vt->cols ? vt->cols - 1 : vt->cursor.col;
     out.visible = vt->cursor.visible;
     out.blink = vt->cursor.blink;
+    out.shape = vt->cursor.shape;
     return out;
 }
 

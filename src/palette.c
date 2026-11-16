@@ -1,5 +1,5 @@
 /*
- * coffer — 256-color palette resolution.
+ * coffer — 256-color palette resolution and dynamic colors.
  *
  * Layout:
  *   0-15:   ANSI base colors (Dracula, per draculatheme.com/spec)
@@ -9,10 +9,12 @@
  * The 0-15 colors are the canonical Dracula ANSI palette from the
  * official specification at draculatheme.com/spec.
  *
- * The default terminal background is pitch-black (#000000), separate
- * from palette index 0 (AnsiBlack #21222C). The default foreground is
- * Dracula's foreground (#F8F8F2), which coincides with AnsiWhite
- * (palette index 7). Neither is user-configurable.
+ * The built-in default background is pitch-black (#000000), separate
+ * from palette index 0 (AnsiBlack #21222C). The built-in default
+ * foreground is Dracula's foreground (#F8F8F2), which coincides with
+ * AnsiWhite (palette index 7). Both are the fallback for the dynamic
+ * colors (xterm OSC 10/11/12): a CfrConfig seed or an OSC set
+ * overrides them, OSC 110/111/112 and RIS restore the seed.
  */
 
 #include "coffer_internal.h"
@@ -70,4 +72,82 @@ uint32_t cfr_default_fg_rgb(void)
 uint32_t cfr_default_palette_rgb(uint8_t index)
 {
     return cfr_palette_lookup(NULL, index);
+}
+
+/* ------------------------------------------------------------------ */
+/* Dynamic colors (xterm OSC 10/11/12 family)                          */
+/* ------------------------------------------------------------------ */
+
+/* Seed the dynamic colors from the config (or the built-in defaults)
+ * and apply them. No notifications: this runs inside cfr_new(), before
+ * any host can have registered callbacks. */
+void cfr_dyn_color_init(CfrTerm *vt, const CfrConfig *cfg)
+{
+    vt->dyn_color_seed[CFR_DYN_FG] = cfg->fg_color;
+    vt->dyn_color_seed[CFR_DYN_BG] = cfg->bg_color;
+    vt->dyn_color_seed[CFR_DYN_CURSOR] = cfg->cursor_color;
+    if (!vt->dyn_color_seed[CFR_DYN_FG].set)
+        vt->dyn_color_seed[CFR_DYN_FG].rgb = cfr_default_fg_rgb();
+    if (!vt->dyn_color_seed[CFR_DYN_BG].set)
+        vt->dyn_color_seed[CFR_DYN_BG].rgb = cfr_default_bg_rgb();
+    for (int i = 0; i < CFR_DYN_COUNT; i++)
+        vt->dyn_color[i] = vt->dyn_color_seed[i];
+}
+
+/* The value a query reports and a renderer draws: the explicit color
+ * when one is in effect, else the engine default. The cursor's default
+ * is the foreground — xterm's cursorColor default is
+ * XtDefaultForeground, and its reverse-video cursor is drawn in it. */
+uint32_t cfr_dyn_color_effective(const CfrTerm *vt, int idx)
+{
+    const CfrColorValue *c = &vt->dyn_color[idx];
+    if (c->set)
+        return c->rgb;
+    if (idx == CFR_DYN_CURSOR)
+        return cfr_dyn_color_effective(vt, CFR_DYN_FG);
+    return c->rgb;
+}
+
+/* Apply a dynamic color value: remember it, dirty what renders with it
+ * (default-colored cells for fg/bg, the cursor cell for the cursor
+ * color) and tell the host — once, and only on a real change. */
+void cfr_dyn_color_set(CfrTerm *vt, int idx, bool set, uint32_t rgb)
+{
+    CfrColorValue *slot = &vt->dyn_color[idx];
+    if (slot->set == set && slot->rgb == rgb)
+        return;
+    slot->set = set;
+    slot->rgb = rgb;
+    if (idx == CFR_DYN_CURSOR)
+        cfr_damage_cursor(vt);
+    else
+        cfr_damage_all(vt);
+    if (vt->callbacks.set_color)
+        vt->callbacks.set_color(idx + 10, cfr_dyn_color_effective(vt, idx),
+                                set, vt->callback_user);
+}
+
+void cfr_dyn_color_reset(CfrTerm *vt, int idx)
+{
+    cfr_dyn_color_set(vt, idx, vt->dyn_color_seed[idx].set,
+                      vt->dyn_color_seed[idx].rgb);
+}
+
+void cfr_dyn_color_reset_all(CfrTerm *vt)
+{
+    for (int i = 0; i < CFR_DYN_COUNT; i++)
+        cfr_dyn_color_reset(vt, i);
+}
+
+bool cfr_get_dynamic_color(const CfrTerm *vt, int code, uint32_t *out_rgb,
+                           bool *out_set)
+{
+    if (!vt || code < 10 || code > 12)
+        return false;
+    int idx = code - 10;
+    if (out_rgb)
+        *out_rgb = cfr_dyn_color_effective(vt, idx);
+    if (out_set)
+        *out_set = vt->dyn_color[idx].set;
+    return true;
 }

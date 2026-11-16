@@ -2,8 +2,9 @@
  * coffer — OSC dispatcher.
  *
  * Parses the leading numeric code and routes title-setting (0/1/2) to
- * the set_title callback, hands OSC 8 to the hyperlink dispatcher, and
- * forwards everything else to the generic osc callback.
+ * the set_title callback, hands OSC 8 to the hyperlink dispatcher,
+ * OSC 10/11/12 (+110/111/112) to the dynamic color handlers below,
+ * and forwards everything else to the generic osc callback.
  *
  * OSC 8 — hyperlink protocol (de-facto spec by Egmont Koblinger):
  *   https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
@@ -79,32 +80,147 @@ static void set_title(CfrTerm *vt, const uint8_t *data, size_t len)
 }
 
 /*
- * OSC 10 / 11 — foreground / background color query.
+ * OSC 10 / 11 / 12 — dynamic colors (xterm).
  *
- * Query form: OSC 10 ; ? ST  (or OSC 11 ; ? ST for background).
- * Response:   OSC 10 ; rgb:RRRR/GGGG/BBBB ST
+ * Codes 10 (default foreground), 11 (default background) and 12
+ * (cursor color) set, query and reset the dynamic colors:
  *
- * Many image viewers (chafa, viu, etc.) send OSC 11 ? to detect the
- * terminal background color so they can alpha-composite semi-transparent
+ *   OSC 10 ; Pt ST    Pt = a color spec, or "?" to query
+ *   OSC 110 ; ST      reset the foreground to its CfrConfig value
+ *
+ * Each successive Pt applies to the next color in the list (the OSC
+ * code is the starting point), so `OSC 10 ; fg ; bg ; cursor ST` sets
+ * all three — the xterm behaviour. Codes 13-19 (pointer, Tektronix,
+ * highlight colors) are not modeled and stay with the generic osc
+ * callback.
+ *
+ * Many image viewers (chafa, viu, etc.) send `OSC 11 ?` to detect the
+ * terminal background so they can alpha-composite semi-transparent
  * pixels against it before encoding to sixel. Without a response, the
  * query hangs or falls back to a default, and partial transparency is
  * lost.
+ *
+ * Color specs are the XParseColor RGB forms: `rgb:R[/G[/B]]` (1-4 hex
+ * digits per component, missing components 0) and `#RGB` / `#RRGGBB` /
+ * `#RRRRRGGGGGGBBBBBB`. X color names are out of scope (logged once).
  */
-static void osc_color_query(CfrTerm *vt, int code, const uint8_t *body, size_t body_len)
-{
-    /* Only respond to the query form (payload is "?"). */
-    if (!body || body_len != 1 || body[0] != '?')
-        return;
 
-    uint32_t rgb = (code == 11) ? cfr_default_bg_rgb() : cfr_default_fg_rgb();
+/* The value one hex digit stands for at each width, per XParseColor:
+ * a component of `digits` hex digits covers 0..16^digits - 1 and is
+ * scaled to 0..255 rounded to nearest. */
+static uint32_t scale_hex_component(uint32_t v, int digits)
+{
+    static const uint32_t max[5] = { 0, 0xfu, 0xffu, 0xfffu, 0xffffu };
+    return (v * 255u + max[digits] / 2u) / max[digits];
+}
+
+static int hex_digit(uint8_t c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+/* Parse an XParseColor RGB specification into 0x00RRGGBB. */
+static bool parse_color_spec(const uint8_t *s, size_t len, uint32_t *out_rgb)
+{
+    uint32_t comp[3] = { 0, 0, 0 };
+
+    if (len >= 4 && memcmp(s, "rgb:", 4) == 0) {
+        size_t pos = 4;
+        int parsed = 0;
+        for (int i = 0; i < 3 && pos < len; i++) {
+            uint32_t v = 0;
+            int digits = 0;
+            while (pos < len && s[pos] != '/') {
+                int h = hex_digit(s[pos]);
+                if (h < 0 || digits == 4)
+                    return false;
+                v = v * 16u + (uint32_t)h;
+                digits++;
+                pos++;
+            }
+            if (digits == 0)
+                return false;
+            comp[i] = scale_hex_component(v, digits);
+            parsed++;
+            if (i < 2 && pos < len)
+                pos++; /* skip the '/' */
+        }
+        if (parsed == 0 || pos != len)
+            return false;
+    } else if (len >= 1 && s[0] == '#') {
+        int width = ((int)len - 1) / 3;
+        if (len != 4 && len != 7 && len != 13) /* #RGB, #RRGGBB, #RRRRRGGGGGGBBBBBB */
+            return false;
+        for (int i = 0; i < 3; i++) {
+            uint32_t v = 0;
+            for (int k = 0; k < width; k++) {
+                int h = hex_digit(s[1 + i * width + k]);
+                if (h < 0)
+                    return false;
+                v = v * 16u + (uint32_t)h;
+            }
+            comp[i] = scale_hex_component(v, width);
+        }
+    } else {
+        return false;
+    }
+
+    *out_rgb = (comp[0] << 16) | (comp[1] << 8) | comp[2];
+    return true;
+}
+
+/* Query reply, xterm's form: OSC code ; rgb:RRRR/GGGG/BBBB ST (16-bit
+ * per channel). One reply per queried color. */
+static void emit_color_report(CfrTerm *vt, int code, uint32_t rgb)
+{
+    unsigned r = (rgb >> 16) & 0xffu;
+    unsigned g = (rgb >> 8) & 0xffu;
+    unsigned b = rgb & 0xffu;
     char buf[48];
-    int n = snprintf(buf, sizeof(buf), "\x1b]%d;rgb:%02x%02x/%02x%02x/%02x%02x\x1b\\",
-                     code,
-                     (rgb >> 16) & 0xff, (rgb >> 16) & 0xff,
-                     (rgb >> 8) & 0xff, (rgb >> 8) & 0xff,
-                     rgb & 0xff, rgb & 0xff);
+    int n = snprintf(buf, sizeof(buf), "\x1b]%d;rgb:%04x/%04x/%04x\x1b\\",
+                     code, r * 0x101u, g * 0x101u, b * 0x101u);
     if (n > 0)
         cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+}
+
+static void dyn_color_spec(CfrTerm *vt, int code, const uint8_t *spec, size_t len)
+{
+    if (len == 0)
+        return;
+    if (len == 1 && spec[0] == '?') {
+        emit_color_report(vt, code, cfr_dyn_color_effective(vt, code - 10));
+        return;
+    }
+    uint32_t rgb;
+    if (!parse_color_spec(spec, len, &rgb)) {
+        if (should_log_once(vt, CFR_LOGGED_BAD_COLOR))
+            cfr_log(vt, CFR_LOG_WARN,
+                    "unparseable color specification in OSC %d", code);
+        return;
+    }
+    cfr_dyn_color_set(vt, code - 10, true, rgb);
+}
+
+/* One spec per color starting at `code`; each successive parameter
+ * changes the next color in the list. */
+static void osc_dyn_colors(CfrTerm *vt, int code, const uint8_t *body, size_t body_len)
+{
+    size_t pos = 0;
+    for (int c = code; c <= 12; c++) {
+        size_t end = pos;
+        while (end < body_len && body[end] != ';')
+            end++;
+        dyn_color_spec(vt, c, body + pos, end - pos);
+        if (end >= body_len)
+            break;
+        pos = end + 1;
+    }
 }
 
 void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
@@ -126,7 +242,15 @@ void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
         break;
     case 10:
     case 11:
-        osc_color_query(vt, code, body, body_len);
+    case 12:
+        osc_dyn_colors(vt, code, body, body_len);
+        break;
+    case 110:
+    case 111:
+    case 112:
+        /* Reset one dynamic color to its configured default (xterm:
+         * OSC 110 foreground, 111 background, 112 cursor color). */
+        cfr_dyn_color_reset(vt, code - 110);
         break;
     case 4:
         if (should_log_once(vt, CFR_LOGGED_OSC4))

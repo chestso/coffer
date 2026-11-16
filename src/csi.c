@@ -1,9 +1,10 @@
 /*
  * coffer — CSI dispatcher.
  *
- * Initial cut handles cursor moves, erase-in-line / erase-in-display,
- * and SGR reset. The full SGR repertoire (colors, 4:N underlines,
- * 38/48/58 8-bit and 24-bit colors) lands in a follow-up step.
+ * Cursor moves, erase-in-line / erase-in-display, the SGR repertoire
+ * (attributes, 4:N underlines, 38/48/58 8-bit and 24-bit colors),
+ * DECSET/DECRST, DECSTBM, tab stops, save/restore cursor, DECSCUSR,
+ * device queries and reports.
  */
 
 #include "coffer_internal.h"
@@ -331,21 +332,21 @@ static void mode_set(CfrTerm *vt, bool on)
             cfr_cursor_set(vt, on ? vt->scroll_top : 0, 0);
             break;
         case 7: /* DECAWM auto-wrap mode */
-            vt->modes[CFR_MODE_DECAWM] = on;
+            cfr_mode_flag_set(vt, CFR_MODE_DECAWM, on);
             if (!on)
                 cfr_cursor_kill_phantom(vt);
             break;
         case 25: /* DECTCEM cursor visible */
-            vt->modes[CFR_MODE_CURSOR_VISIBLE] = on;
-            vt->cursor.visible = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_CURSOR_VISIBLE, on, vt->callback_user);
+            cfr_cursor_set_visible(vt, on);
             break;
-        case 12: /* AT&T cursor blink */
-            vt->modes[CFR_MODE_CURSOR_BLINK] = on;
-            vt->cursor.blink = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_CURSOR_BLINK, on, vt->callback_user);
+        case 12: /* AT&T 610 — start/stop blinking cursor */
+            cfr_cursor_set_style(vt, vt->cursor.shape, on);
+            break;
+        case 13: /* "Disable blinking cursor" — xterm ignores it (cursor
+                  * blinking is a user preference), and so do we: the
+                  * blink state is ?12's and DECSCUSR's alone. */
+        case 14: /* XOR of blinking cursor control sequence — xterm
+                  * ignores it (user preference) too. */
             break;
         case 1049: /* altscreen + save/restore cursor */
             cfr_set_altscreen(vt, on, true);
@@ -355,77 +356,79 @@ static void mode_set(CfrTerm *vt, bool on)
             cfr_set_altscreen(vt, on, false);
             break;
         case 1000:
-            vt->modes[CFR_MODE_MOUSE_BTN_EVENT] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_MOUSE_BTN_EVENT, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_MOUSE_BTN_EVENT, on);
             break;
         case 1002:
-            vt->modes[CFR_MODE_MOUSE_DRAG] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_MOUSE_DRAG, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_MOUSE_DRAG, on);
             break;
         case 1003:
-            vt->modes[CFR_MODE_MOUSE_ANY_EVENT] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_MOUSE_ANY_EVENT, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_MOUSE_ANY_EVENT, on);
             break;
         case 1006:
-            vt->modes[CFR_MODE_MOUSE_SGR] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_MOUSE_SGR, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_MOUSE_SGR, on);
             break;
         case 2004:
-            vt->modes[CFR_MODE_BRACKETED_PASTE] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_BRACKETED_PASTE, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_BRACKETED_PASTE, on);
             break;
         case 2027:
-            vt->modes[CFR_MODE_GRAPHEME_CLUSTERS] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_GRAPHEME_CLUSTERS, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_GRAPHEME_CLUSTERS, on);
             break;
         case 2026:
-            vt->modes[CFR_MODE_SYNC_OUTPUT] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_SYNC_OUTPUT, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_SYNC_OUTPUT, on);
             break;
         case 80: /* DECSDM — sixel display (in-place) mode */
-            vt->modes[CFR_MODE_SIXEL_SCROLLING] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_SIXEL_SCROLLING, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_SIXEL_SCROLLING, on);
             break;
         case 1070: /* private sixel color registers */
-            vt->modes[CFR_MODE_SIXEL_PRIVATE_REGS] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_SIXEL_PRIVATE_REGS, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_SIXEL_PRIVATE_REGS, on);
             break;
         case 8452: /* cursor to right of sixel graphic */
-            vt->modes[CFR_MODE_SIXEL_CURSOR_RIGHT] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_SIXEL_CURSOR_RIGHT, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_SIXEL_CURSOR_RIGHT, on);
             break;
         case 5: /* DECSCNM — reverse video screen mode */
-            vt->modes[CFR_MODE_REVERSE_VIDEO] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_REVERSE_VIDEO, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_REVERSE_VIDEO, on);
             break;
         case 1034: /* Meta key mode */
-            vt->modes[CFR_MODE_META] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_META, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_META, on);
             if (on && should_log_once(vt, CFR_LOGGED_META))
                 cfr_log(vt, CFR_LOG_WARN, "meta mode (?1034) accepted but not enforced");
             break;
         case 69: /* Left/right margin mode (DECSLRM) */
-            vt->modes[CFR_MODE_LEFT_RIGHT_MARGINS] = on;
-            if (vt->callbacks.set_mode)
-                vt->callbacks.set_mode(CFR_MODE_LEFT_RIGHT_MARGINS, on, vt->callback_user);
+            cfr_mode_flag_set(vt, CFR_MODE_LEFT_RIGHT_MARGINS, on);
             if (on && should_log_once(vt, CFR_LOGGED_LR_MARGIN))
                 cfr_log(vt, CFR_LOG_WARN, "left/right margins (?69) accepted but not enforced");
             break;
         default:
             break;
         }
+    }
+}
+
+/* DECSCUSR (CSI Ps SP q) — set cursor style, xterm/VT520:
+ *   0 / 1 ⇒ blinking block,   2 ⇒ steady block,
+ *   3     ⇒ blinking underline, 4 ⇒ steady underline,
+ *   5     ⇒ blinking bar,     6 ⇒ steady bar,
+ *   7     ⇒ the initial (CfrConfig) cursor state.
+ * A missing Ps behaves like 0; anything else is ignored. */
+static void decscusr(CfrTerm *vt, int ps)
+{
+    static const struct
+    {
+        CfrCursorShape shape;
+        bool blink;
+    } styles[] = {
+        { CFR_CURSOR_BLOCK, true },      /* 0 */
+        { CFR_CURSOR_BLOCK, true },      /* 1 */
+        { CFR_CURSOR_BLOCK, false },     /* 2 */
+        { CFR_CURSOR_UNDERLINE, true },  /* 3 */
+        { CFR_CURSOR_UNDERLINE, false }, /* 4 */
+        { CFR_CURSOR_BAR, true },        /* 5 */
+        { CFR_CURSOR_BAR, false },       /* 6 */
+    };
+    if (ps == 7) {
+        cfr_cursor_set_style(vt, vt->default_shape, vt->default_blink);
+    } else if (ps >= 0 && ps < (int)(sizeof(styles) / sizeof(styles[0]))) {
+        cfr_cursor_set_style(vt, styles[ps].shape, styles[ps].blink);
     }
 }
 
@@ -711,16 +714,20 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
 
     case 'q':
     {
-        /* XTVERSION (CSI > Ps q). Reply with DCS > | <name> ST.
-         * Emacs uses this to auto-enable xterm-mouse-mode on known
-         * terminals. Ps is ignored (all values query the version).
-         * Note: CSI ? Ps q (DECSCUSR, cursor shape) shares the final
-         * byte — only respond when the '>' intermediate is present. */
+        /* Shared final byte, routed by intermediate: XTVERSION
+         * (CSI > Ps q) and DECSCUSR (CSI Ps SP q, set cursor style).
+         * Everything else (`CSI ? Ps q`, `CSI Ps " q` / DECSCA) is
+         * unknown here and stays silent. */
         if (has_intermediate(vt, '>')) {
+            /* XTVERSION. Reply with DCS > | <name> ST. Emacs uses this
+             * to auto-enable xterm-mouse-mode on known terminals. Ps is
+             * ignored (all values query the version). */
             const char *name = vt->terminal_name ? vt->terminal_name : "coffer";
             char buf[64];
             int n = snprintf(buf, sizeof(buf), "\x1bP>|%s\x1b\\", name);
             cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+        } else if (has_intermediate(vt, ' ')) {
+            decscusr(vt, param_or(vt, 0, 0));
         }
         break;
     }
@@ -744,7 +751,7 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
         break;
     }
     default:
-        /* TODO: DA3, DECRQM, DECSCUSR cursor shape, etc. */
+        /* TODO: DA3, DECRQM, etc. */
         break;
     }
     (void)p;

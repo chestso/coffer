@@ -211,6 +211,7 @@ typedef struct
     int row, col; /* col ∈ [0..cols]; == cols is the deferred-wrap phantom */
     bool visible;
     bool blink;
+    CfrCursorShape shape;  /* DECSCUSR cursor style */
     CfrStyle pen;          /* current SGR pen */
     uint16_t hyperlink_id; /* OSC 8 active link, 0 = none */
     /* Pending grapheme cluster — codepoints accumulated since the last
@@ -223,6 +224,16 @@ typedef struct
 /* ------------------------------------------------------------------ */
 /* The terminal                                                        */
 /* ------------------------------------------------------------------ */
+
+/* Dynamic color slots (xterm OSC 10/11/12): default foreground,
+ * default background, cursor color. */
+enum
+{
+    CFR_DYN_FG = 0,
+    CFR_DYN_BG = 1,
+    CFR_DYN_CURSOR = 2,
+    CFR_DYN_COUNT = 3,
+};
 
 struct CfrTerm
 {
@@ -248,6 +259,17 @@ struct CfrTerm
      * register, matching xterm — so a TUI's DECSC inside the alt screen can't
      * clobber the cursor that altscreen 1049 stashed for the normal screen. */
     CfrCursorState saved_cursor[2];
+
+    /* Initial cursor style — DECSCUSR `CSI 7 SP q` and RIS restore it
+     * (xterm: the cursorBlink / cursorUnderLine / cursorBar resources). */
+    CfrCursorShape default_shape;
+    bool default_blink;
+
+    /* Dynamic colors (xterm OSC 10/11/12 family), indexed by
+     * CFR_DYN_* below. `dyn_color` is the live value; `dyn_color_seed`
+     * is the configured default it resets to (OSC 110/111/112, RIS). */
+    CfrColorValue dyn_color[CFR_DYN_COUNT];
+    CfrColorValue dyn_color_seed[CFR_DYN_COUNT];
 
     /* Scroll region (DECSTBM). Inclusive. */
     int scroll_top;
@@ -370,18 +392,23 @@ static inline CfrCursorState *cfr_active_saved_cursor(CfrTerm *vt)
     return &vt->saved_cursor[vt->in_altscreen ? 1 : 0];
 }
 
-/* Restore the cursor from a saved register (DECRC, CSI u, altscreen exit).
- * Cursor visibility (DECTCEM, ?25) and blink (AT&T, ?12) are independent DEC
- * modes, not part of the DECSC/DECRC save register — so they survive the
- * restore. Otherwise a TUI's final `?25h` would be clobbered by the cursor
- * register saved while the cursor was hidden, leaving it stuck invisible. */
+/* Restore the cursor from a saved register (DECRC, CSI u). Cursor
+ * visibility (DECTCEM, ?25), blink (AT&T, ?12) and shape (DECSCUSR)
+ * are independent mode-ish attributes, not part of the DECSC/DECRC
+ * save register — so they survive the restore. Otherwise a TUI's
+ * final `?25h` would be clobbered by the cursor register saved while
+ * the cursor was hidden, leaving it stuck invisible. Altscreen 1049
+ * wants the opposite (a full pre-altscreen restore) and uses
+ * cfr_cursor_restore_full() (modes.c). */
 static inline void cfr_cursor_restore(CfrTerm *vt, const CfrCursorState *src)
 {
     bool visible = vt->cursor.visible;
     bool blink = vt->cursor.blink;
+    CfrCursorShape shape = vt->cursor.shape;
     vt->cursor = *src;
     vt->cursor.visible = visible;
     vt->cursor.blink = blink;
+    vt->cursor.shape = shape;
 }
 
 /* ------------------------------------------------------------------ */
@@ -398,6 +425,7 @@ static inline void cfr_cursor_restore(CfrTerm *vt, const CfrCursorState *src)
 #define CFR_LOGGED_OSC104     (1u << 4)
 #define CFR_LOGGED_LR_MARGIN  (1u << 5)
 #define CFR_LOGGED_META       (1u << 6)
+#define CFR_LOGGED_BAD_COLOR  (1u << 7)
 
 /* Format a message and forward it to the log callback if registered.
  * No-op when the callback is NULL (the default). */
@@ -502,6 +530,20 @@ void cfr_cursor_set(CfrTerm *vt, int row, int col);
  * advance, DECAWM off). */
 void cfr_cursor_kill_phantom(CfrTerm *vt);
 
+/* Cursor state changes (modes.c). Each keeps the matching DEC mode
+ * (CFR_MODE_CURSOR_VISIBLE / CFR_MODE_CURSOR_BLINK) in sync and
+ * notifies the host (set_mode, movecursor) and the damage accumulator
+ * only when something really changed — so the mirrored mode and the
+ * cursor fields can never disagree. */
+void cfr_mode_flag_set(CfrTerm *vt, CfrMode mode, bool on);
+void cfr_cursor_set_visible(CfrTerm *vt, bool on);
+void cfr_cursor_set_style(CfrTerm *vt, CfrCursorShape shape, bool blink);
+
+/* Full cursor restore (altscreen 1049 exit): everything in the
+ * register, including the mode-ish attributes (visible, blink, shape)
+ * that cfr_cursor_restore() deliberately preserves. */
+void cfr_cursor_restore_full(CfrTerm *vt, const CfrCursorState *src);
+
 /* Line-feed / reverse-index (print.c). IND, LF/VT/FF and NEL all share
  * linefeed; RI (ESC M, C1 0x8D) is cfr_reverse_index. */
 void cfr_linefeed(CfrTerm *vt);
@@ -541,8 +583,15 @@ int cfr_row_width(const CfrTerm *vt, int unified_row);
 /* Width / grapheme break (width.c). */
 bool cfr_grapheme_break_before(uint32_t prev, uint32_t cur, void *state);
 
-/* Palette (palette.c) — resolves 0..255 indexed colors to 0x00RRGGBB. */
+/* Palette (palette.c) — resolves 0..255 indexed colors to 0x00RRGGBB,
+ * and owns the dynamic color state (xterm OSC 10/11/12 family).
+ * `idx` is a CFR_DYN_* slot. */
 uint32_t cfr_palette_lookup(CfrTerm *vt, uint8_t idx);
+void cfr_dyn_color_init(CfrTerm *vt, const CfrConfig *cfg);
+uint32_t cfr_dyn_color_effective(const CfrTerm *vt, int idx);
+void cfr_dyn_color_set(CfrTerm *vt, int idx, bool set, uint32_t rgb);
+void cfr_dyn_color_reset(CfrTerm *vt, int idx);
+void cfr_dyn_color_reset_all(CfrTerm *vt);
 
 /* Output emit (keys.c). */
 void cfr_emit_bytes(CfrTerm *vt, const uint8_t *bytes, size_t len);
@@ -607,6 +656,10 @@ void cfr_dcs_unhook(CfrTerm *vt);
 void cfr_damage_cell(CfrTerm *vt, int row, int col);
 void cfr_damage_row(CfrTerm *vt, int row);
 void cfr_damage_all(CfrTerm *vt);
+/* Dirty the cursor's cell. The damage flush tracks only cursor
+ * row/col/visibility, so an appearance change (style, blink, cursor
+ * color) must dirty the cell explicitly. */
+void cfr_damage_cursor(CfrTerm *vt);
 /* Rectangular union — equivalent to cfr_damage_cell() on every cell it
  * covers, since the accumulator keeps a single union rect. */
 void cfr_damage_span(CfrTerm *vt, int start_row, int start_col, int end_row,

@@ -49,14 +49,25 @@ void cfr_damage_all(CfrTerm *vt)
     vt->damage_dirty = true;
 }
 
+/* The cursor's physical column — the logical column can be `cols`
+ * (the deferred-wrap phantom), which must stay out of the damage rect. */
+static int cursor_col_clamped(const CfrTerm *vt)
+{
+    return vt->cursor.col >= vt->cols ? vt->cols - 1 : vt->cursor.col;
+}
+
+void cfr_damage_cursor(CfrTerm *vt)
+{
+    cfr_damage_cell(vt, vt->cursor.row, cursor_col_clamped(vt));
+}
+
 void cfr_damage_flush(CfrTerm *vt)
 {
     /* A cursor-only move (CUP, arrows) changes no grid cell and emits no
      * damage. Fold it in by dirtying the old and new cursor cells so the
      * consumer repaints both — matching how Alacritty damages the cursor at
-     * flush time. The cursor's logical column can be `cols` (the phantom);
-     * clamp it to the physical margin so the damage rect stays in range. */
-    int cur_col = vt->cursor.col >= vt->cols ? vt->cols - 1 : vt->cursor.col;
+     * flush time. */
+    int cur_col = cursor_col_clamped(vt);
     if (vt->cursor.row != vt->dmg_cursor_row ||
         cur_col != vt->dmg_cursor_col ||
         vt->cursor.visible != vt->dmg_cursor_visible) {

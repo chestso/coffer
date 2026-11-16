@@ -1,13 +1,69 @@
 /*
- * coffer — DEC private mode handlers that need real state changes
- * beyond the boolean flag flip in csi.c (altscreen save/restore,
- * cursor key application mode, etc.).
+ * coffer — DEC private mode handlers and cursor state changes.
+ *
+ * Real state changes beyond the boolean flag flip in csi.c (altscreen
+ * save/restore, cursor key application mode, RIS), plus the single
+ * points where mode flags and the mirrored cursor attributes
+ * (visible / blink / shape) change — so the flags and the cursor can
+ * never disagree and the host is told exactly once per change.
  */
 
 #include "coffer_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
+
+/* ------------------------------------------------------------------ */
+/* Mode / cursor state changes                                         */
+/* ------------------------------------------------------------------ */
+
+/* Set a mode flag and tell the host — only when the value actually
+ * changes, so redundant DECSET/DECRST repeats don't nag the host (the
+ * reset paths diff the same way). Keeps mirrored state (the cursor's
+ * visible/blink fields) and the flags from drifting apart. */
+void cfr_mode_flag_set(CfrTerm *vt, CfrMode mode, bool on)
+{
+    if (vt->modes[mode] == on)
+        return;
+    vt->modes[mode] = on;
+    if (vt->callbacks.set_mode)
+        vt->callbacks.set_mode(mode, on, vt->callback_user);
+}
+
+/* DECTCEM (?25) — cursor visibility mirrors its mode. */
+void cfr_cursor_set_visible(CfrTerm *vt, bool on)
+{
+    vt->cursor.visible = on;
+    cfr_mode_flag_set(vt, CFR_MODE_CURSOR_VISIBLE, on);
+}
+
+/* DECSCUSR and the AT&T blink mode (?12) — one style state for both
+ * halves of the cursor style. A change repaints the cursor cell (the
+ * damage flush watches only row/col/visibility) and re-reports the
+ * cursor; a plain move is covered by the damage flush alone. */
+void cfr_cursor_set_style(CfrTerm *vt, CfrCursorShape shape, bool blink)
+{
+    bool changed = (vt->cursor.shape != shape) || (vt->cursor.blink != blink);
+    vt->cursor.shape = shape;
+    vt->cursor.blink = blink;
+    cfr_mode_flag_set(vt, CFR_MODE_CURSOR_BLINK, blink);
+    if (!changed)
+        return;
+    cfr_damage_cursor(vt);
+    if (vt->callbacks.movecursor)
+        vt->callbacks.movecursor(cfr_get_cursor(vt), vt->callback_user);
+}
+
+/* Altscreen 1049 exit — a full pre-altscreen cursor restore. Unlike
+ * DECSC/DECRC, the mode-ish attributes come back too: apps like ncdu
+ * turn off blink (?12l) and switch cursor shape in the alt screen and
+ * never restore them, and 1049 is a screen-level save/restore. */
+void cfr_cursor_restore_full(CfrTerm *vt, const CfrCursorState *src)
+{
+    cfr_cursor_restore(vt, src);
+    cfr_cursor_set_visible(vt, src->visible);
+    cfr_cursor_set_style(vt, src->shape, src->blink);
+}
 
 /* Altscreen toggle. With save_restore_cursor, mimics DECSET 1049 (the
  * "smcup/rmcup" variant): save cursor on entry, restore on exit. With
@@ -107,33 +163,8 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
             cfr_resize(vt, saved_rows, saved_cols);
         }
 
-        if (save_restore_cursor) {
-            /* cfr_cursor_restore preserves the live cursor.blink/visible
-             * (see its comment in coffer_internal.h). For DECSC/DECRC
-             * that's correct — ?25 and ?12 are independent modes. But
-             * 1049 is a full screen save/restore: the pre-altscreen
-             * cursor state should be fully restored, including blink and
-             * visible. Apps like ncdu turn off blink (?12l) in the alt
-             * screen and never restore it; without this, the host is
-             * left with blink permanently off after the app exits. */
-            bool saved_blink = vt->saved_cursor[0].blink;
-            bool saved_visible = vt->saved_cursor[0].visible;
-            cfr_cursor_restore(vt, &vt->saved_cursor[0]);
-            if (vt->cursor.blink != saved_blink) {
-                vt->cursor.blink = saved_blink;
-                vt->modes[CFR_MODE_CURSOR_BLINK] = saved_blink;
-                if (vt->callbacks.set_mode)
-                    vt->callbacks.set_mode(CFR_MODE_CURSOR_BLINK, saved_blink,
-                                           vt->callback_user);
-            }
-            if (vt->cursor.visible != saved_visible) {
-                vt->cursor.visible = saved_visible;
-                vt->modes[CFR_MODE_CURSOR_VISIBLE] = saved_visible;
-                if (vt->callbacks.set_mode)
-                    vt->callbacks.set_mode(CFR_MODE_CURSOR_VISIBLE, saved_visible,
-                                           vt->callback_user);
-            }
-        }
+        if (save_restore_cursor)
+            cfr_cursor_restore_full(vt, &vt->saved_cursor[0]);
     }
 
     cfr_damage_all(vt);
@@ -209,7 +240,7 @@ void cfr_reset(CfrTerm *vt)
 
     memset(vt->modes, 0, sizeof(vt->modes));
     vt->modes[CFR_MODE_CURSOR_VISIBLE] = true;
-    vt->modes[CFR_MODE_CURSOR_BLINK] = true;
+    vt->modes[CFR_MODE_CURSOR_BLINK] = vt->default_blink;
     vt->modes[CFR_MODE_DECAWM] = true;
 
     if (vt->callbacks.set_mode) {
@@ -220,13 +251,17 @@ void cfr_reset(CfrTerm *vt)
         }
     }
 
-    /* Cursor + saved cursor with default pen. */
+    /* Cursor + saved cursor: default pen, configured style. */
     memset(&vt->cursor, 0, sizeof(vt->cursor));
     vt->cursor.visible = true;
-    vt->cursor.blink = true;
+    vt->cursor.blink = vt->default_blink;
+    vt->cursor.shape = vt->default_shape;
     vt->cursor.pen.color_flags =
         CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_BG | CFR_COLOR_DEFAULT_UL;
     vt->saved_cursor[0] = vt->saved_cursor[1] = vt->cursor;
+
+    /* Dynamic colors (OSC 10/11/12) back to their configured values. */
+    cfr_dyn_color_reset_all(vt);
 
     /* Scroll region back to full screen. */
     vt->scroll_top = 0;

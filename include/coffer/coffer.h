@@ -142,12 +142,22 @@ typedef struct
     int end_row, end_col;     /* inclusive */
 } CfrRect;
 
+/* Cursor shape (DECSCUSR, `CSI Ps SP q`): which shape the cursor draws.
+ * The blinking/steady half of the style is CfrCursor.blink. */
+typedef enum
+{
+    CFR_CURSOR_BLOCK = 0, /* full-cell block (the default) */
+    CFR_CURSOR_UNDERLINE, /* underlined: a bar along the cell bottom */
+    CFR_CURSOR_BAR,       /* vertical bar along the cell's left edge */
+} CfrCursorShape;
+
 typedef struct
 {
     int row;
     int col;
     bool visible;
     bool blink;
+    CfrCursorShape shape;
 } CfrCursor;
 
 /* ------------------------------------------------------------------ */
@@ -272,7 +282,10 @@ typedef struct
     /* moverect: contents of `src` were moved to `dst` (e.g. scroll). */
     void (*moverect)(CfrRect dst, CfrRect src, void *user);
 
-    /* movecursor: cursor moved or visibility changed */
+    /* movecursor: the cursor's appearance or visibility changed (its
+     * position is read lazily via cfr_get_cursor). A plain move is not
+     * reported — the damage flush covers it by dirtying the old and new
+     * cursor cells. */
     void (*movecursor)(CfrCursor cur, void *user);
 
     /* bell: BEL received */
@@ -284,6 +297,16 @@ typedef struct
 
     /* set_mode: a tracked mode changed */
     void (*set_mode)(CfrMode mode, bool on, void *user);
+
+    /* set_color: a dynamic color changed (xterm OSC 10/11/12 family).
+     * `code` is 10 (default foreground), 11 (default background) or
+     * 12 (cursor); `rgb` is the new effective value as 0x00RRGGBB and
+     * `set` reports whether an explicit color is in effect. `set` is
+     * always true for 10/11; for 12 it turns false when the cursor
+     * color is reset to its default (OSC 112) — the host then draws a
+     * reverse-video cursor, and `rgb` reports the foreground the
+     * default resolves to. */
+    void (*set_color)(int code, uint32_t rgb, bool set, void *user);
 
     /* output: bytes the application produced to send to the PTY
      * (mouse reports, DA/DSR responses, kitty keyboard responses...) */
@@ -328,12 +351,23 @@ typedef struct
     void *user;
 } CfrAllocator;
 
-/* Configuration for cfr_new(). Zero-initialize then set fields; unset
- * fields (0 / false) use defaults. Rows, cols, and cell pixel size
- * are required and must be > 0. */
-#define CFR_CONFIG_DEFAULTS                                                                                                                     \
-    {                                                                                                                                           \
-        .rows = 0, .cols = 0, .cell_w_px = 0, .cell_h_px = 0, .scrollback = -1, .reflow = false, .ambiguous_wide = false, .terminal_name = NULL \
+/* A dynamic color value with its explicit-set flag (the xterm OSC
+ * 10/11/12 family). `set` false means "no explicit color": the engine
+ * default applies (foreground #F8F8F2, background #000000, cursor = the
+ * reverse-video default that resolves to the foreground). */
+typedef struct
+{
+    bool set;
+    uint32_t rgb; /* 0x00RRGGBB */
+} CfrColorValue;
+
+/* Configuration for cfr_new(). Zero-initialize (or start from
+ * CFR_CONFIG_DEFAULTS) then set fields. Rows, cols, and cell pixel size
+ * are required and must be > 0. `scrollback` and `cursor_blink` use
+ * -1 for "engine default" (their zero value is a real choice). */
+#define CFR_CONFIG_DEFAULTS                                                                                                                                                                                                                                                             \
+    {                                                                                                                                                                                                                                                                                   \
+        .rows = 0, .cols = 0, .cell_w_px = 0, .cell_h_px = 0, .scrollback = -1, .reflow = false, .ambiguous_wide = false, .terminal_name = NULL, .cursor_shape = CFR_CURSOR_BLOCK, .cursor_blink = -1, .fg_color = { false, 0 }, .bg_color = { false, 0 }, .cursor_color = { false, 0 } \
     }
 typedef struct
 {
@@ -345,6 +379,16 @@ typedef struct
     bool reflow;               /* reflow text on resize (default false) */
     bool ambiguous_wide;       /* treat ambiguous-width chars as wide (default false) */
     const char *terminal_name; /* XTVERSION response string (default "coffer") */
+    /* Initial cursor style — what DECSCUSR `CSI 7 SP q` and RIS restore
+     * to. `cursor_blink`: -1 = engine default (blinking), 0 = steady,
+     * 1 = blinking. */
+    CfrCursorShape cursor_shape;
+    int cursor_blink;
+    /* Initial dynamic colors — what OSC 110/111/112 and RIS reset to.
+     * With `set` false the engine default applies. */
+    CfrColorValue fg_color;
+    CfrColorValue bg_color;
+    CfrColorValue cursor_color;
 } CfrConfig;
 
 /* ------------------------------------------------------------------ */
@@ -417,7 +461,8 @@ void cfr_reset_input_state(CfrTerm *vt);
 /* Full reset (RIS) — what the shell command `reset` triggers. Clears
  * everything cfr_reset_input_state() clears, plus the screen, the
  * scrollback, the character sets, the scroll region, the tab stops,
- * the saved cursor and the pen. */
+ * the saved cursor and the pen. The cursor style and the dynamic
+ * colors (OSC 10/11/12) return to their CfrConfig values. */
 void cfr_reset(CfrTerm *vt);
 
 /* Kitty keyboard protocol flags currently in effect — the top of the
@@ -504,17 +549,34 @@ bool cfr_find_text(CfrTerm *vt, const char *needle, bool line_end,
 /* Palette and default colors                                          */
 /* ------------------------------------------------------------------ */
 
-/* Default terminal background color as 0x00RRGGBB.
- * Pitch-black. Not user-configurable. */
+/* Built-in default terminal background color as 0x00RRGGBB.
+ * Pitch-black (#000000) — the value a term starts with and OSC 111 /
+ * RIS fall back to when CfrConfig.bg_color is unset. The live value
+ * can differ (CfrConfig.bg_color, OSC 11): read that through
+ * cfr_get_dynamic_color(). */
 uint32_t cfr_default_bg_rgb(void);
 
-/* Default terminal foreground color as 0x00RRGGBB.
- * Dracula foreground (#F8F8F2). Not user-configurable. */
+/* Built-in default terminal foreground color as 0x00RRGGBB.
+ * Dracula foreground (#F8F8F2) — see cfr_default_bg_rgb(). */
 uint32_t cfr_default_fg_rgb(void);
 
 /* Lookup a color from the built-in 256-color palette (index 0–255).
  * Returns 0x00RRGGBB. The palette is not user-configurable (hardcoded). */
 uint32_t cfr_default_palette_rgb(uint8_t index);
+
+/* Read one dynamic color (the xterm OSC 10/11/12 family): `code` is
+ * 10 (default foreground), 11 (default background) or 12 (cursor).
+ * The effective value is written to *out_rgb as 0x00RRGGBB: the
+ * explicitly set color when one is in effect (CfrConfig, OSC 10/11/12),
+ * otherwise the engine default. The cursor's default is the foreground
+ * (xterm's cursorColor default is XtDefaultForeground).
+ *
+ * *out_set (optional) reports whether an explicit color is in effect;
+ * it is false only for an unset cursor color, which a renderer draws as
+ * a reverse-video cursor. Returns false for a NULL term or an
+ * unsupported code. Either out pointer may be NULL. */
+bool cfr_get_dynamic_color(const CfrTerm *vt, int code, uint32_t *out_rgb,
+                           bool *out_set);
 
 /* ------------------------------------------------------------------ */
 /* Sixel graphics                                                      */
