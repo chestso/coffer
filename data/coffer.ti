@@ -1,6 +1,16 @@
+# coffer terminfo — xterm-256color plus the coffer-specific overrides.
+# Two deliberate divergences from xterm's own caps:
+#   * cnorm only shows the cursor; xterm's forces blink off to match
+#     xterm's steady default, but blink is a host setting here (it has
+#     a configured default and the app can still set it with ?12 /
+#     DECSCUSR), so cnorm must not stomp it.
+#   * Se resets DECSCUSR to the configured initial style (CSI 7 SP q)
+#     rather than xterm's literal steady block — for xterm those are
+#     the same thing, here the terminal's own default is configurable.
 coffer-vty-256color|coffer-256color|coffer|Coffer Terminal Emulator,
     use=xterm-256color,
-    cnorm=\E[?12h\E[?25h,
+    cnorm=\E[?25h,
+    Se=\E[7 q,
     Tc,
     hs,
     tsl=\E]2;,
