@@ -10,6 +10,7 @@
 #include <coffer/coffer.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static CfrTerm *make_term(int rows, int cols, bool reflow)
@@ -416,6 +417,64 @@ static void test_pushline_fires_with_scrollback_off(void)
     cfr_free(vt);
 }
 
+/* One reflow pulls back at most CFR_REFLOW_PREFIX_ROWS history rows of the
+ * straddling line, however long the line is. The rows beyond the cap keep
+ * their old width and still join the rewritten ones: the text reads back
+ * unbroken and every row continues the one before it. */
+static void test_reflow_prefix_is_capped(void)
+{
+    enum
+    {
+        COLS = 10,
+        EXTRA = 300,
+        LINE_ROWS = CFR_REFLOW_PREFIX_ROWS + EXTRA
+    };
+    CfrTerm *vt = make_term(4, COLS, true);
+    cfr_set_scrollback_size(vt, 10 * LINE_ROWS);
+
+    /* One logical line of LINE_ROWS rows; char i is 'a' + i % 26. */
+    char *line = malloc((size_t)LINE_ROWS * COLS + 1);
+    ASSERT_NOT_NULL(line);
+    for (int i = 0; i < LINE_ROWS * COLS; ++i)
+        line[i] = (char)('a' + i % 26);
+    line[LINE_ROWS * COLS] = '\0';
+    feed(vt, line);
+    int sb_before = cfr_get_scrollback_lines(vt);
+    ASSERT_EQ(sb_before, LINE_ROWS - 4);
+
+    cfr_resize(vt, 4, 2 * COLS); /* twice as wide: half as many rows */
+
+    /* The pulled rows (cap rows of history + the 4 visible ones) re-emit
+     * at 20 columns; all but the last 4 rows of that go back to history. */
+    int rewritten = (CFR_REFLOW_PREFIX_ROWS * COLS + 4 * COLS) / (2 * COLS) - 4;
+    int untouched = sb_before - CFR_REFLOW_PREFIX_ROWS;
+    int sb = cfr_get_scrollback_lines(vt);
+    ASSERT_EQ(sb, untouched + rewritten);
+    for (int s = 0; s < sb; ++s) {
+        int cols = 0;
+        ASSERT_NOT_NULL(cfr_get_scrollback_row(vt, s, &cols));
+        ASSERT_EQ(cols, s < rewritten ? 2 * COLS : COLS);
+    }
+
+    /* Unbroken join across the cap boundary, oldest row to last visible. */
+    for (int s = 1; s < sb; ++s)
+        ASSERT_TRUE(cfr_row_is_continuation(vt, -s));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 0));
+    int idx = 0;
+    for (int s = sb - 1; s >= 0; --s) {
+        int cols = 0;
+        const CfrCell *row = cfr_get_scrollback_row(vt, s, &cols);
+        for (int c = 0; c < cols; ++c, ++idx)
+            ASSERT_EQ(row[c].cp, (uint32_t)line[idx]);
+    }
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 2 * COLS; ++c, ++idx)
+            ASSERT_EQ(cfr_get_cell(vt, r, c)->cp, (uint32_t)line[idx]);
+    ASSERT_EQ(idx, LINE_ROWS * COLS);
+    free(line);
+    cfr_free(vt);
+}
+
 /* Scrollback disabled: nothing can be pulled back, so the visible
  * remainder re-emits on its own (a row that would have gone to history is
  * dropped, as before). */
@@ -647,6 +706,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_reflow_straddle_carries_cell_attributes);
     RUN_TEST(test_scrollback_host_mirror);
     RUN_TEST(test_pushline_fires_with_scrollback_off);
+    RUN_TEST(test_reflow_prefix_is_capped);
     RUN_TEST(test_reflow_without_scrollback);
     TEST_SUMMARY();
 }

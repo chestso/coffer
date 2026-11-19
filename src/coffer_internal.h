@@ -54,6 +54,12 @@
 #define CFR_INTERMEDIATE_MAX   4u
 #define CFR_DEFAULT_SCROLLBACK 1000
 #define CFR_SB_PAGE_ROWS       64u /* rows per scrollback page */
+/* Most scrollback rows of the line straddling the grid boundary that one
+ * reflow pulls back and rewraps. Reflow cost must not depend on how much
+ * history exists or how long a line is (`cat` of a multi-megabyte line
+ * with a huge ring), so the rewrite stops here; older rows of that line
+ * keep the width they were written at and still join (see reflow.c). */
+#define CFR_REFLOW_PREFIX_ROWS 1024
 
 /* Grapheme arena: codepoints / dedup table initial sizes (bytes). */
 #define CFR_ARENA_CP_INIT    1024u

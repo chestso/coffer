@@ -298,7 +298,11 @@ are deleted.
    (pre-alpha break, fine). Reflow propagates lineage across its
    sb/grid split: a logical line that straddles the boundary has its
    scrollback fragment pulled back (`cfr_scrollback_pop_rows`) and the
-   line re-emitted whole, so the ids match across that boundary.
+   line re-emitted at the new width, so the ids match across that boundary.
+   At most `CFR_REFLOW_PREFIX_ROWS` history rows are pulled back per
+   resize, so reflow cost never depends on history size or line length;
+   the far end of a longer line keeps its old width and still joins
+   (wrap edge on its margin cell + the shared lineage id).
    A host mirroring history follows it through two callbacks:
    `sb_pushline` (every row entering the ring, scroll or reflow) and
    `sb_truncate` (the newest rows a reflow pulled back).

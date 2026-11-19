@@ -21,11 +21,14 @@
  *      for one logical line share its lineage id, and every row but the
  *      line's last gets the wrap edge on its new margin cell.
  *
- * Scope: reflow owns every logical line that touches the visible grid.
- * A line whose head is already in scrollback is pulled back out of the
- * ring and re-emitted as a whole (with its fragment rows re-wrapped at
- * the new width); scrollback older than that line keeps the column
- * width it was written at, which the mixed-cols iterator handles.
+ * Scope: reflow owns the visible grid and the history rows of the line
+ * that straddles its top edge. Those rows (at most CFR_REFLOW_PREFIX_ROWS
+ * of them, newest first) are pulled back out of the ring and re-emitted
+ * with the visible fragment at the new width. Everything older — other
+ * lines, and the far end of a line longer than the cap — keeps the column
+ * width it was written at, which the mixed-cols iterator handles. Work
+ * per resize is therefore bounded by the grid plus the cap, never by the
+ * amount of history.
  *
  * Failure: every fallible step runs before the first mutation of vt
  * (the old grid's intern tables only grow), so a false return from any
@@ -183,10 +186,19 @@ void cfr_resize_clamp(CfrTerm *vt, int new_rows, int new_cols)
 
 /* A logical line can start above the grid: if the top visible row
  * continues the newest scrollback row, that line's head is in history.
- * Collect it too and rewrap the line as a whole (the two-sided predicate
- * already answers across the boundary). The cells are re-interned against
- * the OLD grid, so the flat buffer never points into a ring page and
- * those rows can be popped once the new grid is allocated. */
+ * Pull back the line's newest CFR_REFLOW_PREFIX_ROWS history rows and
+ * rewrap them with the visible rows (the two-sided predicate already
+ * answers across the boundary). The cap keeps the work independent of
+ * how much history exists: a multi-megabyte line in a huge ring would
+ * otherwise be copied, re-interned and rewrapped on every resize step.
+ *
+ * Rows of the line beyond the cap stay put at their old width. They still
+ * join: their margin cell keeps its wrap edge and the rewritten rows carry
+ * the same lineage id, which is all the predicate checks.
+ *
+ * The cells are re-interned against the OLD grid, so the flat buffer never
+ * points into a ring page and those rows can be popped once the new grid
+ * is allocated. */
 static bool collect_prefix(Reflow *R)
 {
     CfrTerm *vt = R->vt;
@@ -194,7 +206,8 @@ static bool collect_prefix(Reflow *R)
         return true;
 
     int rows = 1;
-    while (rows < vt->sb_lines && cfr_row_continues(vt, -rows))
+    while (rows < vt->sb_lines && rows < CFR_REFLOW_PREFIX_ROWS &&
+           cfr_row_continues(vt, -rows))
         rows++;
     R->prefix_rows = rows;
 
