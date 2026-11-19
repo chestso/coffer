@@ -47,23 +47,26 @@ static size_t utf8_encode(uint32_t cp, char *buf, size_t cap)
     return 4;
 }
 
+size_t cfr_row_text_size(const CfrTerm *vt, int row)
+{
+    int row_in_page = 0;
+    const CfrPage *page = cfr_row_page(vt, row, &row_in_page);
+    if (!page)
+        return 0;
+    /* A grapheme cluster holds at most CFR_CLUSTER_MAX codepoints at
+     * 4 UTF-8 bytes each. */
+    return (size_t)page->cols * (CFR_CLUSTER_MAX * 4) + 1;
+}
+
 size_t cfr_row_text(const CfrTerm *vt, int row, char *buf, size_t cap)
 {
     if (!buf || cap == 0)
         return 0;
     buf[0] = '\0';
-    if (!vt)
-        return 0;
-
-    int rows = 0, cols = 0;
-    cfr_get_dimensions(vt, &rows, &cols);
-    if (cols <= 0)
-        return 0;
-    if (row >= rows || row < -cfr_get_scrollback_lines(vt))
-        return 0;
 
     /* Resolve the row once; the owning page serves the grapheme reads
-     * directly. */
+     * directly. The row's own width bounds the walk: scrollback rows keep
+     * the width they were written at, which can exceed the grid's. */
     int row_in_page = 0;
     const CfrPage *page = cfr_row_page(vt, row, &row_in_page);
     if (!page)
@@ -72,7 +75,7 @@ size_t cfr_row_text(const CfrTerm *vt, int row, char *buf, size_t cap)
     const CfrCell *row_cells = &page->cells[(size_t)row_in_page * page->cols];
 
     size_t n = 0;
-    for (int c = 0; c < cols && c < row_cols; c++) {
+    for (int c = 0; c < row_cols; c++) {
         const CfrCell *cell = &row_cells[c];
         if (cell->width == 0)
             continue; /* continuation of a wide cluster, or a cell that
@@ -145,27 +148,30 @@ bool cfr_find_text(CfrTerm *vt, const char *needle, bool line_end,
     if (cols <= 0)
         return false;
 
-    /* A grapheme cluster holds at most CFR_CLUSTER_MAX codepoints at
-     * 4 UTF-8 bytes each. */
-    size_t cap = (size_t)cols * (CFR_CLUSTER_MAX * 4) + 1;
-    char *buf = cfr_alloc(vt, cap);
-    if (!buf)
-        return false;
-
+    /* Rows differ in width (history keeps the width it was written at),
+     * so the flattening buffer grows to the widest row seen. A row that
+     * does not exist (the grid is allocated lazily) matches nothing. */
+    size_t cap = 0;
+    char *buf = NULL;
     bool found = false;
     int sb_lines = cfr_get_scrollback_lines(vt);
-    for (int sb = sb_lines - 1; sb >= 0 && !found; sb--) {
-        int unified = -(sb + 1);
+    for (int unified = -sb_lines; unified < rows && !found; unified++) {
+        size_t need = cfr_row_text_size(vt, unified);
+        if (need == 0)
+            continue;
+        if (need > cap) {
+            char *bigger = cfr_realloc(vt, buf, need);
+            if (!bigger) {
+                cfr_dealloc(vt, buf);
+                return false;
+            }
+            buf = bigger;
+            cap = need;
+        }
         cfr_row_text(vt, unified, buf, cap);
         found = row_matches(buf, needle, line_end);
         if (found && out_row)
             *out_row = unified;
-    }
-    for (int r = 0; r < rows && !found; r++) {
-        cfr_row_text(vt, r, buf, cap);
-        found = row_matches(buf, needle, line_end);
-        if (found && out_row)
-            *out_row = r;
     }
 
     cfr_dealloc(vt, buf);

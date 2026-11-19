@@ -1038,9 +1038,12 @@ static int run_script(HostCtx *hc, const char *script_path)
 /* Final dump (CLI -s/-d/-S/-q flags)                                 */
 /* ================================================================ */
 
-static void dump_one_row_text(CfrTerm *vt, int row, int cols)
+static void dump_one_row_text(CfrTerm *vt, int row)
 {
-    size_t cap = (size_t)cols * 64 + 1;
+    /* Sized by the row's own width: history can be wider than the grid. */
+    size_t cap = cfr_row_text_size(vt, row);
+    if (cap == 0)
+        cap = 1; /* no such row: prints an empty line */
     char *buf = malloc(cap);
     if (!buf)
         return;
@@ -1062,7 +1065,7 @@ static void final_dump(CfrTerm *vt, const int *show_rows, int n_show,
         /* Only the requested rows. */
         for (int i = 0; i < n_show; i++) {
             int r = show_rows[i];
-            dump_one_row_text(vt, r, cols);
+            dump_one_row_text(vt, r);
             if (show_cells)
                 cfr_script_dump(vt, stdout, CFR_SCRIPT_DUMP_CELLS, r,
                                 0, -1);

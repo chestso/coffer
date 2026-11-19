@@ -11,6 +11,7 @@
 #include <coffer/coffer.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static CfrTerm *make_term(int rows, int cols, int scrollback)
@@ -133,11 +134,105 @@ static void test_page_scoped_ids_resolve_per_row(void)
     cfr_free(vt);
 }
 
+/* History written at 80 columns and then outlived by a 40-column grid:
+ * every consumer must read those rows at their own width. Ten lines of
+ * "xxxx…x END-n" (66 columns used) scroll into a 4-row grid; after the
+ * shrink the oldest seven rows are still 80 wide. */
+static CfrTerm *make_wide_history(int *out_sb)
+{
+    CfrTerm *vt = make_term(4, 80, 1000);
+    char line[96];
+    for (int n = 0; n < 10; ++n) {
+        snprintf(line, sizeof(line), "%s END-%d\r\n",
+                 "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", n);
+        feed(vt, line);
+    }
+    cfr_resize(vt, 4, 40);
+    *out_sb = cfr_get_scrollback_lines(vt);
+    return vt;
+}
+
+static void test_selection_text_reads_rows_at_their_width(void)
+{
+    int sb = 0;
+    CfrTerm *vt = make_wide_history(&sb);
+    int cols = 0;
+    ASSERT_NOT_NULL(cfr_get_row(vt, -sb, &cols));
+    ASSERT_EQ(cols, 80);
+
+    /* The three oldest rows, whole: 66 characters each, joined by hard
+     * line breaks — not cut at the grid's 40 columns. */
+    cfr_selection_start(vt, -sb, 0, CFR_SEL_CHAR);
+    cfr_selection_update(vt, -(sb - 2), 79);
+    char *text = cfr_selection_get_text(vt);
+    ASSERT_NOT_NULL(text);
+    char want[3 * 80];
+    size_t pos = 0;
+    for (int n = 0; n < 3; ++n)
+        pos += (size_t)snprintf(want + pos, sizeof(want) - pos, "%s%s END-%d",
+                                n ? "\n" : "",
+                                "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                                n);
+    ASSERT_STR_EQ(text, want);
+    free(text);
+
+    /* Triple-click selects the row to its own last column. */
+    cfr_selection_start(vt, -sb, 3, CFR_SEL_LINE);
+    ASSERT_EQ(cfr_selection_get(vt)->end.col, 79);
+    cfr_free(vt);
+}
+
+static void test_row_text_and_search_use_row_width(void)
+{
+    int sb = 0;
+    CfrTerm *vt = make_wide_history(&sb);
+
+    size_t need = cfr_row_text_size(vt, -sb);
+    ASSERT_TRUE(need >= 80);
+    char *buf = malloc(need);
+    ASSERT_NOT_NULL(buf);
+    ASSERT_EQ(cfr_row_text(vt, -sb, buf, need), strlen(buf));
+    ASSERT_EQ(strlen(buf), (size_t)66);
+    ASSERT_TRUE(strstr(buf, "END-0") != NULL);
+    free(buf);
+    ASSERT_EQ(cfr_row_text_size(vt, -sb - 1), (size_t)0);
+
+    /* The marker sits beyond column 40 of a row older than the grid's
+     * width: the search must still see it. */
+    int found_row = 0;
+    ASSERT_TRUE(cfr_find_text(vt, "END-0", false, &found_row));
+    ASSERT_EQ(found_row, -sb);
+    cfr_free(vt);
+}
+
+/* Shift-click extend picks the nearer endpoint by a row/column distance;
+ * across thousands of rows that distance overflowed an int, so the far
+ * endpoint moved instead. */
+static void test_selection_extend_across_long_history(void)
+{
+    CfrTerm *vt = make_term(4, 20, 6000);
+    for (int i = 0; i < 5100; ++i)
+        feed(vt, "x\r\n");
+    ASSERT_TRUE(cfr_get_scrollback_lines(vt) > 5000);
+
+    cfr_selection_start(vt, -5000, 0, CFR_SEL_CHAR);
+    cfr_selection_update(vt, 0, 0);
+    cfr_selection_extend(vt, -1500, 0); /* nearer the end (1500 < 3500 rows) */
+    const CfrSelection *sel = cfr_selection_get(vt);
+    ASSERT_NOT_NULL(sel);
+    ASSERT_EQ(sel->start.row, -5000);
+    ASSERT_EQ(sel->end.row, -1500);
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
     RUN_TEST(test_unified_rows_bounds);
     RUN_TEST(test_row_width_is_per_row);
     RUN_TEST(test_page_scoped_ids_resolve_per_row);
+    RUN_TEST(test_selection_text_reads_rows_at_their_width);
+    RUN_TEST(test_row_text_and_search_use_row_width);
+    RUN_TEST(test_selection_extend_across_long_history);
     TEST_SUMMARY();
 }

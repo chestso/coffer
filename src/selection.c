@@ -88,6 +88,15 @@ static int char_class(uint32_t ch, const char *word_chars)
     return 2;
 }
 
+/* Last column of unified `row`. Scrollback rows keep the width they were
+ * written at, so the grid's width is the wrong bound for them. A row that
+ * does not exist ends at column 0. */
+static int last_col(const CfrTerm *vt, int row)
+{
+    int w = cfr_row_width(vt, row);
+    return w > 0 ? w - 1 : 0;
+}
+
 static void expand_word(const CfrTerm *vt, int row, int col,
                         CfrSelectionPoint *out_start,
                         CfrSelectionPoint *out_end)
@@ -172,7 +181,7 @@ void cfr_selection_start(CfrTerm *vt, int row, int col, CfrSelectionMode mode)
         break;
     case CFR_SEL_LINE:
         sel->start = (CfrSelectionPoint){ row, 0 };
-        sel->end = (CfrSelectionPoint){ row, vt->cols - 1 };
+        sel->end = (CfrSelectionPoint){ row, last_col(vt, row) };
         break;
     default:
         sel->active = false;
@@ -222,10 +231,11 @@ void cfr_selection_update(CfrTerm *vt, int row, int col)
     {
         if (row < sel->anchor.row) {
             sel->start = (CfrSelectionPoint){ row, 0 };
-            sel->end = (CfrSelectionPoint){ sel->anchor.row, vt->cols - 1 };
+            sel->end = (CfrSelectionPoint){ sel->anchor.row,
+                                            last_col(vt, sel->anchor.row) };
         } else {
             sel->start = (CfrSelectionPoint){ sel->anchor.row, 0 };
-            sel->end = (CfrSelectionPoint){ row, vt->cols - 1 };
+            sel->end = (CfrSelectionPoint){ row, last_col(vt, row) };
         }
         break;
     }
@@ -252,10 +262,11 @@ void cfr_selection_extend(CfrTerm *vt, int row, int col)
         sel->end = click;
         sel->anchor = sel->start;
     } else {
-        int d_start = (click.row - sel->start.row) * 1000000 +
-                      (click.col - sel->start.col);
-        int d_end = (sel->end.row - click.row) * 1000000 +
-                    (sel->end.col - click.col);
+        /* 64-bit: a row gap beyond ~2000 overflows an int at this scale. */
+        long long d_start = (long long)(click.row - sel->start.row) * 1000000 +
+                            (click.col - sel->start.col);
+        long long d_end = (long long)(sel->end.row - click.row) * 1000000 +
+                          (sel->end.col - click.col);
         if (d_start <= d_end) {
             sel->start = click;
             sel->anchor = sel->end;
@@ -391,79 +402,99 @@ static int codepoint_to_utf8(uint32_t cp, char *buf)
     return 0;
 }
 
+/* Growable output buffer for cfr_selection_get_text. */
+typedef struct
+{
+    char *p;
+    size_t len, cap;
+} TextBuf;
+
+static bool tb_put(TextBuf *b, const char *src, size_t n)
+{
+    if (b->len + n + 1 > b->cap) {
+        size_t nc = b->cap ? b->cap : 256;
+        while (b->len + n + 1 > nc)
+            nc *= 2;
+        char *np = realloc(b->p, nc);
+        if (!np)
+            return false;
+        b->p = np;
+        b->cap = nc;
+    }
+    memcpy(b->p + b->len, src, n);
+    b->len += n;
+    return true;
+}
+
 char *cfr_selection_get_text(const CfrTerm *vt)
 {
     if (!vt || !vt->selection.active)
         return NULL;
 
     const CfrSelection *sel = &vt->selection;
-    int cols = vt->cols;
-
-    int row_count = sel->end.row - sel->start.row + 1;
-    size_t buf_size = (size_t)row_count * (size_t)(cols * 4 + 1) + 1;
-    char *buf = malloc(buf_size);
-    if (!buf)
-        return NULL;
-
-    size_t pos = 0;
+    TextBuf out = { 0 };
 
     for (int row = sel->start.row; row <= sel->end.row; row++) {
-        int col_start = (row == sel->start.row) ? sel->start.col : 0;
-        int col_end = (row == sel->end.row) ? sel->end.col : cols - 1;
+        /* Each row is read at its own width. */
+        int width = 0;
+        const CfrCell *cells = cfr_get_row(vt, row, &width);
+        int col_start = (row == sel->start.row && sel->start.col > 0)
+                            ? sel->start.col
+                            : 0;
+        int col_end = width - 1;
+        if (row == sel->end.row && sel->end.col < col_end)
+            col_end = sel->end.col;
 
-        size_t row_start_pos = pos;
-        size_t last_nonblank_pos = row_start_pos;
+        size_t last_nonblank_len = out.len;
 
-        int col = col_start;
-        while (col <= col_end) {
-            const CfrCell *cell = cfr_get_cell(vt, row, col);
-            if (!cell) {
+        for (int col = col_start; cells && col <= col_end;) {
+            const CfrCell *cell = &cells[col];
+            if (cell->cp == 0) {
+                if (!tb_put(&out, " ", 1))
+                    goto oom;
                 col++;
                 continue;
             }
-
-            if (cell->cp == 0) {
-                if (pos < buf_size - 1)
-                    buf[pos++] = ' ';
-                col++;
-            } else {
-                uint32_t cps[16];
-                size_t n_cps = 1;
-                cps[0] = cell->cp;
-                if (cell->grapheme_id != 0) {
-                    n_cps = cfr_cell_get_grapheme(vt, row, col, cps,
-                                                  sizeof(cps) / sizeof(cps[0]));
-                    if (n_cps == 0) {
-                        cps[0] = cell->cp;
-                        n_cps = 1;
-                    }
+            uint32_t cps[16];
+            size_t n_cps = 1;
+            cps[0] = cell->cp;
+            if (cell->grapheme_id != 0) {
+                n_cps = cfr_cell_get_grapheme(vt, row, col, cps,
+                                              sizeof(cps) / sizeof(cps[0]));
+                if (n_cps == 0) {
+                    cps[0] = cell->cp;
+                    n_cps = 1;
                 }
-                for (size_t i = 0; i < n_cps; i++) {
-                    char utf8[4];
-                    int n = codepoint_to_utf8(cps[i], utf8);
-                    if (pos + (size_t)n < buf_size) {
-                        memcpy(buf + pos, utf8, n);
-                        pos += n;
-                    }
-                }
-                if (cell->cp != 0x20)
-                    last_nonblank_pos = pos;
-                col += (cell->width == 2) ? 2 : 1;
             }
+            for (size_t i = 0; i < n_cps; i++) {
+                char utf8[4];
+                int n = codepoint_to_utf8(cps[i], utf8);
+                if (n > 0 && !tb_put(&out, utf8, (size_t)n))
+                    goto oom;
+            }
+            if (cell->cp != 0x20)
+                last_nonblank_len = out.len;
+            col += (cell->width == 2) ? 2 : 1;
         }
 
-        /* Strip trailing whitespace at hard line breaks */
+        /* Strip trailing whitespace at hard line breaks; a soft wrap
+         * joins the next row with no newline. */
         bool next_is_continuation =
             row < sel->end.row && cfr_row_is_continuation(vt, row + 1);
         if (!next_is_continuation)
-            pos = last_nonblank_pos;
-
-        if (row < sel->end.row && pos < buf_size - 1) {
-            if (!next_is_continuation)
-                buf[pos++] = '\n';
+            out.len = last_nonblank_len;
+        if (row < sel->end.row && !next_is_continuation) {
+            if (!tb_put(&out, "\n", 1))
+                goto oom;
         }
     }
 
-    buf[pos] = '\0';
-    return buf;
+    if (!tb_put(&out, "", 0))
+        goto oom;
+    out.p[out.len] = '\0';
+    return out.p;
+
+oom:
+    free(out.p);
+    return NULL;
 }

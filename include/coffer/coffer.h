@@ -595,6 +595,12 @@ bool cfr_row_is_continuation(const CfrTerm *vt, int row);
  * Out-of-range rows produce an empty string. */
 size_t cfr_row_text(const CfrTerm *vt, int row, char *buf, size_t cap);
 
+/* Buffer capacity (including the NUL) that flattens unified `row` with
+ * cfr_row_text() without truncation, whatever its content; 0 if the row
+ * does not exist. Size by this, not by the grid width: scrollback rows keep
+ * the width they were written at and can be wider than the grid. */
+size_t cfr_row_text_size(const CfrTerm *vt, int row);
+
 /* Search the unified buffer — scrollback (oldest first), then the
  * visible rows — for `needle` (matched as UTF-8). With `line_end` a
  * row matches only when it ends with the needle (trailing blanks

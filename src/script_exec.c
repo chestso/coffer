@@ -21,10 +21,6 @@
 #include <time.h>
 #endif
 
-/* Bytes reserved per cell when flattening a row: a grapheme cluster
- * holds at most CFR_CLUSTER_MAX (16) codepoints, 4 bytes each. */
-#define ROW_UTF8_PER_CELL 64
-
 /* ------------------------------------------------------------------ */
 /* Time                                                               */
 /* ------------------------------------------------------------------ */
@@ -150,34 +146,50 @@ uint32_t cfr_script_wait_ms(CfrScriptRun *run)
 /* Grid dumps (render / cursor / dump-sixel / dump-kbd)               */
 /* ------------------------------------------------------------------ */
 
-static void dump_row_text(CfrTerm *vt, FILE *out, char *buf, size_t cap,
+/* Flatten and print one unified row. Rows differ in width, so the buffer
+ * grows to fit the row at hand. */
+static bool dump_row_text(CfrTerm *vt, FILE *out, char **buf, size_t *cap,
                           int row)
 {
-    cfr_row_text(vt, row, buf, cap);
-    fprintf(out, "%2d|%s\n", row, buf);
+    size_t need = cfr_row_text_size(vt, row);
+    if (need == 0)
+        need = 1; /* no such row: prints an empty line */
+    if (need > *cap) {
+        char *bigger = realloc(*buf, need);
+        if (!bigger)
+            return false;
+        *buf = bigger;
+        *cap = need;
+    }
+    cfr_row_text(vt, row, *buf, *cap);
+    fprintf(out, "%2d|%s\n", row, *buf);
+    return true;
 }
 
 static void dump_text(CfrTerm *vt, FILE *out, CfrScriptDumpMode mode)
 {
     int rows = 0, cols = 0;
     cfr_get_dimensions(vt, &rows, &cols);
-    size_t cap = (size_t)cols * ROW_UTF8_PER_CELL + 1;
-    char *buf = malloc(cap);
-    if (!buf)
-        return;
+    size_t cap = 0;
+    char *buf = NULL;
 
     if (mode == CFR_SCRIPT_DUMP_SCROLLBACK ||
         mode == CFR_SCRIPT_DUMP_ALL) {
         int lines = cfr_get_scrollback_lines(vt);
         if (lines <= 0)
             fprintf(out, "(scrollback empty)\n");
-        for (int sb = lines - 1; sb >= 0; sb--)
-            dump_row_text(vt, out, buf, cap, -(sb + 1));
+        for (int sb = lines - 1; sb >= 0; sb--) {
+            if (!dump_row_text(vt, out, &buf, &cap, -(sb + 1)))
+                goto done;
+        }
     }
     if (mode == CFR_SCRIPT_DUMP_VISIBLE || mode == CFR_SCRIPT_DUMP_ALL) {
-        for (int r = 0; r < rows; r++)
-            dump_row_text(vt, out, buf, cap, r);
+        for (int r = 0; r < rows; r++) {
+            if (!dump_row_text(vt, out, &buf, &cap, r))
+                goto done;
+        }
     }
+done:
     free(buf);
 }
 
@@ -194,8 +206,8 @@ static void describe_cp(const CfrCell *cell, char *buf, size_t cap)
 static void dump_cells(CfrTerm *vt, FILE *out, int row, int col_start,
                        int col_end)
 {
-    int rows = 0, cols = 0;
-    cfr_get_dimensions(vt, &rows, &cols);
+    int cols = 0; /* this row's own width */
+    cfr_get_row(vt, row, &cols);
     if (col_end < 0 || col_end >= cols)
         col_end = cols - 1;
 
@@ -233,8 +245,8 @@ static void dump_cells(CfrTerm *vt, FILE *out, int row, int col_start,
 
 static void dump_styles(CfrTerm *vt, FILE *out, int row)
 {
-    int rows = 0, cols = 0;
-    cfr_get_dimensions(vt, &rows, &cols);
+    int cols = 0; /* this row's own width */
+    cfr_get_row(vt, row, &cols);
 
     fprintf(out, "render styles row=%d\n", row);
     for (int c = 0; c < cols; c++) {
