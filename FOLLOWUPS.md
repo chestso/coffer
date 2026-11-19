@@ -48,19 +48,13 @@ on. Order is roughly priority, not strict dependency.
   change styling would silently miscolour pending text. Defensive
   hardening with minimal cost.
 
+- **`CfrCallbacks.moverect` is never emitted.** The callback is in the
+  public header, but no engine path fires it (`grep moverect src/` is
+  empty), so a host that wires it for a scroll-blit gets silence. Either
+  emit it on the whole-row moves (scroll, IL/DL) or drop it from the
+  API.
+
 ## Not yet implemented
-
-### Synchronized output (mode 2026)
-
-Mode flag is stored (`CFR_MODE_SYNC_OUTPUT`) and callbacks are notified,
-but there's no behavioral effect. Per the spec, when mode 2026 is on,
-output should be buffered until a subsequent mode-off event, then flushed
-atomically. This prevents screen flicker during multi-step updates.
-
-**Benefit:** Eliminates visual tearing in TUIs that emit partial frames
-(e.g., lazygit, btop). The application sends `\e[?2026h`, emits all cells,
-then `\e[?2026l` — the terminal renders everything at once instead of
-showing intermediate states.
 
 ### Kitty keyboard protocol — remaining flags
 

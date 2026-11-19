@@ -36,7 +36,11 @@ compositing. See the portty README for renderer-side details.
   the following codepoint is Extended_Pictographic, so ZWJ sequences no
   longer over-merge and corrupt screens (e.g. mutt's fill pattern).
 - **Scrollback** — paged ring buffer; default 1000 lines, configurable.
-- **Reflow** — recomputes wrap on resize; preserves cursor row.
+- **Reflow** — recomputes wrap on resize; preserves cursor row. A logical
+  line that straddles the scrollback/grid boundary is rewrapped whole.
+- **Synchronized output** — DECSET 2026. While the application is
+  mid-frame the damage flush holds the union and reports nothing, so the
+  host paints each frame once instead of showing intermediate states.
 - **Sixel graphics** — DCS sixel images (`DCS q … ST`) are decoded and
   stored in the engine, anchored to an absolute grid line so they scroll,
   enter scrollback, and clear with the text they sit on. Decode covers
@@ -258,6 +262,7 @@ make check TESTS='test_cfr_parser test_cfr_keys test_cfr_sixel test_cfr_osc_1337
 | `test_cfr_graphics`    | Kitty graphics protocol: APC routing, query, transmit (RGBA/RGB/PNG), place, delete, zlib/chunked, animation              |
 | `test_cfr_altscreen`   | Altscreen enter/exit, cursor save/restore, content isolation                                                              |
 | `test_cfr_sgr`         | SGR styling: bold, italic, underline variants, SGR 21, overline, truecolor, indexed                                       |
+| `test_cfr_sync_output` | Synchronized output (2026): damage hold, coalesced frame, cursor fold, cancel/reset escapes                               |
 
 `test_cfr_pty` is skipped on CI (GitHub runners lack a real PTY). All other
 tests run on every push via GitHub Actions. Tags matching `v*` trigger a
