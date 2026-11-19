@@ -63,6 +63,16 @@ void cfr_damage_cursor(CfrTerm *vt)
 
 void cfr_damage_flush(CfrTerm *vt)
 {
+    /* Synchronized output (mode 2026): the application is mid-frame.
+     * Report nothing and keep accumulating — one callback covers the
+     * whole frame, delivered after the end marker (or after the host
+     * times out and calls cfr_sync_output_cancel()). The cursor snapshot
+     * below is deliberately skipped too: a move made inside the frame
+     * folds into the union at delivery instead of being reported (and
+     * lost) halfway through. */
+    if (vt->modes[CFR_MODE_SYNC_OUTPUT])
+        return;
+
     /* A cursor-only move (CUP, arrows) changes no grid cell and emits no
      * damage. Fold it in by dirtying the old and new cursor cells so the
      * consumer repaints both — matching how Alacritty damages the cursor at

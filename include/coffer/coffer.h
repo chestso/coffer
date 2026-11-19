@@ -431,7 +431,15 @@ size_t cfr_input_write(CfrTerm *vt, const uint8_t *bytes, size_t len);
  * consumer calls this at a controlled time (typically once per frame, just
  * before rendering), so damage from a burst of cfr_input_write() calls
  * coalesces into one callback. A cursor-only move (which dirties no grid cell)
- * is folded in here by damaging the old and new cursor cells. */
+ * is folded in here by damaging the old and new cursor cells.
+ *
+ * Synchronized output (DECSET 2026): while the application is mid-frame this
+ * call reports nothing and keeps the union pending, so the consumer paints
+ * once — the whole frame — after the `\e[?2026l` end marker instead of
+ * showing intermediate states. The consumer notices the mode through the
+ * `set_mode` callback (or cfr_get_mode()) and should also arm its own
+ * timeout: a program that dies mid-frame would otherwise freeze the screen.
+ * On expiry call cfr_sync_output_cancel() and flush what has accumulated. */
 void cfr_damage_flush(CfrTerm *vt);
 
 void cfr_send_key(CfrTerm *vt, CfrKey key, CfrMods mods);
