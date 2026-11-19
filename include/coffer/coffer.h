@@ -456,14 +456,17 @@ void cfr_paste_end(CfrTerm *vt);
 
 /* Reset the *input protocol* state: the kitty keyboard protocol stack,
  * xterm modifyOtherKeys, application cursor keys (DECCKM) and
- * application keypad (DECKPAM), mouse reporting and focus reporting.
+ * application keypad (DECKPAM), mouse reporting and focus reporting,
+ * and a synchronized-output hold (DECSET 2026).
  * The screen, the scrollback and the bracketed-paste mode are left
  * alone — bracketed paste is a mode a shell owns (bash enables it at
  * startup), so clearing it would break pasting into the shell.
  *
  * Use this to recover from a program that enabled one of those
  * protocols and died without cleaning up: the shell then receives
- * legacy key encodings again (Ctrl+A is 0x01, not CSI 97;5u). */
+ * legacy key encodings again (Ctrl+A is 0x01, not CSI 97;5u), and a
+ * program that died mid-frame no longer freezes the screen (the pending
+ * damage is delivered on the next cfr_damage_flush()). */
 void cfr_reset_input_state(CfrTerm *vt);
 
 /* Full reset (RIS) — what the shell command `reset` triggers. Clears
@@ -519,6 +522,14 @@ CfrCursor cfr_get_cursor(const CfrTerm *vt);
 const char *cfr_get_title(const CfrTerm *vt);
 bool cfr_is_altscreen(const CfrTerm *vt);
 bool cfr_get_mode(const CfrTerm *vt, CfrMode mode);
+/* End a synchronized-output hold (DECSET 2026) early. Hosts call this
+ * from their frame timeout: an application that dies mid-frame leaves
+ * the mode set, and cfr_damage_flush() would otherwise report nothing
+ * forever. Pending damage is kept, so the next flush paints what the
+ * application had drawn; a later `\e[?2026l` from it is harmless.
+ * No-op when the mode is already off; touches nothing else (unlike
+ * cfr_reset_input_state()). */
+void cfr_sync_output_cancel(CfrTerm *vt);
 /* True when unified `row` continues the row above it (the row above
  * soft-wrapped into it). Unified coordinates: negative rows are
  * scrollback (-1 = most recent). A join requires both ends of the

@@ -205,6 +205,9 @@ void cfr_reset_input_state(CfrTerm *vt)
     vt->modes[CFR_MODE_MOUSE_DRAG] = false;
     vt->modes[CFR_MODE_MOUSE_ANY_EVENT] = false;
     vt->modes[CFR_MODE_FOCUS_REPORTING] = false;
+    /* A program that died mid-frame leaves this set; the screen would
+     * never repaint (cfr_damage_flush holds everything while it is on). */
+    vt->modes[CFR_MODE_SYNC_OUTPUT] = false;
 
     if (vt->callbacks.set_mode) {
         for (size_t i = 0; i < sizeof(prev_modes) / sizeof(prev_modes[0]); ++i) {
@@ -213,6 +216,17 @@ void cfr_reset_input_state(CfrTerm *vt)
                                        vt->callback_user);
         }
     }
+}
+
+/* Host-side frame timeout for synchronized output. Ending the hold is
+ * all it does: the pending damage is left alone, so the next flush
+ * paints the partial frame, and the application's own end marker later
+ * is a no-op because the flag is already clear. */
+void cfr_sync_output_cancel(CfrTerm *vt)
+{
+    if (!vt)
+        return;
+    cfr_mode_flag_set(vt, CFR_MODE_SYNC_OUTPUT, false);
 }
 
 void cfr_reset(CfrTerm *vt)

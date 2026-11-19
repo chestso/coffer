@@ -195,6 +195,50 @@ static void test_ris_ends_hold(void)
     cfr_free(vt);
 }
 
+/* cfr_reset_input_state() is the "the program died" recovery: it must end
+ * a hold too, or the screen stays frozen. */
+static void test_reset_input_state_ends_hold(void)
+{
+    CfrTerm *vt = make_term(4, 10);
+    feed(vt, "\x1b[?2026h");
+    feed(vt, "A");
+    ASSERT_TRUE(cfr_get_mode(vt, CFR_MODE_SYNC_OUTPUT));
+
+    cfr_reset_input_state(vt);
+    ASSERT_FALSE(cfr_get_mode(vt, CFR_MODE_SYNC_OUTPUT));
+    ASSERT_EQ(g_sync_off, 1);
+
+    cfr_damage_flush(vt);
+    ASSERT_EQ(g_damage_calls, 1);
+    cfr_free(vt);
+}
+
+/* The host timeout path: cancel ends the frame without touching anything
+ * else, the partial frame paints, and the application's late end marker
+ * is harmless. */
+static void test_cancel_delivers_partial_frame(void)
+{
+    CfrTerm *vt = make_term(4, 10);
+    feed(vt, "\x1b[>1u"); /* kitty keyboard flags 1 — must survive cancel */
+    feed(vt, "\x1b[?2026h\x1b[1;1HAA");
+    ASSERT_TRUE(cfr_get_mode(vt, CFR_MODE_SYNC_OUTPUT));
+
+    cfr_sync_output_cancel(vt);
+    ASSERT_FALSE(cfr_get_mode(vt, CFR_MODE_SYNC_OUTPUT));
+    ASSERT_EQ(g_sync_off, 1);
+    ASSERT_EQ(cfr_get_kitty_kb_flags(vt), 1u);
+
+    cfr_damage_flush(vt);
+    ASSERT_EQ(g_damage_calls, 1);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'A');
+
+    /* The application's own end marker, and a second cancel, are no-ops. */
+    feed(vt, "\x1b[?2026l");
+    cfr_sync_output_cancel(vt);
+    ASSERT_EQ(g_sync_off, 1);
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -205,6 +249,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_cursor_moves_fold_at_delivery);
     RUN_TEST(test_pending_before_begin_is_held);
     RUN_TEST(test_ris_ends_hold);
+    RUN_TEST(test_reset_input_state_ends_hold);
+    RUN_TEST(test_cancel_delivers_partial_frame);
 
     TEST_SUMMARY();
 }
