@@ -193,6 +193,14 @@ design goals. Concretely:
   Allocations happen only when a page fills or the ring doubles, so scrollback
   memory is bounded by the configured line count regardless of input.
   Lowering the capacity evicts immediately.
+- **Bounded work.** An operation costs the grid plus a named constant, or
+  something linear in what the caller asked for — never the amount of
+  history or the length of a line. Reflow pulls back at most 1024 history
+  rows of the line straddling the grid boundary (older rows of a longer
+  line keep their width and still join), and a double-click scans at most
+  4096 cells each way, so a multi-megabyte line in a huge scrollback costs
+  the same to resize or select in as a short one. Reads are O(1): a row is
+  a direct index, and `const` accessors only read.
 - **Per-page interning.** A style intern table keyed by SGR pen and a
   grapheme arena keyed by codepoint sequence both live on the page.
   Cells store a 32-bit `style_id` and 32-bit `grapheme_id`, so repeated

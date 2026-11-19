@@ -5,11 +5,11 @@
  * libcoffer.a. No other internal headers are needed by consumers.
  *
  * Thread-safety: a CfrTerm is not internally synchronized; callers
- * own all synchronization. That includes the read-only accessors: the
- * scrollback row lookups keep a small cache, so two threads must not
- * read one term concurrently without a lock. Allocation: bounded; the input-write hot
- * path is zero-allocation in steady state. See "Memory model" in
- * README.md for details.
+ * own all synchronization. Accessors that take a `const CfrTerm *` only
+ * read, so any number of threads may call them at once as long as no
+ * thread is writing (cfr_input_write, cfr_resize, ...). Allocation:
+ * bounded; the input-write hot path is zero-allocation in steady state.
+ * See "Memory model" in README.md for details.
  */
 
 #ifndef COFFER_H

@@ -54,6 +54,14 @@
 #define CFR_INTERMEDIATE_MAX   4u
 #define CFR_DEFAULT_SCROLLBACK 1000
 #define CFR_SB_PAGE_ROWS       64u /* rows per scrollback page */
+
+/* Bounded work. What an operation costs is the grid plus a named constant
+ * below, or something linear in what the caller asked for (the size of a
+ * selection, a search of the whole buffer) — never the amount of history
+ * or the length of the line it touches. Scrollback can hold 100000 rows
+ * or more and a single line can be megabytes, so a scan or rewrite that
+ * follows either needs a constant here, not a loop to the end. */
+
 /* Most scrollback rows of the line straddling the grid boundary that one
  * reflow pulls back and rewraps. Reflow cost must not depend on how much
  * history exists or how long a line is (`cat` of a multi-megabyte line
