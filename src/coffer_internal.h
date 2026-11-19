@@ -683,7 +683,12 @@ void cfr_damage_span(CfrTerm *vt, int start_row, int start_col, int end_row,
                      int end_col);
 
 /* Scrollback (scrollback.c). */
-void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols, uint32_t lineage);
+/* Append one row. `src` is the page that `src_cells`' style/grapheme/
+ * hyperlink ids refer to (the live grid for a scroll, the old grid for
+ * reflow); the cells are re-interned into the ring, so `src` need not
+ * outlive the call. A push the ring cannot allocate for is dropped. */
+void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
+                         const CfrCell *src_cells, int cols, uint32_t lineage);
 void cfr_scrollback_clear(CfrTerm *vt);
 /* Remove the `n` NEWEST scrollback rows (the end nearest the grid),
  * freeing any page that empties. `n` is clamped to the row count.
@@ -692,7 +697,7 @@ void cfr_scrollback_clear(CfrTerm *vt);
  * first: a page that empties is freed, and a push after the pop reuses
  * the freed slot. Reflow is the intended caller — it re-interns the
  * rows into the old grid while collecting, then pops once the new grid
- * is allocated, so no failure path can strand history.
+ * is allocated, so a reflow failure leaves history intact.
  *
  * No image bookkeeping: cfr_resize() drops anchored images before
  * reflow, so nothing can be anchored to a row that moves here. */

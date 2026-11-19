@@ -191,8 +191,7 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
      * two-sided predicate already answers across the boundary). The
      * cells are re-interned against the OLD grid, so the flat buffer
      * never points into a ring page and those rows can be popped once
-     * the new grid is allocated — that is also what keeps
-     * cfr_scrollback_push's contract (it interns from vt->grid). */
+     * the new grid is allocated. */
     int prefix_rows = 0;
     if (vt->sb_lines > 0 && cfr_row_continues(vt, 0)) {
         prefix_rows = 1;
@@ -444,10 +443,8 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
         goto fail2;
 
     /* Push sb_count oldest rows to scrollback. We need a temporary
-     * row buffer at new_cols width and route through cfr_scrollback_push.
-     * The push reads source style/grapheme from vt->grid which is still
-     * the OLD grid until we install new_grid below — so it interns
-     * correctly. */
+     * row buffer at new_cols width and route through cfr_scrollback_push;
+     * its cells carry old_grid ids, which it re-interns into the ring. */
     CfrCell *row_buf = cfr_alloc(vt, (size_t)new_cols * sizeof(CfrCell));
     if (!row_buf) {
         cfr_page_free(vt, new_grid);
@@ -456,8 +453,10 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
 
     /* The rows that were pulled out of history are now in the flat
      * buffer (re-interned against the old grid), so they can leave the
-     * ring. Do it only here — after every allocation that can fail — so
-     * the clamp-resize fallback can never strand history. */
+     * ring. Do it only here — after every allocation reflow itself makes
+     * — so a failure in reflow falls back to clamp with history intact.
+     * (A later ring-page allocation failure inside cfr_scrollback_push
+     * still drops that row; push has no way to report it.) */
     if (prefix_rows > 0)
         cfr_scrollback_pop_rows(vt, prefix_rows);
 
@@ -483,7 +482,7 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
         }
         if (nr.wraps)
             row_buf[new_cols - 1].flags |= CFR_CELL_WRAPLINE;
-        cfr_scrollback_push(vt, row_buf, new_cols, nr.lineage);
+        cfr_scrollback_push(vt, old_grid, row_buf, new_cols, nr.lineage);
     }
     cfr_dealloc(vt, row_buf);
 

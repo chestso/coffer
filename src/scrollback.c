@@ -8,10 +8,10 @@
  * one `free` returns up to CFR_SB_PAGE_ROWS lines plus their style
  * intern table and grapheme arena. No fragmentation accumulates.
  *
- * Cells are re-interned into the receiving page's tables: style_id
- * and grapheme_id are page-scoped, so a cell pulled out of the active
- * grid must have its intern references reseated for the scrollback
- * page. This keeps page lifetimes independent.
+ * Cells are re-interned into the receiving page's tables: style_id,
+ * grapheme_id and hyperlink_id are page-scoped, so a pushed row names
+ * the page its ids refer to (`src`) and each cell is reseated into the
+ * scrollback page. This keeps page lifetimes independent.
  *
  * Layout convention:
  *   vt->sb_head  = newest page (push target)
@@ -73,22 +73,21 @@ static void evict_to_capacity(CfrTerm *vt)
     }
 }
 
-void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols,
-                         uint32_t lineage)
+void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
+                         const CfrCell *src_cells, int cols, uint32_t lineage)
 {
-    if (!vt || vt->sb_capacity <= 0 || cols <= 0 || !src_cells)
+    if (!vt || vt->sb_capacity <= 0 || cols <= 0 || !src || !src_cells)
         return;
     if (!ensure_head(vt, cols))
         return;
 
     CfrPage *head = vt->sb_head;
-    /* Invariant: the scrollback push reads style/grapheme/hyperlink ids
-     * from vt->grid (the source) and writes them into head. If a caller
-     * (most worryingly, reflow) ever passes the scrollback head AS the
-     * grid, we'd alias source and dest pages — the intern table grows
-     * mid-read and any held pointer dangles. Fail loud at the door. */
-    CFR_BUG_CHECK(head != vt->grid,
-                  "scrollback push target page is also vt->grid (head=%p)",
+    /* Invariant: the push reads style/grapheme/hyperlink ids from `src`
+     * and writes them into head. If a caller ever passes the head AS the
+     * source, source and dest alias — the intern table grows mid-read and
+     * any held pointer dangles. Fail loud at the door. */
+    CFR_BUG_CHECK(head != src,
+                  "scrollback push target page is also the source (%p)",
                   (void *)head);
     int row = head->row_count;
     CfrCell *dst = &head->cells[(size_t)row * head->cols];
@@ -97,7 +96,7 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols,
     /* Re-intern style, grapheme, and hyperlink references into the
      * head page — page-scoped tables don't carry across pages. */
     for (int c = 0; c < cols && c < head->cols; ++c) {
-        dst[c] = cfr_cell_reintern(vt, head, vt->grid, src_cells[c]);
+        dst[c] = cfr_cell_reintern(vt, head, src, src_cells[c]);
     }
     head->row_count++;
     vt->sb_lines++;

@@ -116,7 +116,7 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
         for (int i = 0; i < lines; ++i) {
             const CfrCell *row = &vt->grid->cells[(size_t)(top + i) * vt->cols];
             uint32_t lineage = vt->grid->lineage[top + i];
-            cfr_scrollback_push(vt, row, vt->cols, lineage);
+            cfr_scrollback_push(vt, vt->grid, row, vt->cols, lineage);
             if (vt->callbacks.sb_pushline)
                 vt->callbacks.sb_pushline(row, vt->cols, lineage,
                                           vt->callback_user);
