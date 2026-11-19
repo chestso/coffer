@@ -64,3 +64,27 @@ void cfr_page_free(CfrTerm *vt, CfrPage *page)
     /* The page header + cells + lineage are one allocation. */
     cfr_dealloc(vt, page);
 }
+
+CfrCell cfr_cell_reintern(CfrTerm *vt, CfrPage *dst, const CfrPage *src,
+                          CfrCell cell)
+{
+    if (!dst || !src)
+        return cell;
+
+    const CfrStyle *st = cfr_style_lookup(src, cell.style_id);
+    cell.style_id = st ? cfr_style_intern(vt, dst, st) : 0u;
+
+    if (cell.grapheme_id != 0u) {
+        uint32_t cps[CFR_CLUSTER_MAX];
+        size_t n = cfr_grapheme_read(src, cell.grapheme_id, cps,
+                                     CFR_CLUSTER_MAX);
+        cell.grapheme_id =
+            (n >= 2) ? cfr_grapheme_intern(vt, dst, cps, (uint32_t)n) : 0u;
+    }
+
+    if (cell.hyperlink_id != 0u)
+        cell.hyperlink_id =
+            cfr_hyperlink_transfer(vt, dst, src, cell.hyperlink_id);
+
+    return cell;
+}

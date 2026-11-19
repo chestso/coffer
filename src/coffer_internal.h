@@ -474,6 +474,13 @@ void cfr_dealloc(CfrTerm *vt, void *ptr);
 /* Page lifecycle. */
 CfrPage *cfr_page_new(CfrTerm *vt, int rows, int cols);
 void cfr_page_free(CfrTerm *vt, CfrPage *page);
+/* Re-intern one cell into `dst` from `src`. style_id, grapheme_id and
+ * hyperlink_id are page-scoped, so every cross-page cell move (reflow,
+ * clamp resize, scrollback push) must route through this: a raw id copy
+ * either finds nothing in the destination table or, worse, silently
+ * attaches a different style/cluster/link. */
+CfrCell cfr_cell_reintern(CfrTerm *vt, CfrPage *dst, const CfrPage *src,
+                          CfrCell cell);
 
 /* Style intern. Returns 0 for the default style. */
 uint32_t cfr_style_intern(CfrTerm *vt, CfrPage *page, const CfrStyle *style);
@@ -491,6 +498,11 @@ uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
                               const uint8_t *uri, uint32_t uri_len);
 size_t cfr_hyperlink_read(const CfrPage *page, uint16_t id,
                           uint8_t *out, size_t out_cap);
+/* Re-intern `id` from `src` into `dst`. Returns the dst-local id, or 0
+ * when there is no link / the source id is unknown / on allocation
+ * failure. Lossless: the URI is interned from the source arena. */
+uint16_t cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
+                                const CfrPage *src, uint16_t id);
 void cfr_hyperlink_free(CfrTerm *vt, CfrHyperlinkTable *t);
 
 /* Parser entry. */

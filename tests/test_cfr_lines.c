@@ -269,6 +269,60 @@ static void test_reflow_roundtrip_shrink_grow(void)
     cfr_free(vt);
 }
 
+/* Hyperlink ids are page-scoped, so every cross-page cell move must
+ * re-intern the URI. Both resize paths used to copy the raw id: reflow's
+ * visible-row loop and the clamp resize interned style + grapheme only,
+ * so a link silently vanished (or, with a colliding id, changed target)
+ * on any resize. */
+static void test_resize_carries_hyperlink(void)
+{
+    const char *uri = "https://example.com/a";
+    uint8_t buf[64];
+
+    CfrTerm *vt = make_term(6, 10, true);
+    feed(vt, "\x1b]8;;https://example.com/a\x1b\\0123456789012345\x1b]8;;\x1b\\");
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+
+    /* Reflow: shrink, then grow back. */
+    cfr_resize(vt, 6, 5);
+    size_t n = cfr_cell_get_hyperlink(vt, cfr_get_cell(vt, 0, 0), buf,
+                                      sizeof(buf) - 1);
+    buf[n] = '\0';
+    ASSERT_EQ(n, strlen(uri));
+    ASSERT_STR_EQ((const char *)buf, uri);
+
+    cfr_resize(vt, 6, 40);
+    n = cfr_cell_get_hyperlink(vt, cfr_get_cell(vt, 0, 0), buf,
+                               sizeof(buf) - 1);
+    buf[n] = '\0';
+    ASSERT_STR_EQ((const char *)buf, uri);
+    /* A cell outside the link run still has no link. */
+    ASSERT_EQ(cfr_cell_get_hyperlink(vt, cfr_get_cell(vt, 0, 30), buf,
+                                     sizeof(buf)),
+              0u);
+
+    /* Clamp resize (reflow disabled) takes the other path. */
+    cfr_set_reflow(vt, false);
+    cfr_resize(vt, 6, 20);
+    n = cfr_cell_get_hyperlink(vt, cfr_get_cell(vt, 0, 0), buf,
+                               sizeof(buf) - 1);
+    buf[n] = '\0';
+    ASSERT_STR_EQ((const char *)buf, uri);
+
+    /* And the scrollback push path, which used to read the URI through a
+     * fixed 2 KiB stack buffer. */
+    cfr_set_reflow(vt, true);
+    cfr_resize(vt, 6, 10);
+    feed(vt, "\x1b[6;1H\n\n"); /* two rows scroll off; the link is in sb */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 2);
+    ASSERT_EQ(cfr_get_scrollback_cell(vt, 1, 0)->cp, (uint32_t)'0');
+    n = cfr_cell_get_hyperlink(vt, cfr_get_scrollback_cell(vt, 1, 0), buf,
+                               sizeof(buf) - 1);
+    buf[n] = '\0';
+    ASSERT_STR_EQ((const char *)buf, uri);
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -282,5 +336,6 @@ int main(int argc, char *argv[])
     RUN_TEST(test_dl_inside_line_known_join);
     RUN_TEST(test_reflow_preserves_line_identity);
     RUN_TEST(test_reflow_roundtrip_shrink_grow);
+    RUN_TEST(test_resize_carries_hyperlink);
     TEST_SUMMARY();
 }

@@ -113,20 +113,8 @@ void cfr_resize_clamp(CfrTerm *vt, int new_rows, int new_cols)
         for (int r = 0; r < copy_rows; ++r) {
             for (int c = 0; c < copy_cols; ++c) {
                 CfrCell src = old_grid->cells[(size_t)r * vt->cols + c];
-                /* Re-intern style + grapheme refs into the new page. */
-                const CfrStyle *st = cfr_style_lookup(old_grid, src.style_id);
-                src.style_id =
-                    st ? cfr_style_intern(vt, new_grid, st) : 0u;
-                if (src.grapheme_id != 0u) {
-                    uint32_t cps[CFR_CLUSTER_MAX];
-                    size_t n = cfr_grapheme_read(old_grid, src.grapheme_id,
-                                                 cps, CFR_CLUSTER_MAX);
-                    src.grapheme_id =
-                        (n >= 2) ? cfr_grapheme_intern(vt, new_grid, cps,
-                                                       (uint32_t)n)
-                                 : 0u;
-                }
-                new_grid->cells[(size_t)r * new_cols + c] = src;
+                new_grid->cells[(size_t)r * new_cols + c] =
+                    cfr_cell_reintern(vt, new_grid, old_grid, src);
             }
             /* Keep the lineage id; a clamp resize preserves row identity. */
             new_grid->lineage[r] = old_grid->lineage[r];
@@ -467,28 +455,14 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
             if (col + w > new_cols)
                 break;
 
-            const CfrStyle *st =
-                cfr_style_lookup(ref->src_page, ref->cell.style_id);
-            uint32_t new_style_id =
-                st ? cfr_style_intern(vt, new_grid, st) : 0u;
-            uint32_t new_grapheme_id = 0u;
-            if (ref->cell.grapheme_id != 0u) {
-                uint32_t cps[CFR_CLUSTER_MAX];
-                size_t n = cfr_grapheme_read(ref->src_page, ref->cell.grapheme_id,
-                                             cps, CFR_CLUSTER_MAX);
-                if (n >= 2)
-                    new_grapheme_id = cfr_grapheme_intern(vt, new_grid, cps,
-                                                          (uint32_t)n);
-            }
-            CfrCell new_cell = ref->cell;
-            new_cell.style_id = new_style_id;
-            new_cell.grapheme_id = new_grapheme_id;
+            CfrCell new_cell =
+                cfr_cell_reintern(vt, new_grid, ref->src_page, ref->cell);
             new_cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
             new_grid->cells[(size_t)i * new_cols + col] = new_cell;
             if (w == 2 && col + 1 < new_cols) {
                 CfrCell cont = (CfrCell){ 0 };
                 cont.width = 0;
-                cont.style_id = new_style_id;
+                cont.style_id = new_cell.style_id;
                 new_grid->cells[(size_t)i * new_cols + col + 1] = cont;
             }
             col += w;

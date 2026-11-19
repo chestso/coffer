@@ -97,34 +97,7 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols,
     /* Re-intern style, grapheme, and hyperlink references into the
      * head page — page-scoped tables don't carry across pages. */
     for (int c = 0; c < cols && c < head->cols; ++c) {
-        CfrCell src = src_cells[c];
-        const CfrStyle *src_style =
-            cfr_style_lookup(vt->grid, src.style_id);
-        uint32_t new_style_id = src_style
-                                    ? cfr_style_intern(vt, head, src_style)
-                                    : 0u;
-        uint32_t new_grapheme_id = 0u;
-        if (src.grapheme_id != 0u) {
-            uint32_t cps[CFR_CLUSTER_MAX];
-            size_t n = cfr_grapheme_read(vt->grid, src.grapheme_id,
-                                         cps, CFR_CLUSTER_MAX);
-            if (n >= 2)
-                new_grapheme_id = cfr_grapheme_intern(
-                    vt, head, cps, (uint32_t)n);
-        }
-        uint16_t new_hyperlink_id = 0u;
-        if (src.hyperlink_id != 0u) {
-            uint8_t uri[2084]; /* > spec-de-facto 2083-byte URI cap */
-            size_t n = cfr_hyperlink_read(vt->grid, src.hyperlink_id,
-                                          uri, sizeof(uri));
-            if (n > 0)
-                new_hyperlink_id = cfr_hyperlink_intern(
-                    vt, head, uri, (uint32_t)n);
-        }
-        dst[c] = src;
-        dst[c].style_id = new_style_id;
-        dst[c].grapheme_id = new_grapheme_id;
-        dst[c].hyperlink_id = new_hyperlink_id;
+        dst[c] = cfr_cell_reintern(vt, head, vt->grid, src_cells[c]);
     }
     head->row_count++;
     vt->sb_lines++;

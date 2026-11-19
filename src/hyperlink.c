@@ -192,6 +192,19 @@ size_t cfr_hyperlink_read(const CfrPage *page, uint16_t id,
     return n;
 }
 
+uint16_t cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
+                                const CfrPage *src, uint16_t id)
+{
+    if (!dst || !src || id == 0 || id > src->hyperlinks.count)
+        return 0;
+    const CfrHyperlinkTable *t = &src->hyperlinks;
+    /* Intern straight out of the source arena: reading through a fixed
+     * stack buffer would truncate a URI longer than the buffer and
+     * re-intern the truncated prefix as a different link. */
+    return cfr_hyperlink_intern(vt, dst, t->data + t->offsets[id],
+                                t->lengths[id]);
+}
+
 void cfr_hyperlink_free(CfrTerm *vt, CfrHyperlinkTable *t)
 {
     if (!t)
