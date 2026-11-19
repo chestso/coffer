@@ -99,7 +99,6 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
         return;
 
     /* Store the row, if the ring retains anything and can allocate. */
-    const CfrCell *stored = NULL;
     CfrPage *page = NULL;
     if (vt->sb_capacity > 0 && ring_reserve(vt))
         page = page_for_push(vt, cols);
@@ -123,16 +122,7 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
         page->row_count++;
         *ring_at(vt, (uint32_t)vt->sb_lines) = (CfrSbRow){ page, row };
         vt->sb_lines++;
-        stored = dst;
     }
-
-    /* The one place a row enters history, hence the one place the host is
-     * told. Hand out the retained copy when there is one: its ids resolve
-     * through the cfr_cell_* accessors. With scrollback off (or on an
-     * allocation failure) the caller's cells go out as they are. */
-    if (vt->callbacks.sb_pushline)
-        vt->callbacks.sb_pushline(stored ? stored : src_cells, cols, lineage,
-                                  vt->callback_user);
 
     evict_to_capacity(vt);
 }
@@ -143,7 +133,6 @@ void cfr_scrollback_pop_rows(CfrTerm *vt, int n)
         return;
     if (n > vt->sb_lines)
         n = vt->sb_lines;
-    const int popped = n;
     for (; n > 0; --n) {
         CfrSbRow *slot = ring_at(vt, (uint32_t)vt->sb_lines - 1);
         CfrSbRow gone = *slot;
@@ -157,8 +146,6 @@ void cfr_scrollback_pop_rows(CfrTerm *vt, int n)
             ring_at(vt, (uint32_t)vt->sb_lines - 1)->page != gone.page)
             cfr_page_free(vt, gone.page);
     }
-    if (popped > 0 && vt->callbacks.sb_truncate)
-        vt->callbacks.sb_truncate(popped, vt->callback_user);
 }
 
 void cfr_scrollback_clear(CfrTerm *vt)

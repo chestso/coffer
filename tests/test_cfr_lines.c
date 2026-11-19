@@ -299,123 +299,140 @@ static void test_reflow_straddle_carries_cell_attributes(void)
     cfr_free(vt);
 }
 
-/* -------- host mirror: sb_pushline + sb_truncate track history ---------
+/* -------- sb_pushline: rows leaving the grid as a result of output -------
  *
- * A host that appends on sb_pushline and drops the tail on sb_truncate
- * must end up with exactly the rows the ring holds — through scrolls,
- * a shrink that pushes, and a grow that pulls a straddling line back and
- * re-pushes part of it. */
-typedef struct
-{
-    uint32_t cp0;
-    int cols;
-    uint32_t lineage;
-} MirrorRow;
-
+ * Each row is announced as the grid row that is leaving, top to bottom, and
+ * is readable there (through the ordinary accessors) during the call.
+ * Resizes announce nothing: they rewrite history synchronously. */
 typedef struct
 {
     CfrTerm *vt;
-    MirrorRow rows[256];
-    int count;
-    int pushes, truncated;
-    bool rich_resolved; /* a pushed 'e' cell resolved its bold style */
-} Mirror;
+    int pushes;
+    int rows[32];
+    uint32_t lineage[32];
+    uint32_t cp0[32];
+    bool same_as_newest[32]; /* row -1 held the same text during the call */
+    bool rich_resolved;      /* a leaving 'e' cell resolved its bold style */
+} Pushes;
 
-static void mirror_push(const CfrCell *cells, int cols, uint32_t lineage,
-                        void *user)
+static void record_push(int row, uint32_t lineage, void *user)
 {
-    Mirror *m = user;
-    if (m->count < 256)
-        m->rows[m->count++] = (MirrorRow){ cells[0].cp, cols, lineage };
-    m->pushes++;
-    if (cells[0].cp == (uint32_t)'e') {
-        /* The ring retained the row: it is now the newest, row -1. */
-        const CfrStyle *st = cfr_cell_style(m->vt, -1, 0);
+    Pushes *p = user;
+    int i = p->pushes++;
+    if (i >= 32)
+        return;
+    p->rows[i] = row;
+    p->lineage[i] = lineage;
+    const CfrCell *cell = cfr_get_cell(p->vt, row, 0);
+    p->cp0[i] = cell ? cell->cp : 0xFFFFFFFFu;
+
+    char here[64], newest[64];
+    cfr_row_text(p->vt, row, here, sizeof(here));
+    cfr_row_text(p->vt, -1, newest, sizeof(newest));
+    p->same_as_newest[i] = strcmp(here, newest) == 0;
+
+    if (cell && cell->cp == (uint32_t)'e') {
+        const CfrStyle *st = cfr_cell_style(p->vt, row, 0);
         if (st && (st->attrs & CFR_ATTR_BOLD) != 0 && st->fg_rgb == 0x010203u)
-            m->rich_resolved = true;
+            p->rich_resolved = true;
     }
 }
 
-static void mirror_truncate(int rows, void *user)
+static CfrTerm *make_pushes_term(Pushes *p, int rows, int cols, int scrollback)
 {
-    Mirror *m = user;
-    m->count -= rows;
-    m->truncated += rows;
-}
-
-static void check_mirror(const Mirror *m)
-{
-    CfrTerm *vt = m->vt;
-    int n = cfr_get_scrollback_lines(vt);
-    ASSERT_EQ(m->count, n);
-    for (int s = 0; s < n; ++s) {
-        const MirrorRow *row = &m->rows[m->count - 1 - s];
-        int cols = 0;
-        const CfrCell *cells = cfr_get_row(vt, -(s + 1), &cols);
-        ASSERT_NOT_NULL(cells);
-        ASSERT_EQ(cols, row->cols);
-        ASSERT_EQ(cells[0].cp, row->cp0);
-        if (s >= 1) {
-            const MirrorRow *newer = &m->rows[m->count - s];
-            bool joined = newer->lineage != 0 && newer->lineage == row->lineage;
-            ASSERT_EQ(cfr_row_is_continuation(vt, -s), joined);
-        }
-    }
-}
-
-static void test_scrollback_host_mirror(void)
-{
-    Mirror m = { 0 };
-    CfrTerm *vt = make_term(4, 10, true);
-    m.vt = vt;
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = rows;
+    cfg.cols = cols;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.reflow = true;
+    cfg.scrollback = scrollback;
+    CfrTerm *vt = cfr_new(&cfg);
+    memset(p, 0, sizeof(*p));
+    p->vt = vt;
     CfrCallbacks cb = { 0 };
-    cb.sb_pushline = mirror_push;
-    cb.sb_truncate = mirror_truncate;
-    cfr_set_callbacks(vt, &cb, &m);
+    cb.sb_pushline = record_push;
+    cfr_set_callbacks(vt, &cb, p);
+    return vt;
+}
 
-    feed(vt, "M\r\n\x1b[1;38;2;1;2;3me\xcc\x81");
-    feed(vt, "123456789012345678901234567"); /* rows 1..3, one line */
-    feed(vt, "\r\nZ");                       /* scrolls 'M' off */
-    ASSERT_EQ(m.pushes, 1);
-    check_mirror(&m);
+/* One call per row scrolled off by output, with the row readable at its
+ * grid row, the row's style resolvable, and lineage joining wrapped rows. */
+static void test_pushline_announces_scrolled_rows(void)
+{
+    Pushes p;
+    CfrTerm *vt = make_pushes_term(&p, 3, 10, 100);
 
-    cfr_resize(vt, 4, 5); /* shrink: rows go to history, nothing pulled */
-    ASSERT_EQ(m.truncated, 0);
-    ASSERT_TRUE(m.pushes > 1);
-    ASSERT_TRUE(m.rich_resolved);
-    check_mirror(&m);
+    feed(vt, "M\r\n");
+    feed(vt, "\x1b[1;38;2;1;2;3me\x1b[0m"); /* a styled 'e' on row 1 */
+    feed(vt, "123456789ABCDEF");            /* wraps: rows 1 and 2 */
+    ASSERT_EQ(p.pushes, 0);                 /* nothing has scrolled yet */
+    feed(vt, "\r\n\r\n");                   /* two scrolls: 'M', then "e12…" */
+    ASSERT_EQ(p.pushes, 2);
 
-    cfr_resize(vt, 4, 8); /* straddling line pulled back, part re-pushed */
-    ASSERT_TRUE(m.truncated > 0);
-    check_mirror(&m);
+    ASSERT_EQ(p.rows[0], 0);
+    ASSERT_EQ(p.cp0[0], (uint32_t)'M');
+    ASSERT_TRUE(p.same_as_newest[0]); /* also readable at row -1 */
+    ASSERT_EQ(p.rows[1], 0);
+    ASSERT_EQ(p.cp0[1], (uint32_t)'e');
+    ASSERT_TRUE(p.same_as_newest[1]);
+    ASSERT_TRUE(p.rich_resolved);
+    ASSERT_TRUE(p.lineage[0] != p.lineage[1]);
 
-    cfr_resize(vt, 4, 30); /* whole line back on screen */
-    check_mirror(&m);
+    feed(vt, "\r\n"); /* the wrapped tail "6789ABCDEF" leaves: same line */
+    ASSERT_EQ(p.pushes, 3);
+    ASSERT_EQ(p.lineage[2], p.lineage[1]);
+    ASSERT_TRUE(p.lineage[1] != 0);
     cfr_free(vt);
 }
 
-/* sb_pushline is a notification of every row that leaves the grid, so a
- * host owning its own history works with scrollback off. */
+/* Several rows leave at once (SU): announced top to bottom, each still in
+ * place at its own grid row. */
+static void test_pushline_announces_a_multi_row_scroll(void)
+{
+    Pushes p;
+    CfrTerm *vt = make_pushes_term(&p, 4, 10, 100);
+    feed(vt, "a\r\nb\r\nc\r\nd");
+    feed(vt, "\x1b[3S"); /* scroll up three rows */
+    ASSERT_EQ(p.pushes, 3);
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_EQ(p.rows[i], i);
+        ASSERT_EQ(p.cp0[i], (uint32_t)('a' + i));
+    }
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 3);
+    cfr_free(vt);
+}
+
+/* The announcement does not depend on the engine keeping the row: a host
+ * owning its own history works with scrollback off. */
 static void test_pushline_fires_with_scrollback_off(void)
 {
-    Mirror m = { 0 };
-    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
-    cfg.rows = 2;
-    cfg.cols = 10;
-    cfg.cell_w_px = 10;
-    cfg.cell_h_px = 6;
-    cfg.scrollback = 0;
-    CfrTerm *vt = cfr_new(&cfg);
-    m.vt = vt;
-    CfrCallbacks cb = { 0 };
-    cb.sb_pushline = mirror_push;
-    cfr_set_callbacks(vt, &cb, &m);
-
+    Pushes p;
+    CfrTerm *vt = make_pushes_term(&p, 2, 10, 0);
     feed(vt, "a\r\nb\r\nc\r\n");
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
-    ASSERT_EQ(m.pushes, 2);
-    ASSERT_EQ(m.rows[0].cp0, (uint32_t)'a');
-    ASSERT_EQ(m.rows[1].cp0, (uint32_t)'b');
+    ASSERT_EQ(p.pushes, 2);
+    ASSERT_EQ(p.rows[0], 0);
+    ASSERT_EQ(p.cp0[0], (uint32_t)'a'); /* still readable at its grid row */
+    ASSERT_EQ(p.cp0[1], (uint32_t)'b');
+    ASSERT_NULL(cfr_get_cell(vt, -1, 0));
+    cfr_free(vt);
+}
+
+/* A resize rewrites history (rows pushed, rows pulled back for a rewrap)
+ * but announces nothing: callbacks describe output. */
+static void test_resize_announces_nothing(void)
+{
+    Pushes p;
+    CfrTerm *vt = make_pushes_term(&p, 4, 10, 100);
+    feed(vt, "012345678901234567890123456789012345678901234567890123456789");
+    ASSERT_EQ(p.pushes, 2); /* the line scrolled two rows off as it wrapped */
+
+    cfr_resize(vt, 4, 5); /* shrink: rows go to history */
+    ASSERT_TRUE(cfr_get_scrollback_lines(vt) > 2);
+    cfr_resize(vt, 4, 8); /* straddling line pulled back, part re-pushed */
+    cfr_resize(vt, 4, 30);
+    ASSERT_EQ(p.pushes, 2);
     cfr_free(vt);
 }
 
@@ -699,8 +716,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_reflow_joins_multirow_scrollback_fragment);
     RUN_TEST(test_reflow_join_repushes_scrollback);
     RUN_TEST(test_reflow_straddle_carries_cell_attributes);
-    RUN_TEST(test_scrollback_host_mirror);
+    RUN_TEST(test_pushline_announces_scrolled_rows);
+    RUN_TEST(test_pushline_announces_a_multi_row_scroll);
     RUN_TEST(test_pushline_fires_with_scrollback_off);
+    RUN_TEST(test_resize_announces_nothing);
     RUN_TEST(test_reflow_prefix_is_capped);
     RUN_TEST(test_reflow_without_scrollback);
     TEST_SUMMARY();

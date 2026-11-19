@@ -109,14 +109,16 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
 
     /* Push lines off the top of the scroll region into scrollback iff
      * the region covers the full screen (no DECSTBM region active,
-     * not on altscreen). cfr owns the scrollback storage; the push
-     * itself notifies the host (sb_pushline). */
+     * not on altscreen). cfr owns the scrollback storage; sb_pushline is
+     * the host's notification that each row is leaving the grid. */
     bool push_to_sb = (top == 0 && bot == vt->rows - 1 && !vt->in_altscreen);
     if (push_to_sb) {
         for (int i = 0; i < lines; ++i) {
             const CfrCell *row = &vt->grid->cells[(size_t)(top + i) * vt->cols];
             uint32_t lineage = vt->grid->lineage[top + i];
             cfr_scrollback_push(vt, vt->grid, row, vt->cols, lineage);
+            if (vt->callbacks.sb_pushline)
+                vt->callbacks.sb_pushline(top + i, lineage, vt->callback_user);
         }
         /* A full-screen scroll moves grid row 0 into history: advance the
          * sixel absolute-line baseline so anchored images track the text

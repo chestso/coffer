@@ -331,35 +331,21 @@ typedef struct
      * (mouse reports, DA/DSR responses, kitty keyboard responses...) */
     void (*output)(const uint8_t *bytes, size_t len, void *user);
 
-    /* sb_pushline: a row entered scrollback — scrolled off the top, or
-     * re-emitted by a reflow. `cells` has `cols` entries and is valid only
-     * during the call; resolve its style, cluster and link with the
-     * cfr_cell_* accessors. (With scrollback disabled, or if the ring
-     * could not allocate, the row is not retained; a row pushed by a
-     * reflow in that state has no resolvable style/cluster/link.)
-     * `lineage` is the row's logical-line id (0 = blank); a value equal
-     * to the id the host saw for the previous push means the two rows are
-     * fragments of one soft-wrapped logical line.
+    /* sb_pushline: grid row `row` is scrolling off the top as a result of
+     * output (LF at the bottom, SU, ...). Rows are announced top to bottom,
+     * and each is still readable at unified row `row` — cfr_get_row(),
+     * cfr_cell_style() and the other accessors — for the duration of the
+     * call; when scrollback is enabled it is also readable at row -1.
+     * `lineage` is the row's logical-line id (0 = blank): a value equal to
+     * the one announced for the previous row means the two are fragments of
+     * one soft-wrapped line.
      *
-     * Fires for every push, even when the ring retains nothing, so a host
-     * that owns its own history sees every row. */
-    void (*sb_pushline)(const CfrCell *cells, int cols, uint32_t lineage, void *user);
-
-    /* sb_truncate: the `rows` NEWEST rows were removed from scrollback.
-     * Only a reflow does this: a logical line whose head is in history is
-     * pulled back out and re-emitted at the new width, as a sb_truncate
-     * followed by one sb_pushline per row that returns to history.
-     *
-     * Together the two callbacks let a host mirror history exactly: keep a
-     * list, append on sb_pushline, drop the last `rows` entries on
-     * sb_truncate, and evict the oldest beyond your own capacity.
-     * Rows already in history that the reflow did not pull back keep the
-     * width they were written at and are not re-announced.
-     *
-     * Callbacks fire mid-reflow, with the ring half-rewritten: use the
-     * cfr_cell_* accessors on `cells` if you need to, but do not mutate
-     * the terminal or query its scrollback from inside them. */
-    void (*sb_truncate)(int rows, void *user);
+     * Fires whether or not the engine keeps the row, so a host that owns its
+     * own history, or tracks scrolling to keep a view steady, sees every
+     * row. It reports output only: a resize rewrites history synchronously,
+     * and the caller reads the result when cfr_resize() returns. Do not
+     * mutate the terminal from inside the callback. */
+    void (*sb_pushline)(int row, uint32_t lineage, void *user);
 
     /* osc: OSC string callback (title is delivered via set_title) */
     void (*osc)(int code, const char *data, size_t len, void *user);

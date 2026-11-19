@@ -303,9 +303,9 @@ are deleted.
    resize, so reflow cost never depends on history size or line length;
    the far end of a longer line keeps its old width and still joins
    (wrap edge on its margin cell + the shared lineage id).
-   A host mirroring history follows it through two callbacks:
-   `sb_pushline` (every row entering the ring, scroll or reflow) and
-   `sb_truncate` (the newest rows a reflow pulled back).
+   Reflow announces nothing to the host: `sb_pushline` reports rows that
+   scroll off as a result of output, and a resize is a synchronous call whose
+   result the caller reads when it returns.
 
 ## 4. Policy knobs (spec + tests later; tmux is the reference)
 
