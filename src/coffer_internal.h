@@ -129,7 +129,6 @@ typedef struct
 
 typedef struct CfrPage
 {
-    struct CfrPage *prev, *next;
     uint16_t cols;
     uint16_t row_count;
     uint16_t row_capacity;
@@ -149,6 +148,15 @@ typedef struct CfrPage
     CfrGraphemeArena graphemes;
     CfrHyperlinkTable hyperlinks;
 } CfrPage;
+
+/* One scrollback row: the page that stores it and its row index there.
+ * The scrollback is a ring of these (scrollback.c). Rows of one page are
+ * contiguous in the ring, so a page is freed when no neighbour shares it. */
+typedef struct
+{
+    CfrPage *page;
+    uint32_t row;
+} CfrSbRow;
 
 /* ------------------------------------------------------------------ */
 /* Parser state                                                        */
@@ -253,18 +261,14 @@ struct CfrTerm
     CfrPage *altgrid;
     bool in_altscreen;
 
-    /* Scrollback page ring (head = most recent). */
-    CfrPage *sb_head;
-    CfrPage *sb_tail;
-    int sb_lines;
-    int sb_capacity;
-    /* Row-lookup hint (scrollback.c): the page the last lookup landed on
-     * and how many rows sit in pages newer than it. Walks and word scans
-     * read neighbouring rows, so starting from here makes them O(1)
-     * instead of O(pages). A cache only — every ring mutation clears it,
-     * and const readers refresh it. */
-    const CfrPage *sb_hint_page;
-    int sb_hint_before;
+    /* Scrollback (scrollback.c): a ring of row records, oldest at
+     * sb_first, over pages that own the cells. Row `d` deep (0 = newest) is
+     * a direct index — no walking. sb_ring_cap is zero or a power of two. */
+    CfrSbRow *sb_rows;
+    uint32_t sb_ring_cap;
+    uint32_t sb_first;
+    int sb_lines;    /* rows held */
+    int sb_capacity; /* most rows kept; 0 = scrollback off */
 
     CfrCursorState cursor;
     /* One saved-cursor register per screen: [0]=normal, [1]=alt. DECSC/DECRC
@@ -715,6 +719,10 @@ void cfr_damage_span(CfrTerm *vt, int start_row, int start_col, int end_row,
 void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
                          const CfrCell *src_cells, int cols, uint32_t lineage);
 void cfr_scrollback_clear(CfrTerm *vt);
+/* Set the capacity and evict down to it at once (oldest rows first),
+ * dropping the selection and anchored images that pointed at evicted
+ * rows. Growing, or shrinking below what is held, evicts nothing. */
+void cfr_scrollback_set_capacity(CfrTerm *vt, int lines);
 /* Remove the `n` NEWEST scrollback rows (the end nearest the grid),
  * freeing any page that empties. `n` is clamped to the row count.
  *

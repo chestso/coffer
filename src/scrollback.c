@@ -1,31 +1,59 @@
 /*
- * coffer — scrollback as a doubly-linked page ring.
+ * coffer — scrollback: a ring of row records over pages.
  *
- * Each page holds up to CFR_SB_PAGE_ROWS chronological rows. New
- * lines are appended to the head page (newest); when the head page
- * fills, a new page is allocated at the front. When the configured
- * line cap is exceeded, the tail page (oldest) is freed wholesale —
- * one `free` returns up to CFR_SB_PAGE_ROWS lines plus their style
- * intern table and grapheme arena. No fragmentation accumulates.
+ * Storage and addressing are separate. Pages (CFR_SB_PAGE_ROWS rows, one
+ * width each) own the cells, and the page-scoped style, grapheme and
+ * hyperlink tables. A ring of CfrSbRow records, oldest first, says which
+ * page and row each history row lives in. Row `d` deep (0 = newest) is
+ * therefore a direct index — no page walking, no search, nothing a reader
+ * has to remember between calls.
+ *
+ *   - Rows of one page are contiguous in the ring, so a page is freed the
+ *     moment no neighbouring record shares it: after the last of its rows
+ *     is evicted off the old end, or popped off the new end. No per-page
+ *     live count exists to drift.
+ *   - Eviction is row-exact: the ring never holds more than the configured
+ *     capacity, but a page lives until its last row leaves.
+ *   - A push appends to the newest row's page when it has room and the
+ *     same width; a different width (the grid was resized) starts a new
+ *     page. That is why history can hold rows of several widths.
  *
  * Cells are re-interned into the receiving page's tables: style_id,
- * grapheme_id and hyperlink_id are page-scoped, so a pushed row names
- * the page its ids refer to (`src`) and each cell is reseated into the
+ * grapheme_id and hyperlink_id are page-scoped, so a pushed row names the
+ * page its ids refer to (`src`) and each cell is reseated into the
  * scrollback page. This keeps page lifetimes independent.
- *
- * Layout convention:
- *   vt->sb_head  = newest page (push target)
- *   vt->sb_tail  = oldest page (eviction target)
- *   page->next   = older neighbor (toward tail)
- *   page->prev   = newer neighbor (toward head)
- *
- * Reading: sb_row 0 = newest. Within a page, rows are stored
- * chronologically; the newest in each page is at index `row_count - 1`.
  */
 
 #include "coffer_internal.h"
 
 #include <string.h>
+
+/* Ring record `i`, counted from the oldest (0) to the newest (sb_lines - 1). */
+static CfrSbRow *ring_at(const CfrTerm *vt, uint32_t i)
+{
+    return &vt->sb_rows[(vt->sb_first + i) & (vt->sb_ring_cap - 1)];
+}
+
+/* Make room for one more record, doubling the ring (and straightening it)
+ * when it is full. */
+static bool ring_reserve(CfrTerm *vt)
+{
+    if ((uint32_t)vt->sb_lines < vt->sb_ring_cap)
+        return true;
+    if (vt->sb_ring_cap >= (1u << 30))
+        return false;
+    uint32_t nc = vt->sb_ring_cap ? vt->sb_ring_cap * 2 : 64;
+    CfrSbRow *rows = cfr_alloc(vt, (size_t)nc * sizeof(CfrSbRow));
+    if (!rows)
+        return false;
+    for (uint32_t i = 0; i < (uint32_t)vt->sb_lines; ++i)
+        rows[i] = *ring_at(vt, i);
+    cfr_dealloc(vt, vt->sb_rows);
+    vt->sb_rows = rows;
+    vt->sb_ring_cap = nc;
+    vt->sb_first = 0;
+    return true;
+}
 
 static CfrPage *new_sb_page(CfrTerm *vt, int cols)
 {
@@ -33,44 +61,34 @@ static CfrPage *new_sb_page(CfrTerm *vt, int cols)
     if (!p)
         return NULL;
     /* cfr_page_new sets row_count to row_capacity (full page); for
-     * scrollback we treat row_count as "rows-used-so-far" and grow it
-     * up to row_capacity. Reset to empty. */
+     * scrollback row_count is "rows written so far". Reset to empty. */
     p->row_count = 0;
-    p->next = NULL;
-    p->prev = NULL;
     return p;
 }
 
-static bool ensure_head(CfrTerm *vt, int cols)
+/* The page a push of `cols`-wide row goes to: the newest row's page while
+ * it has room and the same width, otherwise a fresh one. */
+static CfrPage *page_for_push(CfrTerm *vt, int cols)
 {
-    if (vt->sb_head && vt->sb_head->row_count < vt->sb_head->row_capacity && vt->sb_head->cols == cols) {
-        return true;
+    if (vt->sb_lines > 0) {
+        CfrPage *newest = ring_at(vt, (uint32_t)vt->sb_lines - 1)->page;
+        if (newest->cols == cols && newest->row_count < newest->row_capacity)
+            return newest;
     }
-    CfrPage *page = new_sb_page(vt, cols);
-    if (!page)
-        return false;
-    /* Insert as new head. */
-    page->next = vt->sb_head;
-    if (vt->sb_head)
-        vt->sb_head->prev = page;
-    vt->sb_head = page;
-    if (!vt->sb_tail)
-        vt->sb_tail = page;
-    return true;
+    return new_sb_page(vt, cols);
 }
 
+/* The one place rows leave the old end. */
 static void evict_to_capacity(CfrTerm *vt)
 {
-    while (vt->sb_lines > vt->sb_capacity && vt->sb_tail) {
-        CfrPage *tail = vt->sb_tail;
-        vt->sb_hint_page = NULL;  /* the hint may name the page we free */
-        vt->sb_tail = tail->prev; /* newer than the evicted page */
-        if (vt->sb_tail)
-            vt->sb_tail->next = NULL;
-        else
-            vt->sb_head = NULL; /* the only page */
-        vt->sb_lines -= tail->row_count;
-        cfr_page_free(vt, tail);
+    while (vt->sb_lines > vt->sb_capacity) {
+        CfrSbRow *oldest = ring_at(vt, 0);
+        CfrPage *page = oldest->page;
+        *oldest = (CfrSbRow){ 0 }; /* no stale pointer to a page we may free */
+        vt->sb_first = (vt->sb_first + 1) & (vt->sb_ring_cap - 1);
+        vt->sb_lines--;
+        if (vt->sb_lines == 0 || ring_at(vt, 0)->page != page)
+            cfr_page_free(vt, page);
     }
 }
 
@@ -79,29 +97,31 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
 {
     if (!vt || cols <= 0 || !src || !src_cells)
         return;
-    vt->sb_hint_page = NULL; /* the ring changes under the hint */
 
     /* Store the row, if the ring retains anything and can allocate. */
     const CfrCell *stored = NULL;
-    if (vt->sb_capacity > 0 && ensure_head(vt, cols)) {
-        CfrPage *head = vt->sb_head;
+    CfrPage *page = NULL;
+    if (vt->sb_capacity > 0 && ring_reserve(vt))
+        page = page_for_push(vt, cols);
+    if (page) {
         /* Invariant: the push reads style/grapheme/hyperlink ids from
-         * `src` and writes them into head. If a caller ever passes the
-         * head AS the source, source and dest alias — the intern table
+         * `src` and writes them into `page`. If a caller ever passes the
+         * page AS the source, source and dest alias — the intern table
          * grows mid-read and any held pointer dangles. Fail loud at the
          * door. */
-        CFR_BUG_CHECK(head != src,
+        CFR_BUG_CHECK(page != src,
                       "scrollback push target page is also the source (%p)",
-                      (void *)head);
-        int row = head->row_count;
-        CfrCell *dst = &head->cells[(size_t)row * head->cols];
-        head->lineage[row] = lineage;
+                      (void *)page);
+        uint32_t row = page->row_count;
+        CfrCell *dst = &page->cells[(size_t)row * page->cols];
+        page->lineage[row] = lineage;
 
         /* Re-intern style, grapheme, and hyperlink references into the
-         * head page — page-scoped tables don't carry across pages. */
-        for (int c = 0; c < cols && c < head->cols; ++c)
-            dst[c] = cfr_cell_reintern(vt, head, src, src_cells[c]);
-        head->row_count++;
+         * page — page-scoped tables don't carry across pages. */
+        for (int c = 0; c < cols && c < page->cols; ++c)
+            dst[c] = cfr_cell_reintern(vt, page, src, src_cells[c]);
+        page->row_count++;
+        *ring_at(vt, (uint32_t)vt->sb_lines) = (CfrSbRow){ page, row };
         vt->sb_lines++;
         stored = dst;
     }
@@ -121,31 +141,22 @@ void cfr_scrollback_pop_rows(CfrTerm *vt, int n)
 {
     if (!vt || n <= 0)
         return;
-    vt->sb_hint_page = NULL;
     if (n > vt->sb_lines)
         n = vt->sb_lines;
     const int popped = n;
-    while (n > 0) {
-        CfrPage *head = vt->sb_head;
-        CFR_BUG_CHECK(head != NULL, "scrollback pop: %d rows left, no head",
-                      n);
-        if (!head)
-            break;
-        int take = (n < (int)head->row_count) ? n : (int)head->row_count;
-        head->row_count = (uint16_t)(head->row_count - (uint16_t)take);
-        vt->sb_lines -= take;
-        n -= take;
-        if (head->row_count == 0) {
-            vt->sb_head = head->next; /* older neighbor */
-            if (vt->sb_head)
-                vt->sb_head->prev = NULL;
-            else
-                vt->sb_tail = NULL;
-            cfr_page_free(vt, head);
-        }
+    for (; n > 0; --n) {
+        CfrSbRow *slot = ring_at(vt, (uint32_t)vt->sb_lines - 1);
+        CfrSbRow gone = *slot;
+        CFR_BUG_CHECK(gone.row + 1 == gone.page->row_count,
+                      "scrollback pop: row %u of a page filled to %u",
+                      gone.row, (unsigned)gone.page->row_count);
+        *slot = (CfrSbRow){ 0 };
+        vt->sb_lines--;
+        gone.page->row_count--; /* the slot is free for the next push */
+        if (vt->sb_lines == 0 ||
+            ring_at(vt, (uint32_t)vt->sb_lines - 1)->page != gone.page)
+            cfr_page_free(vt, gone.page);
     }
-    CFR_BUG_CHECK(vt->sb_lines >= 0, "scrollback pop: sb_lines=%d",
-                  vt->sb_lines);
     if (popped > 0 && vt->callbacks.sb_truncate)
         vt->callbacks.sb_truncate(popped, vt->callback_user);
 }
@@ -154,58 +165,46 @@ void cfr_scrollback_clear(CfrTerm *vt)
 {
     if (!vt)
         return;
-    vt->sb_hint_page = NULL;
-    CfrPage *p = vt->sb_head;
-    while (p) {
-        CfrPage *next = p->next;
-        cfr_page_free(vt, p);
-        p = next;
+    CfrPage *prev = NULL;
+    for (uint32_t i = 0; i < (uint32_t)vt->sb_lines; ++i) {
+        CfrPage *page = ring_at(vt, i)->page;
+        if (page != prev) { /* a page's rows are contiguous: free it once */
+            cfr_page_free(vt, page);
+            prev = page;
+        }
     }
-    vt->sb_head = NULL;
-    vt->sb_tail = NULL;
+    cfr_dealloc(vt, vt->sb_rows);
+    vt->sb_rows = NULL;
+    vt->sb_ring_cap = 0;
+    vt->sb_first = 0;
     vt->sb_lines = 0;
 }
 
-/* Locate scrollback row `sb_row` (0 = newest). Starts from the page the
- * previous lookup found and walks whichever way the target lies, so a
- * scan over neighbouring rows — a logical-line walk, a word scan, a
- * renderer reading consecutive cells — costs O(1) per step rather than
- * O(pages) from the head. A cold lookup still walks from the head.
- *
- * The hint is a cache behind a const interface: the object is never const
- * (cfr_new allocates it mutable), so refreshing it is well-defined; it does
- * mean two threads must not use the const accessors on one term at once. */
-static const CfrPage *find_sb_row(const CfrTerm *vt, int sb_row,
-                                  int *out_row_in_page)
+void cfr_scrollback_set_capacity(CfrTerm *vt, int lines)
 {
-    if (!vt || sb_row < 0 || sb_row >= vt->sb_lines)
-        return NULL;
-    const CfrPage *p = vt->sb_hint_page;
-    int before = vt->sb_hint_before; /* rows in pages newer than p */
-    if (!p) {
-        p = vt->sb_head;
-        before = 0;
-    }
-    while (p && sb_row < before) { /* toward newer */
-        p = p->prev;
-        if (p)
-            before -= p->row_count;
-    }
-    while (p && sb_row >= before + p->row_count) { /* toward older */
-        before += p->row_count;
-        p = p->next;
-    }
-    if (!p)
-        return NULL;
-    CfrTerm *m = (CfrTerm *)vt;
-    m->sb_hint_page = p;
-    m->sb_hint_before = before;
-    *out_row_in_page = p->row_count - 1 - (sb_row - before);
-    return p;
+    if (!vt || lines < 0)
+        return;
+    int before = vt->sb_lines;
+    vt->sb_capacity = lines;
+    evict_to_capacity(vt);
+    if (vt->sb_lines == before)
+        return;
+
+    /* Rows left history: drop what still points at them. */
+    if (vt->selection.active && vt->selection.start.row < -vt->sb_lines)
+        cfr_selection_clear(vt);
+    if (vt->images)
+        cfr_img_note_scroll(vt, vt->images, 0);
+    if (vt->lottie)
+        cfr_lottie_note_scroll(vt, 0);
 }
 
 const CfrPage *cfr_sb_page_for_row(const CfrTerm *vt, int sb_row,
                                    int *out_row_in_page)
 {
-    return find_sb_row(vt, sb_row, out_row_in_page);
+    if (!vt || sb_row < 0 || sb_row >= vt->sb_lines)
+        return NULL;
+    const CfrSbRow *r = ring_at(vt, (uint32_t)(vt->sb_lines - 1 - sb_row));
+    *out_row_in_page = (int)r->row;
+    return r->page;
 }

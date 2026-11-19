@@ -225,6 +225,246 @@ static void test_selection_extend_across_long_history(void)
     cfr_free(vt);
 }
 
+/* -------- the scrollback ring ---------------------------------------- */
+
+/* Deterministic text of line `n`: "L<n>:" then letters, 3..45 columns. */
+static void gen_line(char *out, size_t cap, int n)
+{
+    uint32_t h = (uint32_t)n * 2654435761u;
+    int len = 3 + (int)((h >> 8) % 43);
+    int k = snprintf(out, cap, "L%d:", n);
+    if (len < k)
+        len = k;
+    for (int i = k; i < len; ++i)
+        out[i] = (char)('a' + (i + n) % 26);
+    out[len] = '\0';
+}
+
+static void feed_line(CfrTerm *vt, int n)
+{
+    char buf[64];
+    gen_line(buf, sizeof(buf), n);
+    feed(vt, buf);
+    feed(vt, "\r\n");
+}
+
+/* A line that fits one row (width >= 8): exactly one row of history each. */
+static void feed_short(CfrTerm *vt, int n)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "L%d:\r\n", n);
+    feed(vt, buf);
+}
+
+/* The line number a unified row's text starts with, or -1. */
+static int row_line_no(const CfrTerm *vt, int row)
+{
+    char buf[256];
+    cfr_row_text(vt, row, buf, sizeof(buf));
+    int n = -1;
+    return sscanf(buf, "L%d:", &n) == 1 ? n : -1;
+}
+
+/* Structural invariants of the ring, independent of what it holds: rows are
+ * contiguous per page, each page's rows run newest-down, an older page is
+ * sealed at its fill, and no page reappears after another one began. */
+static void check_ring(const CfrTerm *vt)
+{
+    int n = vt->sb_lines;
+    ASSERT_TRUE(n >= 0 && n <= vt->sb_capacity);
+    ASSERT_EQ(n, cfr_get_scrollback_lines(vt));
+
+    const CfrPage *seen[512];
+    int nseen = 0;
+    const CfrPage *prev = NULL;
+    int prev_row = 0;
+    for (int d = 0; d < n; ++d) {
+        int row = -1;
+        const CfrPage *p = cfr_sb_page_for_row(vt, d, &row);
+        ASSERT_NOT_NULL(p);
+        ASSERT_TRUE(row >= 0 && row < p->row_count);
+        if (p == prev) {
+            ASSERT_EQ(row, prev_row - 1);
+        } else {
+            ASSERT_EQ(row, p->row_count - 1); /* its newest live row */
+            for (int i = 0; i < nseen; ++i)
+                ASSERT_TRUE(seen[i] != p);
+            ASSERT_TRUE(nseen < 512);
+            seen[nseen++] = p;
+        }
+        prev = p;
+        prev_row = row;
+    }
+    int row = -1;
+    ASSERT_NULL(cfr_sb_page_for_row(vt, n, &row));
+}
+
+/* Read the whole unified buffer back as logical lines: every line must be
+ * exactly gen_line(n) for consecutive n (the oldest may be a cut-off
+ * fragment, the last is the blank cursor row). Catches lost, duplicated,
+ * reordered or corrupted rows. */
+static void check_buffer_text(const CfrTerm *vt)
+{
+    int rows = 0, cols = 0;
+    cfr_get_dimensions(vt, &rows, &cols);
+    int sb = cfr_get_scrollback_lines(vt);
+
+    char line[4096];
+    char want[64];
+    size_t len = 0;
+    int next_n = -1;
+    bool in_line = false;
+    bool seen_blank = false;
+    for (int row = -sb; row <= rows; ++row) {
+        bool end_of_buffer = (row == rows);
+        bool continues = !end_of_buffer && row > -sb && cfr_row_is_continuation(vt, row);
+        if (!continues && in_line) { /* a logical line just ended */
+            line[len] = '\0';
+            if (next_n < 0 && line[0] == 'L') { /* first complete line */
+                int n = -1;
+                ASSERT_EQ(sscanf(line, "L%d:", &n), 1);
+                next_n = n;
+            }
+            if (next_n >= 0 && line[0] != '\0') {
+                ASSERT_FALSE(seen_blank); /* blank rows only trail */
+                gen_line(want, sizeof(want), next_n);
+                ASSERT_STR_EQ(line, want);
+                next_n++;
+            } else if (next_n >= 0) {
+                seen_blank = true;
+            }
+            len = 0;
+            in_line = false;
+        }
+        if (end_of_buffer)
+            break;
+        if (!continues)
+            len = 0;
+        size_t need = cfr_row_text_size(vt, row);
+        char *buf = malloc(need);
+        ASSERT_NOT_NULL(buf);
+        cfr_row_text(vt, row, buf, need);
+        ASSERT_TRUE(len + strlen(buf) < sizeof(line));
+        memcpy(line + len, buf, strlen(buf));
+        len += strlen(buf);
+        free(buf);
+        in_line = true;
+    }
+}
+
+/* Pushes, evictions (including shrinking the capacity), width changes and
+ * reflow pops interleaved at random: the ring must stay structurally sound
+ * and hold exactly the newest lines, in order, intact. */
+static void test_ring_survives_churn(void)
+{
+    CfrTerm *vt = make_term(3, 20, 150);
+    uint32_t rng = 987654321u;
+#define NEXT() (rng = rng * 1664525u + 1013904223u, rng >> 8)
+    int next_line = 0;
+    for (int step = 0; step < 600; ++step) {
+        uint32_t op = NEXT() % 10;
+        if (op < 6) {
+            feed_line(vt, next_line++);
+        } else if (op < 9) {
+            cfr_resize(vt, 3, 6 + (int)(NEXT() % 35));
+        } else {
+            cfr_set_scrollback_size(vt, 20 + (int)(NEXT() % 180));
+        }
+        int before = test_fail_count;
+        check_ring(vt);
+        check_buffer_text(vt);
+        if (test_fail_count != before) {
+            fprintf(stderr, "  (step %d, op %u, %d lines)\n", step, op,
+                    next_line);
+            return;
+        }
+    }
+#undef NEXT
+    ASSERT_TRUE(cfr_get_scrollback_lines(vt) > 20);
+    cfr_free(vt);
+}
+
+/* The ring never holds more than the capacity, and holds exactly that many
+ * once full — eviction is by row, not by whole page. */
+static void test_eviction_is_row_exact(void)
+{
+    CfrTerm *vt = make_term(3, 20, 100);
+    for (int n = 0; n < 150; ++n)
+        feed_short(vt, n);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 100);
+    int newest = row_line_no(vt, -1);
+    ASSERT_EQ(newest, 147); /* the grid holds lines 148, 149 and a blank */
+    ASSERT_EQ(row_line_no(vt, -100), newest - 99);
+    check_ring(vt);
+    cfr_free(vt);
+}
+
+/* Lowering the capacity evicts at once, oldest first; raising it keeps
+ * what is held. */
+static void test_set_size_evicts_now(void)
+{
+    CfrTerm *vt = make_term(3, 20, 100);
+    for (int n = 0; n < 150; ++n)
+        feed_short(vt, n);
+    int newest = row_line_no(vt, -1);
+
+    cfr_set_scrollback_size(vt, 40);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 40);
+    ASSERT_EQ(cfr_get_scrollback_capacity(vt), 40);
+    ASSERT_EQ(row_line_no(vt, -1), newest);
+    ASSERT_EQ(row_line_no(vt, -40), newest - 39);
+    ASSERT_NULL(cfr_get_row(vt, -41, NULL));
+    check_ring(vt);
+
+    cfr_set_scrollback_size(vt, 500);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 40);
+    cfr_set_scrollback_size(vt, 0);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    cfr_free(vt);
+}
+
+/* A selection that reaches into evicted rows is dropped; one inside the
+ * rows that remain survives. */
+static void test_set_size_drops_selection_into_evicted_rows(void)
+{
+    CfrTerm *vt = make_term(3, 20, 100);
+    for (int n = 0; n < 150; ++n)
+        feed_short(vt, n);
+
+    cfr_selection_start(vt, -10, 0, CFR_SEL_CHAR);
+    cfr_selection_update(vt, -8, 3);
+    cfr_set_scrollback_size(vt, 60);
+    ASSERT_TRUE(cfr_selection_active(vt));
+
+    cfr_selection_start(vt, -50, 0, CFR_SEL_CHAR);
+    cfr_selection_update(vt, -45, 3);
+    cfr_set_scrollback_size(vt, 30);
+    ASSERT_FALSE(cfr_selection_active(vt));
+    cfr_free(vt);
+}
+
+/* Rows evicted off the old end of a page and the rest popped off the new
+ * end leave the page unreferenced: it must be freed (LeakSanitizer fails
+ * the run if it is not) and the ring must keep working. */
+static void test_pop_after_front_eviction_frees_the_page(void)
+{
+    CfrTerm *vt = make_term(2, 20, 5);
+    for (int n = 0; n < 12; ++n)
+        feed_short(vt, n);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 5);
+
+    cfr_scrollback_pop_rows(vt, 5);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    check_ring(vt);
+
+    for (int n = 12; n < 20; ++n)
+        feed_short(vt, n);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 5);
+    ASSERT_EQ(row_line_no(vt, -1), 18);
+    check_ring(vt);
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -234,5 +474,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_selection_text_reads_rows_at_their_width);
     RUN_TEST(test_row_text_and_search_use_row_width);
     RUN_TEST(test_selection_extend_across_long_history);
+    RUN_TEST(test_ring_survives_churn);
+    RUN_TEST(test_eviction_is_row_exact);
+    RUN_TEST(test_set_size_evicts_now);
+    RUN_TEST(test_set_size_drops_selection_into_evicted_rows);
+    RUN_TEST(test_pop_after_front_eviction_frees_the_page);
     TEST_SUMMARY();
 }

@@ -186,10 +186,13 @@ design goals. Concretely:
   primary grid and, while in altscreen, the alternate). Page allocation
   happens on `cfr_new`, on resize, and on altscreen entry — never from
   `cfr_input_write`.
-- **Paged scrollback.** A doubly linked ring of pages, 64 rows per page,
-  default 1000 lines total. Allocations happen only when a page fills; the
-  ring evicts the oldest page when capacity is reached, so scrollback
+- **Paged scrollback.** History is a ring of row records over pages of 64
+  rows (one width per page), default 1000 lines. Any row is a direct index —
+  no walking, no per-reader state — and eviction is row-exact: the ring holds
+  at most the configured count, and a page is freed when its last row leaves.
+  Allocations happen only when a page fills or the ring doubles, so scrollback
   memory is bounded by the configured line count regardless of input.
+  Lowering the capacity evicts immediately.
 - **Per-page interning.** A style intern table keyed by SGR pen and a
   grapheme arena keyed by codepoint sequence both live on the page.
   Cells store a 32-bit `style_id` and 32-bit `grapheme_id`, so repeated

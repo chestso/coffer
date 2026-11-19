@@ -122,13 +122,7 @@ void cfr_free(CfrTerm *vt)
     if (!vt)
         return;
 
-    /* Drop scrollback pages. */
-    CfrPage *p = vt->sb_head;
-    while (p) {
-        CfrPage *next = p->next;
-        cfr_page_free(vt, p);
-        p = next;
-    }
+    cfr_scrollback_clear(vt);
 
     if (vt->grid)
         cfr_page_free(vt, vt->grid);
@@ -193,8 +187,7 @@ void cfr_set_ambiguous_wide(CfrTerm *vt, bool wide)
 }
 void cfr_set_scrollback_size(CfrTerm *vt, int lines)
 {
-    if (vt && lines >= 0)
-        vt->sb_capacity = lines;
+    cfr_scrollback_set_capacity(vt, lines);
 }
 
 /* ------------------------------------------------------------------ */
