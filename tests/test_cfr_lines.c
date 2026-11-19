@@ -220,6 +220,37 @@ static void test_reflow_joins_multirow_scrollback_fragment(void)
     cfr_free(vt);
 }
 
+/* Pop and push in the same pass: the joined fragment needs fewer rows
+ * than history holds, but the line still overflows the grid, so part of
+ * it goes back into the ring at the new width. */
+static void test_reflow_join_repushes_scrollback(void)
+{
+    CfrTerm *vt = make_term(4, 10, true);
+    /* 64 chars, index i printed as '0' + (i % 10). */
+    feed(vt, "0123456789012345678901234567890123456789012345678901234567890123");
+    cfr_resize(vt, 4, 5); /* 13 rows of 5: 9 to sb */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 9);
+
+    cfr_resize(vt, 4, 8); /* 8 rows of 8: 4 to sb, 4 visible */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 4);
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 2));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 3));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 4));
+    /* Visible rows hold chars 32..63, history rows 0..31. */
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'2');
+    ASSERT_EQ(cfr_get_cell(vt, 3, 0)->cp, (uint32_t)'6');
+    ASSERT_EQ(cfr_get_cell(vt, 3, 7)->cp, (uint32_t)'3');
+    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'4');
+    ASSERT_EQ(cfr_get_scrollback_cell(vt, 3, 0)->cp, (uint32_t)'0');
+    /* Re-pushed at 8 columns. */
+    ASSERT_NOT_NULL(cfr_get_scrollback_cell(vt, 0, 7));
+    ASSERT_NULL(cfr_get_scrollback_cell(vt, 0, 8));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, -4));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, -3));
+    cfr_free(vt);
+}
+
 /* Scrollback disabled: nothing can be pulled back, so the visible
  * remainder re-emits on its own (a row that would have gone to history is
  * dropped, as before). */
@@ -447,6 +478,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_scrollback_pop_rows);
     RUN_TEST(test_reflow_joins_scrollback_fragment);
     RUN_TEST(test_reflow_joins_multirow_scrollback_fragment);
+    RUN_TEST(test_reflow_join_repushes_scrollback);
     RUN_TEST(test_reflow_without_scrollback);
     TEST_SUMMARY();
 }
