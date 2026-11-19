@@ -144,8 +144,8 @@ compositing. See the portty README for renderer-side details.
   all keys as escape codes) are fully implemented. Push/pop/set/query
   of the flag stack works. Flags 0x2/0x4/0x10 are accepted on the stack
   but currently no-ops (waiting on a concrete consumer).
-- **Hyperlinks (OSC 8)** — cells carry a hyperlink id; the host retrieves
-  the URI via `cfr_cell_get_hyperlink()`.
+- **Hyperlinks (OSC 8)** — cells carry a page-scoped hyperlink id; the
+  host retrieves the URI via `cfr_cell_get_hyperlink(vt, row, col, …)`.
 - **Zero external dependencies** — libc only (ThorVG is optional and
   auto-detected; stb_image is a single-file header auto-fetched at
   configure time).

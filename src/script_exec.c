@@ -181,14 +181,6 @@ static void dump_text(CfrTerm *vt, FILE *out, CfrScriptDumpMode mode)
     free(buf);
 }
 
-/* Unified cell access: row < 0 is scrollback depth. */
-static const CfrCell *unified_cell(CfrTerm *vt, int row, int col)
-{
-    if (row < 0)
-        return cfr_get_scrollback_cell(vt, -row - 1, col);
-    return cfr_get_cell(vt, row, col);
-}
-
 static void describe_cp(const CfrCell *cell, char *buf, size_t cap)
 {
     if (cell->cp == 0 || cell->cp == 0x20)
@@ -210,7 +202,7 @@ static void dump_cells(CfrTerm *vt, FILE *out, int row, int col_start,
     fprintf(out, "render cells row=%d cols %d-%d\n", row, col_start,
             col_end);
     for (int c = col_start; c <= col_end; c++) {
-        const CfrCell *cell = unified_cell(vt, row, c);
+        const CfrCell *cell = cfr_get_cell(vt, row, c);
         if (!cell) {
             fprintf(out, "  col %3d: [?]\n", c);
             continue;
@@ -219,7 +211,7 @@ static void dump_cells(CfrTerm *vt, FILE *out, int row, int col_start,
             fprintf(out, "  col %3d: (blank/continuation)\n", c);
             continue;
         }
-        const CfrStyle *st = cfr_cell_style(vt, cell);
+        const CfrStyle *st = cfr_cell_style(vt, row, c);
         char cp_str[16];
         describe_cp(cell, cp_str, sizeof(cp_str));
         if (st)
@@ -246,10 +238,10 @@ static void dump_styles(CfrTerm *vt, FILE *out, int row)
 
     fprintf(out, "render styles row=%d\n", row);
     for (int c = 0; c < cols; c++) {
-        const CfrCell *cell = unified_cell(vt, row, c);
+        const CfrCell *cell = cfr_get_cell(vt, row, c);
         if (!cell)
             continue;
-        const CfrStyle *st = cfr_cell_style(vt, cell);
+        const CfrStyle *st = cfr_cell_style(vt, row, c);
         if (!st)
             continue;
         if (st->underline || st->bg_rgb || st->fg_rgb || st->attrs ||

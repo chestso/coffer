@@ -219,11 +219,10 @@ word character.
 ## Text Extraction
 
 `cfr_selection_get_text` walks from `start` to `end` in unified
-coordinates, reading cells via `cfr_get_cell` (visible) and
-`cfr_get_scrollback_cell` (scrollback). Strips trailing whitespace at
-hard line breaks, joins soft-wrapped lines without newline. Emits
-UTF-8 from codepoints, handles multi-codepoint grapheme clusters via
-`cfr_cell_get_grapheme`.
+coordinates, reading cells via `cfr_get_cell` (negative rows are
+scrollback). Strips trailing whitespace at hard line breaks, joins
+soft-wrapped lines without newline. Emits UTF-8 from codepoints, handles
+multi-codepoint grapheme clusters via `cfr_cell_get_grapheme`.
 
 This is a direct port of portty's `terminal_selection_get_text`, but
 running inside coffer where it has direct, zero-indirection cell access.

@@ -103,8 +103,7 @@ static void test_sgr_dim_set(void)
 {
     CfrTerm *vt = make_term();
     feed(vt, "\x1b[2mX");
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->attrs & CFR_ATTR_DIM) != 0);
     cfr_free(vt);
 }
@@ -113,8 +112,7 @@ static void test_sgr_dim_cleared_by_22(void)
 {
     CfrTerm *vt = make_term();
     feed(vt, "\x1b[2m\x1b[22mX");
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->attrs & CFR_ATTR_DIM) == 0);
     cfr_free(vt);
 }
@@ -125,8 +123,7 @@ static void test_sgr_invis_set(void)
 {
     CfrTerm *vt = make_term();
     feed(vt, "\x1b[8mX");
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->attrs & CFR_ATTR_INVIS) != 0);
     cfr_free(vt);
 }
@@ -135,8 +132,7 @@ static void test_sgr_invis_cleared_by_28(void)
 {
     CfrTerm *vt = make_term();
     feed(vt, "\x1b[8m\x1b[28mX");
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->attrs & CFR_ATTR_INVIS) == 0);
     cfr_free(vt);
 }

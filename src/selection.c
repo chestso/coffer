@@ -88,14 +88,6 @@ static int char_class(uint32_t ch, const char *word_chars)
     return 2;
 }
 
-static const CfrCell *read_cell_unified(const CfrTerm *vt, int row, int col)
-{
-    if (row >= 0)
-        return cfr_get_cell(vt, row, col);
-    int sb_row = -(row + 1);
-    return cfr_get_scrollback_cell(vt, sb_row, col);
-}
-
 static void expand_word(const CfrTerm *vt, int row, int col,
                         CfrSelectionPoint *out_start,
                         CfrSelectionPoint *out_end)
@@ -103,7 +95,7 @@ static void expand_word(const CfrTerm *vt, int row, int col,
     const char *wchars =
         vt->selection_word_chars ? vt->selection_word_chars : default_word_chars;
 
-    const CfrCell *cell = read_cell_unified(vt, row, col);
+    const CfrCell *cell = cfr_get_cell(vt, row, col);
     if (!cell) {
         *out_start = (CfrSelectionPoint){ row, col };
         *out_end = (CfrSelectionPoint){ row, col };
@@ -129,7 +121,7 @@ static void expand_word(const CfrTerm *vt, int row, int col,
             if (c < 0)
                 break;
         }
-        const CfrCell *x = read_cell_unified(vt, r, c);
+        const CfrCell *x = cfr_get_cell(vt, r, c);
         if (!x || char_class(x->cp, wchars) != cls)
             break;
         sr = r;
@@ -149,7 +141,7 @@ static void expand_word(const CfrTerm *vt, int row, int col,
         } else {
             break;
         }
-        const CfrCell *x = read_cell_unified(vt, r, c);
+        const CfrCell *x = cfr_get_cell(vt, r, c);
         if (!x || char_class(x->cp, wchars) != cls)
             break;
         er = r;
@@ -424,7 +416,7 @@ char *cfr_selection_get_text(const CfrTerm *vt)
 
         int col = col_start;
         while (col <= col_end) {
-            const CfrCell *cell = read_cell_unified(vt, row, col);
+            const CfrCell *cell = cfr_get_cell(vt, row, col);
             if (!cell) {
                 col++;
                 continue;
@@ -439,7 +431,7 @@ char *cfr_selection_get_text(const CfrTerm *vt)
                 size_t n_cps = 1;
                 cps[0] = cell->cp;
                 if (cell->grapheme_id != 0) {
-                    n_cps = cfr_cell_get_grapheme(vt, cell, cps,
+                    n_cps = cfr_cell_get_grapheme(vt, row, col, cps,
                                                   sizeof(cps) / sizeof(cps[0]));
                     if (n_cps == 0) {
                         cps[0] = cell->cp;

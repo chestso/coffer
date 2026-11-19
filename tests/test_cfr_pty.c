@@ -290,7 +290,7 @@ static void test_zwj_family_full(void)
             if (cell && cell->cp == 0x1F468u && cell->width == 2) {
                 found = r * 100 + c;
                 uint32_t cps[16] = { 0 };
-                size_t n = cfr_cell_get_grapheme(vt, cell, cps, 16);
+                size_t n = cfr_cell_get_grapheme(vt, r, c, cps, 16);
                 ASSERT_EQ(n, (size_t)7);
                 ASSERT_EQ(cps[0], 0x1F468u); /* man */
                 ASSERT_EQ(cps[1], 0x200Du);  /* ZWJ */

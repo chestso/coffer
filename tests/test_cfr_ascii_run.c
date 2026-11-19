@@ -123,7 +123,7 @@ static void test_trailing_combining_mark_attaches_to_the_run(void)
     ASSERT_EQ(b->width, 1);
     ASSERT_NEQ(b->grapheme_id, 0u);
     uint32_t cps[CFR_CLUSTER_MAX];
-    size_t n = cfr_cell_get_grapheme(vt, b, cps, CFR_CLUSTER_MAX);
+    size_t n = cfr_cell_get_grapheme(vt, 0, 1, cps, CFR_CLUSTER_MAX);
     ASSERT_EQ(n, (size_t)2);
     ASSERT_EQ(cps[0], (uint32_t)'b');
     ASSERT_EQ(cps[1], 0x0301u);
@@ -245,8 +245,8 @@ static void test_scroll_at_bottom_pushes_run_rows_to_scrollback(void)
     /* "abcde" fills row 0, "fghij" row 1; the wrap onto "k" scrolls
      * "abcde" off. Screen: "fghij" / "kl". */
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
-    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'a');
-    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 4)->cp, (uint32_t)'e');
+    ASSERT_EQ(cfr_get_cell(vt, -1, 0)->cp, (uint32_t)'a');
+    ASSERT_EQ(cfr_get_cell(vt, -1, 4)->cp, (uint32_t)'e');
     ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'f');
     ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, (uint32_t)'k');
     ASSERT_EQ(cfr_get_cell(vt, 1, 1)->cp, (uint32_t)'l');

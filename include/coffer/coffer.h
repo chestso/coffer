@@ -39,6 +39,14 @@ typedef struct CfrTerm CfrTerm;
  * non-zero offset into the page's grapheme arena; the full sequence
  * is retrieved with cfr_cell_get_grapheme().
  *
+ * style_id, grapheme_id and hyperlink_id are PAGE-SCOPED: each page of
+ * the engine's storage numbers them independently, so the same id on two
+ * rows can mean different styles, clusters or links, and the same link
+ * can carry different ids. They are meaningful only through the
+ * cfr_cell_* accessors, with the (row, col) the cell was read from — never
+ * compare them across rows, and never use one as a cache key. Testing
+ * for zero ("no style / no cluster / no link") is always safe.
+ *
  * Continuation cells (the second cell of a width-2 cluster) have
  * width == 0 and are skipped by callers.
  */
@@ -110,22 +118,31 @@ typedef struct
     uint16_t color_flags; /* CFR_COLOR_* */
 } CfrStyle;
 
-/* Resolve a cell's style. Returns NULL if the term/cell is invalid. */
-const CfrStyle *cfr_cell_style(const CfrTerm *vt, const CfrCell *cell);
+/* Row addressing. Every accessor that takes a `row` uses UNIFIED rows:
+ * row >= 0 is a visible row (0 = top), row < 0 is scrollback depth
+ * (-1 = the line most recently scrolled off). Scrollback rows keep the
+ * width they were written at, so a row's width (cfr_get_row) can differ
+ * from the grid's; `col` is checked against the row's own width. */
 
-/* Copy a cell's grapheme codepoints into `out`. Returns the number of
- * codepoints written. `out_cap` caps the write; a return value equal
- * to `out_cap` indicates truncation. For single-cp cells this returns
- * 1 with cell->cp. */
-size_t cfr_cell_get_grapheme(const CfrTerm *vt, const CfrCell *cell,
+/* Resolve the style of the cell at (row, col). Returns NULL if the cell
+ * does not exist. The pointer is valid until the next call that changes
+ * the terminal (cfr_input_write, cfr_resize, cfr_reset, ...). */
+const CfrStyle *cfr_cell_style(const CfrTerm *vt, int row, int col);
+
+/* Copy the grapheme codepoints of the cell at (row, col) into `out`.
+ * Returns the number of codepoints written, or 0 if the cell does not
+ * exist. `out_cap` caps the write; a return value equal to `out_cap`
+ * indicates truncation. For single-cp cells this returns 1 with the
+ * cell's `cp`. */
+size_t cfr_cell_get_grapheme(const CfrTerm *vt, int row, int col,
                              uint32_t *out, size_t out_cap);
 
-/* Copy a cell's hyperlink URI bytes into `out_uri`. Returns the URI
- * length, or 0 if the cell has no link or the term/cell is invalid.
- * The URI bytes are raw (per OSC 8 spec, constrained to 32–126);
+/* Copy the hyperlink URI bytes of the cell at (row, col) into `out_uri`.
+ * Returns the URI length, or 0 if the cell has no link or does not
+ * exist. The URI bytes are raw (per OSC 8 spec, constrained to 32–126);
  * callers wanting a C string must NUL-terminate. A return value equal
  * to `out_cap` indicates truncation. */
-size_t cfr_cell_get_hyperlink(const CfrTerm *vt, const CfrCell *cell,
+size_t cfr_cell_get_hyperlink(const CfrTerm *vt, int row, int col,
                               uint8_t *out_uri, size_t out_cap);
 
 /* ------------------------------------------------------------------ */
@@ -521,9 +538,16 @@ int cfr_get_kitty_kb_state(const CfrTerm *vt, uint32_t *flags, int *depth);
 /* Queries                                                             */
 /* ------------------------------------------------------------------ */
 
-/* Returns NULL for out-of-range coordinates. Continuation cells
- * (width == 0) are returned as-is; callers skip them. */
+/* The cell at unified (row, col); NULL when it does not exist. Continuation
+ * cells (width == 0) are returned as-is; callers skip them. The pointer is
+ * valid until the next call that changes the terminal. */
 const CfrCell *cfr_get_cell(const CfrTerm *vt, int row, int col);
+
+/* The cells of one unified row, contiguous, and the row's own width in
+ * *out_cols (optional). NULL when the row does not exist. Read a whole row
+ * through this rather than per-column cfr_get_cell() calls. Same lifetime
+ * as cfr_get_cell(). */
+const CfrCell *cfr_get_row(const CfrTerm *vt, int row, int *out_cols);
 
 void cfr_get_dimensions(const CfrTerm *vt, int *out_rows, int *out_cols);
 
@@ -533,13 +557,6 @@ int cfr_get_scrollback_lines(const CfrTerm *vt);
 /* Configured scrollback capacity in lines (what cfr_set_scrollback_size set, or
  * the built-in default). 0 means scrollback is disabled. */
 int cfr_get_scrollback_capacity(const CfrTerm *vt);
-/* One scrollback row's cells, contiguous. Reads a whole row through this
- * instead of per-column cfr_get_scrollback_cell() calls: each of those
- * re-walks the page list, which is quadratic over a full-buffer scan. */
-const CfrCell *cfr_get_scrollback_row(const CfrTerm *vt, int sb_row,
-                                      int *out_cols);
-const CfrCell *cfr_get_scrollback_cell(const CfrTerm *vt, int sb_row, int col);
-bool cfr_get_scrollback_wrapline(const CfrTerm *vt, int sb_row);
 
 CfrCursor cfr_get_cursor(const CfrTerm *vt);
 const char *cfr_get_title(const CfrTerm *vt);

@@ -215,9 +215,9 @@ static void test_reflow_joins_multirow_scrollback_fragment(void)
     /* One row remains in history: 'M', still at the width it was pushed
      * at (6 cols) — the join rewrote only its own fragments. */
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
-    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'M');
-    ASSERT_NOT_NULL(cfr_get_scrollback_cell(vt, 0, 5));
-    ASSERT_NULL(cfr_get_scrollback_cell(vt, 0, 6));
+    ASSERT_EQ(cfr_get_cell(vt, -1, 0)->cp, (uint32_t)'M');
+    ASSERT_NOT_NULL(cfr_get_cell(vt, -1, 5));
+    ASSERT_NULL(cfr_get_cell(vt, -1, 6));
     cfr_free(vt);
 }
 
@@ -242,11 +242,11 @@ static void test_reflow_join_repushes_scrollback(void)
     ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'2');
     ASSERT_EQ(cfr_get_cell(vt, 3, 0)->cp, (uint32_t)'6');
     ASSERT_EQ(cfr_get_cell(vt, 3, 7)->cp, (uint32_t)'3');
-    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'4');
-    ASSERT_EQ(cfr_get_scrollback_cell(vt, 3, 0)->cp, (uint32_t)'0');
+    ASSERT_EQ(cfr_get_cell(vt, -1, 0)->cp, (uint32_t)'4');
+    ASSERT_EQ(cfr_get_cell(vt, -4, 0)->cp, (uint32_t)'0');
     /* Re-pushed at 8 columns. */
-    ASSERT_NOT_NULL(cfr_get_scrollback_cell(vt, 0, 7));
-    ASSERT_NULL(cfr_get_scrollback_cell(vt, 0, 8));
+    ASSERT_NOT_NULL(cfr_get_cell(vt, -1, 7));
+    ASSERT_NULL(cfr_get_cell(vt, -1, 8));
     ASSERT_FALSE(cfr_row_is_continuation(vt, -4));
     ASSERT_TRUE(cfr_row_is_continuation(vt, -3));
     cfr_free(vt);
@@ -256,22 +256,23 @@ static void test_reflow_join_repushes_scrollback(void)
  * a straddling line makes: ring page -> old grid -> ring page (re-push)
  * and ring page -> old grid -> new grid (visible). The first cell of the
  * line carries all three and lives in history for the shrunken widths. */
-static void check_rich_cell(CfrTerm *vt, const CfrCell *cell)
+static void check_rich_cell(CfrTerm *vt, int row, int col)
 {
+    const CfrCell *cell = cfr_get_cell(vt, row, col);
     ASSERT_NOT_NULL(cell);
     ASSERT_EQ(cell->cp, (uint32_t)'e');
 
     uint32_t cps[4];
-    ASSERT_EQ(cfr_cell_get_grapheme(vt, cell, cps, 4), 2u);
+    ASSERT_EQ(cfr_cell_get_grapheme(vt, row, col, cps, 4), 2u);
     ASSERT_EQ(cps[1], 0x0301u);
 
-    const CfrStyle *st = cfr_cell_style(vt, cell);
+    const CfrStyle *st = cfr_cell_style(vt, row, col);
     ASSERT_NOT_NULL(st);
     ASSERT_TRUE((st->attrs & CFR_ATTR_BOLD) != 0);
     ASSERT_EQ(st->fg_rgb, 0x010203u);
 
     uint8_t uri[64];
-    size_t n = cfr_cell_get_hyperlink(vt, cell, uri, sizeof(uri) - 1);
+    size_t n = cfr_cell_get_hyperlink(vt, row, col, uri, sizeof(uri) - 1);
     uri[n] = '\0';
     ASSERT_STR_EQ((const char *)uri, "https://example.com/r");
 }
@@ -286,15 +287,15 @@ static void test_reflow_straddle_carries_cell_attributes(void)
 
     cfr_resize(vt, 4, 5); /* 8 rows of 5: the first four go to history */
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 4);
-    check_rich_cell(vt, cfr_get_scrollback_cell(vt, 3, 0));
+    check_rich_cell(vt, -4, 0);
 
     cfr_resize(vt, 4, 8); /* 5 rows of 8: pop four, re-push one */
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
-    check_rich_cell(vt, cfr_get_scrollback_cell(vt, 0, 0));
+    check_rich_cell(vt, -1, 0);
 
     cfr_resize(vt, 4, 20); /* the whole line is visible again */
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
-    check_rich_cell(vt, cfr_get_cell(vt, 0, 0));
+    check_rich_cell(vt, 0, 0);
     cfr_free(vt);
 }
 
@@ -328,7 +329,8 @@ static void mirror_push(const CfrCell *cells, int cols, uint32_t lineage,
         m->rows[m->count++] = (MirrorRow){ cells[0].cp, cols, lineage };
     m->pushes++;
     if (cells[0].cp == (uint32_t)'e') {
-        const CfrStyle *st = cfr_cell_style(m->vt, &cells[0]);
+        /* The ring retained the row: it is now the newest, row -1. */
+        const CfrStyle *st = cfr_cell_style(m->vt, -1, 0);
         if (st && (st->attrs & CFR_ATTR_BOLD) != 0 && st->fg_rgb == 0x010203u)
             m->rich_resolved = true;
     }
@@ -349,7 +351,7 @@ static void check_mirror(const Mirror *m)
     for (int s = 0; s < n; ++s) {
         const MirrorRow *row = &m->rows[m->count - 1 - s];
         int cols = 0;
-        const CfrCell *cells = cfr_get_scrollback_row(vt, s, &cols);
+        const CfrCell *cells = cfr_get_row(vt, -(s + 1), &cols);
         ASSERT_NOT_NULL(cells);
         ASSERT_EQ(cols, row->cols);
         ASSERT_EQ(cells[0].cp, row->cp0);
@@ -452,7 +454,7 @@ static void test_reflow_prefix_is_capped(void)
     ASSERT_EQ(sb, untouched + rewritten);
     for (int s = 0; s < sb; ++s) {
         int cols = 0;
-        ASSERT_NOT_NULL(cfr_get_scrollback_row(vt, s, &cols));
+        ASSERT_NOT_NULL(cfr_get_row(vt, -(s + 1), &cols));
         ASSERT_EQ(cols, s < rewritten ? 2 * COLS : COLS);
     }
 
@@ -463,7 +465,7 @@ static void test_reflow_prefix_is_capped(void)
     int idx = 0;
     for (int s = sb - 1; s >= 0; --s) {
         int cols = 0;
-        const CfrCell *row = cfr_get_scrollback_row(vt, s, &cols);
+        const CfrCell *row = cfr_get_row(vt, -(s + 1), &cols);
         for (int c = 0; c < cols; ++c, ++idx)
             ASSERT_EQ(row[c].cp, (uint32_t)line[idx]);
     }
@@ -504,8 +506,6 @@ static void check_sb_lookup(const CfrTerm *vt, int k)
     ASSERT_TRUE(got == want);
     if (want) {
         ASSERT_EQ(got_row, want_row);
-        const CfrCell *cell = &want->cells[(size_t)want_row * want->cols];
-        ASSERT_TRUE(cfr_find_owner_page(vt, cell) == want);
     }
 }
 
@@ -653,8 +653,8 @@ static void test_reflow_roundtrip_shrink_grow(void)
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 8);
     ASSERT_FALSE(cfr_row_is_continuation(vt, -8));
     ASSERT_TRUE(cfr_row_is_continuation(vt, -7));
-    ASSERT_NOT_NULL(cfr_get_scrollback_cell(vt, 0, 9));
-    ASSERT_NULL(cfr_get_scrollback_cell(vt, 0, 10));
+    ASSERT_NOT_NULL(cfr_get_cell(vt, -1, 9));
+    ASSERT_NULL(cfr_get_cell(vt, -1, 10));
 
     cfr_free(vt);
 }
@@ -675,27 +675,23 @@ static void test_resize_carries_hyperlink(void)
 
     /* Reflow: shrink, then grow back. */
     cfr_resize(vt, 6, 5);
-    size_t n = cfr_cell_get_hyperlink(vt, cfr_get_cell(vt, 0, 0), buf,
-                                      sizeof(buf) - 1);
+    size_t n = cfr_cell_get_hyperlink(vt, 0, 0, buf, sizeof(buf) - 1);
     buf[n] = '\0';
     ASSERT_EQ(n, strlen(uri));
     ASSERT_STR_EQ((const char *)buf, uri);
 
     cfr_resize(vt, 6, 40);
-    n = cfr_cell_get_hyperlink(vt, cfr_get_cell(vt, 0, 0), buf,
-                               sizeof(buf) - 1);
+    n = cfr_cell_get_hyperlink(vt, 0, 0, buf, sizeof(buf) - 1);
     buf[n] = '\0';
     ASSERT_STR_EQ((const char *)buf, uri);
     /* A cell outside the link run still has no link. */
-    ASSERT_EQ(cfr_cell_get_hyperlink(vt, cfr_get_cell(vt, 0, 30), buf,
-                                     sizeof(buf)),
+    ASSERT_EQ(cfr_cell_get_hyperlink(vt, 0, 30, buf, sizeof(buf)),
               0u);
 
     /* Clamp resize (reflow disabled) takes the other path. */
     cfr_set_reflow(vt, false);
     cfr_resize(vt, 6, 20);
-    n = cfr_cell_get_hyperlink(vt, cfr_get_cell(vt, 0, 0), buf,
-                               sizeof(buf) - 1);
+    n = cfr_cell_get_hyperlink(vt, 0, 0, buf, sizeof(buf) - 1);
     buf[n] = '\0';
     ASSERT_STR_EQ((const char *)buf, uri);
 
@@ -705,9 +701,8 @@ static void test_resize_carries_hyperlink(void)
     cfr_resize(vt, 6, 10);
     feed(vt, "\x1b[6;1H\n\n"); /* two rows scroll off; the link is in sb */
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 2);
-    ASSERT_EQ(cfr_get_scrollback_cell(vt, 1, 0)->cp, (uint32_t)'0');
-    n = cfr_cell_get_hyperlink(vt, cfr_get_scrollback_cell(vt, 1, 0), buf,
-                               sizeof(buf) - 1);
+    ASSERT_EQ(cfr_get_cell(vt, -2, 0)->cp, (uint32_t)'0');
+    n = cfr_cell_get_hyperlink(vt, -2, 0, buf, sizeof(buf) - 1);
     buf[n] = '\0';
     ASSERT_STR_EQ((const char *)buf, uri);
     cfr_free(vt);
@@ -721,12 +716,12 @@ static void test_scrollback_pop_rows(void)
     CfrTerm *vt = make_term(2, 10, true);
     feed(vt, "a\r\nb\r\nc\r\nd\r\n");
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 3);
-    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'c');
-    ASSERT_EQ(cfr_get_scrollback_cell(vt, 2, 0)->cp, (uint32_t)'a');
+    ASSERT_EQ(cfr_get_cell(vt, -1, 0)->cp, (uint32_t)'c');
+    ASSERT_EQ(cfr_get_cell(vt, -3, 0)->cp, (uint32_t)'a');
 
     cfr_scrollback_pop_rows(vt, 2);
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
-    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'a');
+    ASSERT_EQ(cfr_get_cell(vt, -1, 0)->cp, (uint32_t)'a');
 
     /* Over-popping clamps; the ring empties cleanly. */
     cfr_scrollback_pop_rows(vt, 5);
@@ -736,7 +731,7 @@ static void test_scrollback_pop_rows(void)
 
     feed(vt, "e\r\n");
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
-    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'d');
+    ASSERT_EQ(cfr_get_cell(vt, -1, 0)->cp, (uint32_t)'d');
     cfr_free(vt);
 }
 

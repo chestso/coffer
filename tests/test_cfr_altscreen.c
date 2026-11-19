@@ -214,7 +214,7 @@ static void test_altscreen_resize_reflows(void)
         int sb_lines = cfr_get_scrollback_lines(vt);
         for (int sb = 0; sb < sb_lines && !found_k; sb++) {
             for (int c = 0; c < cols; c++) {
-                const CfrCell *cell = cfr_get_scrollback_cell(vt, sb, c);
+                const CfrCell *cell = cfr_get_cell(vt, -(sb + 1), c);
                 if (cell && cell->cp == (uint32_t)'K') {
                     found_k = true;
                     break;

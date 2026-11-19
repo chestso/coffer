@@ -262,14 +262,14 @@ static void test_scrollback_row_matches_per_cell_reads(void)
     ASSERT_TRUE(cfr_get_scrollback_lines(vt) > 0);
     for (int sb = 0; sb < cfr_get_scrollback_lines(vt); sb++) {
         int row_cols = 0;
-        const CfrCell *row = cfr_get_scrollback_row(vt, sb, &row_cols);
+        const CfrCell *row = cfr_get_row(vt, -(sb + 1), &row_cols);
         ASSERT_NOT_NULL(row);
         ASSERT_EQ(row_cols, 5);
         for (int c = 0; c < row_cols; c++) {
-            ASSERT_EQ(row[c].cp, cfr_get_scrollback_cell(vt, sb, c)->cp);
-            ASSERT_EQ(row[c].width, cfr_get_scrollback_cell(vt, sb, c)->width);
+            ASSERT_EQ(row[c].cp, cfr_get_cell(vt, -(sb + 1), c)->cp);
+            ASSERT_EQ(row[c].width, cfr_get_cell(vt, -(sb + 1), c)->width);
             ASSERT_EQ(row[c].grapheme_id,
-                      cfr_get_scrollback_cell(vt, sb, c)->grapheme_id);
+                      cfr_get_cell(vt, -(sb + 1), c)->grapheme_id);
         }
     }
     /* find_text walks the full history through the row-resolved path. */

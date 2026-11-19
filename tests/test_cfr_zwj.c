@@ -208,7 +208,7 @@ static void test_every_sequence_occupies_one_two_cell_grid_cell(void)
         ASSERT_EQ(cont->width, 0);
 
         uint32_t readback[MAX_SEQ_CPS];
-        size_t got = cfr_cell_get_grapheme(vt, head, readback, MAX_SEQ_CPS);
+        size_t got = cfr_cell_get_grapheme(vt, row, 0, readback, MAX_SEQ_CPS);
         if (got != n) {
             fprintf(stderr,
                     "  row %d (starts U+%04X): grapheme has %zu cps, "

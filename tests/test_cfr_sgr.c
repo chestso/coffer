@@ -39,8 +39,7 @@ static void test_sgr_truecolor_bg(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[48;2;128;128;255mX");
 
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
     ASSERT_EQ(s->bg_rgb, 0x008080FFu);
 
@@ -53,8 +52,7 @@ static void test_sgr_256_bg(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[48;5;196mX");
 
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
 
     cfr_free(vt);
@@ -66,8 +64,7 @@ static void test_sgr_ansi_bg(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[41mX");
 
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
 
     cfr_free(vt);
@@ -79,8 +76,7 @@ static void test_sgr_combined_fg_bg(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[38;2;255;0;0;48;2;40;40;40mX");
 
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
     ASSERT_EQ(s->bg_rgb, 0x00282828u);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
@@ -102,8 +98,7 @@ static void test_sgr_trailing_semicolon_bg(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[48;2;128;128;255;mX");
 
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
     ASSERT_EQ(s->bg_rgb, 0x008080FFu);
 
@@ -116,8 +111,7 @@ static void test_sgr_trailing_semicolon_fg(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[38;2;255;0;0;mX");
 
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
     ASSERT_EQ(s->fg_rgb, 0x00FF0000u);
 
@@ -130,8 +124,7 @@ static void test_sgr_combined_trailing_semicolon(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[38;2;255;0;0;48;2;40;40;40;mX");
 
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
     ASSERT_EQ(s->bg_rgb, 0x00282828u);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
@@ -146,10 +139,8 @@ static void test_sgr_reset_bg(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[48;2;128;128;255mA\x1b[49mB");
 
-    const CfrCell *a = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *sa = cfr_cell_style(vt, a);
-    const CfrCell *b = cfr_get_cell(vt, 0, 1);
-    const CfrStyle *sb = cfr_cell_style(vt, b);
+    const CfrStyle *sa = cfr_cell_style(vt, 0, 0);
+    const CfrStyle *sb = cfr_cell_style(vt, 0, 1);
     ASSERT_TRUE((sa->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
     ASSERT_TRUE((sb->color_flags & CFR_COLOR_DEFAULT_BG) != 0);
 
@@ -163,8 +154,7 @@ static void test_sgr_multi_attr_trailing_semicolon(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[1;38;2;255;0;0;48;2;40;40;40;mX");
 
-    const CfrCell *c = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, c);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->attrs & CFR_ATTR_BOLD) != 0);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
     ASSERT_EQ(s->fg_rgb, 0x00FF0000u);
@@ -181,12 +171,12 @@ static void test_sgr_double_underline(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[1;21mX");
 
-    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_EQ(s->underline, CFR_UL_DOUBLE);
     ASSERT_TRUE((s->attrs & CFR_ATTR_BOLD) != 0);
 
     feed(vt, "\x1b[24mY");
-    const CfrStyle *s1 = cfr_cell_style(vt, cfr_get_cell(vt, 0, 1));
+    const CfrStyle *s1 = cfr_cell_style(vt, 0, 1);
     ASSERT_EQ(s1->underline, CFR_UL_NONE);
     ASSERT_TRUE((s1->attrs & CFR_ATTR_BOLD) != 0);
 
@@ -199,22 +189,22 @@ static void test_sgr_overline(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[53mX");
 
-    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->attrs & CFR_ATTR_OVERLINE) != 0);
     ASSERT_TRUE((s->attrs & CFR_ATTR_STRIKETHROUGH) == 0);
 
     /* 55 drops the overline without touching the cell already written. */
     feed(vt, "\x1b[55mY");
-    const CfrStyle *s0 = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    const CfrStyle *s0 = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s0->attrs & CFR_ATTR_OVERLINE) != 0);
-    const CfrStyle *s1 = cfr_cell_style(vt, cfr_get_cell(vt, 0, 1));
+    const CfrStyle *s1 = cfr_cell_style(vt, 0, 1);
     ASSERT_TRUE((s1->attrs & CFR_ATTR_OVERLINE) == 0);
 
     /* A reset clears it like any other attribute bit. */
     feed(vt, "\x1b[53mZ\x1b[0mW");
-    const CfrStyle *s2 = cfr_cell_style(vt, cfr_get_cell(vt, 0, 2));
+    const CfrStyle *s2 = cfr_cell_style(vt, 0, 2);
     ASSERT_TRUE((s2->attrs & CFR_ATTR_OVERLINE) != 0);
-    const CfrStyle *s3 = cfr_cell_style(vt, cfr_get_cell(vt, 0, 3));
+    const CfrStyle *s3 = cfr_cell_style(vt, 0, 3);
     ASSERT_TRUE((s3->attrs & CFR_ATTR_OVERLINE) == 0);
 
     cfr_free(vt);
@@ -227,7 +217,7 @@ static void test_sgr_overline_combined(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[53;4:3;58:2::255:0:0mX");
 
-    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->attrs & CFR_ATTR_OVERLINE) != 0);
     ASSERT_EQ(s->underline, CFR_UL_CURLY);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_UL) == 0);
@@ -245,13 +235,11 @@ static void test_bce_erase_in_line(void)
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[48;2;128;128;255mHi\x1b[K");
 
-    const CfrCell *c3 = cfr_get_cell(vt, 0, 3);
-    const CfrStyle *s3 = cfr_cell_style(vt, c3);
+    const CfrStyle *s3 = cfr_cell_style(vt, 0, 3);
     ASSERT_TRUE((s3->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
     ASSERT_EQ(s3->bg_rgb, 0x008080FFu);
 
-    const CfrCell *c79 = cfr_get_cell(vt, 0, 79);
-    const CfrStyle *s79 = cfr_cell_style(vt, c79);
+    const CfrStyle *s79 = cfr_cell_style(vt, 0, 79);
     ASSERT_TRUE((s79->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
     ASSERT_EQ(s79->bg_rgb, 0x008080FFu);
 
@@ -266,13 +254,11 @@ static void test_bce_erase_in_display(void)
     feed(vt, "\x1b[48;5;196mX\x1b[J");
 
     /* Row 0: cell 1..9 should have the 256-col background. */
-    const CfrCell *c1 = cfr_get_cell(vt, 0, 1);
-    const CfrStyle *s1 = cfr_cell_style(vt, c1);
+    const CfrStyle *s1 = cfr_cell_style(vt, 0, 1);
     ASSERT_TRUE((s1->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
 
     /* Row 1: cell 0 should have the 256-col background. */
-    const CfrCell *c10 = cfr_get_cell(vt, 1, 0);
-    const CfrStyle *s10 = cfr_cell_style(vt, c10);
+    const CfrStyle *s10 = cfr_cell_style(vt, 1, 0);
     ASSERT_TRUE((s10->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
 
     cfr_free(vt);

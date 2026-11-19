@@ -221,15 +221,24 @@ size_t cfr_input_write(CfrTerm *vt, const uint8_t *bytes, size_t len)
 /* Queries                                                             */
 /* ------------------------------------------------------------------ */
 
+const CfrCell *cfr_get_row(const CfrTerm *vt, int row, int *out_cols)
+{
+    int row_in_page = 0;
+    const CfrPage *page = cfr_row_page(vt, row, &row_in_page);
+    if (!page)
+        return NULL;
+    if (out_cols)
+        *out_cols = page->cols;
+    return &page->cells[(size_t)row_in_page * page->cols];
+}
+
 const CfrCell *cfr_get_cell(const CfrTerm *vt, int row, int col)
 {
-    if (!vt || !vt->grid)
+    int cols = 0;
+    const CfrCell *cells = cfr_get_row(vt, row, &cols);
+    if (!cells || col < 0 || col >= cols)
         return NULL;
-    if (row < 0 || row >= vt->rows)
-        return NULL;
-    if (col < 0 || col >= vt->cols)
-        return NULL;
-    return &vt->grid->cells[(size_t)row * vt->cols + col];
+    return &cells[col];
 }
 
 void cfr_get_dimensions(const CfrTerm *vt, int *out_rows, int *out_cols)
@@ -252,8 +261,6 @@ int cfr_get_scrollback_capacity(const CfrTerm *vt)
     return vt ? vt->sb_capacity : 0;
 }
 
-/* cfr_get_scrollback_cell, cfr_get_scrollback_wrapline are implemented
- * in scrollback.c. */
 CfrCursor cfr_get_cursor(const CfrTerm *vt)
 {
     CfrCursor out = { 0 };
@@ -297,38 +304,52 @@ bool cfr_row_is_continuation(const CfrTerm *vt, int row)
     return cfr_row_continues(vt, row);
 }
 
-const CfrStyle *cfr_cell_style(const CfrTerm *vt, const CfrCell *cell)
+/* Resolve (row, col) to the page that owns the cell and the cell itself;
+ * the page is what the cell's page-scoped ids resolve against. */
+static const CfrCell *locate_cell(const CfrTerm *vt, int row, int col,
+                                  const CfrPage **out_page)
 {
-    if (!vt || !cell)
+    int row_in_page = 0;
+    const CfrPage *page = cfr_row_page(vt, row, &row_in_page);
+    if (!page || col < 0 || col >= page->cols)
         return NULL;
-    const CfrPage *page = cfr_find_owner_page(vt, cell);
-    if (!page)
+    *out_page = page;
+    return &page->cells[(size_t)row_in_page * page->cols + col];
+}
+
+const CfrStyle *cfr_cell_style(const CfrTerm *vt, int row, int col)
+{
+    const CfrPage *page = NULL;
+    const CfrCell *cell = locate_cell(vt, row, col, &page);
+    if (!cell)
         return NULL;
     return cfr_style_lookup(page, cell->style_id);
 }
 
-size_t cfr_cell_get_grapheme(const CfrTerm *vt, const CfrCell *cell,
+size_t cfr_cell_get_grapheme(const CfrTerm *vt, int row, int col,
                              uint32_t *out, size_t out_cap)
 {
-    if (!vt || !cell || !out || out_cap == 0)
+    if (!out || out_cap == 0)
+        return 0;
+    const CfrPage *page = NULL;
+    const CfrCell *cell = locate_cell(vt, row, col, &page);
+    if (!cell)
         return 0;
     if (cell->grapheme_id == 0) {
         out[0] = cell->cp;
         return 1;
     }
-    const CfrPage *page = cfr_find_owner_page(vt, cell);
-    if (!page)
-        return 0;
     return cfr_grapheme_read(page, cell->grapheme_id, out, out_cap);
 }
 
-size_t cfr_cell_get_hyperlink(const CfrTerm *vt, const CfrCell *cell,
+size_t cfr_cell_get_hyperlink(const CfrTerm *vt, int row, int col,
                               uint8_t *out_uri, size_t out_cap)
 {
-    if (!vt || !cell || cell->hyperlink_id == 0 || !out_uri || out_cap == 0)
+    if (!out_uri || out_cap == 0)
         return 0;
-    const CfrPage *page = cfr_find_owner_page(vt, cell);
-    if (!page)
+    const CfrPage *page = NULL;
+    const CfrCell *cell = locate_cell(vt, row, col, &page);
+    if (!cell || cell->hyperlink_id == 0)
         return 0;
     return cfr_hyperlink_read(page, cell->hyperlink_id, out_uri, out_cap);
 }

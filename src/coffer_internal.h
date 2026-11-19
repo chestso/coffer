@@ -756,8 +756,4 @@ void cfr_lottie_note_scroll(CfrTerm *vt, int lines);
 void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot);
 void cfr_lottie_clear_all(CfrTerm *vt);
 
-/* Page ownership lookup — used by cell accessors that must resolve
- * a cell's grapheme/style entry against the page that owns it. */
-const CfrPage *cfr_find_owner_page(const CfrTerm *vt, const CfrCell *cell);
-
 #endif /* COFFER_INTERNAL_H */

@@ -446,7 +446,7 @@ static void test_vs16_split_across_writes_attaches(void)
     ASSERT_EQ(cell->width, 2);
     ASSERT_NEQ(cell->grapheme_id, 0u);
     uint32_t cps[8] = { 0 };
-    size_t n = cfr_cell_get_grapheme(vt, cell, cps, 8);
+    size_t n = cfr_cell_get_grapheme(vt, 0, 0, cps, 8);
     ASSERT_EQ(n, 2u);
     ASSERT_EQ(cps[0], 0x26A0u);
     ASSERT_EQ(cps[1], 0xFE0Fu);
@@ -466,7 +466,7 @@ static void test_vs15_split_cancels_vs16(void)
     const CfrCell *cell = cfr_get_cell(vt, 0, 0);
     ASSERT_EQ(cell->width, 1);
     uint32_t cps[8] = { 0 };
-    size_t n = cfr_cell_get_grapheme(vt, cell, cps, 8);
+    size_t n = cfr_cell_get_grapheme(vt, 0, 0, cps, 8);
     ASSERT_EQ(n, 3u);
     ASSERT_EQ(cps[1], 0xFE0Fu);
     ASSERT_EQ(cps[2], 0xFE0Eu);
@@ -506,7 +506,7 @@ static void test_combining_mark_split_across_writes(void)
     ASSERT_EQ(cell->cp, (uint32_t)'e');
     ASSERT_EQ(cell->width, 1);
     uint32_t cps[4] = { 0 };
-    ASSERT_EQ(cfr_cell_get_grapheme(vt, cell, cps, 4), 2u);
+    ASSERT_EQ(cfr_cell_get_grapheme(vt, 0, 0, cps, 4), 2u);
     ASSERT_EQ(cps[1], 0x0301u);
     ASSERT_EQ(cfr_get_cell(vt, 0, 1)->cp, (uint32_t)'f');
     cfr_free(vt);

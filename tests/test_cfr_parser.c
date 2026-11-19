@@ -408,7 +408,7 @@ static void test_osc8_uri_roundtrip(void)
     ASSERT_NOT_NULL(c);
     ASSERT_NEQ(c->hyperlink_id, 0);
     uint8_t uri[64];
-    size_t n = cfr_cell_get_hyperlink(vt, c, uri, sizeof(uri));
+    size_t n = cfr_cell_get_hyperlink(vt, 0, 0, uri, sizeof(uri));
     ASSERT_EQ(n, (size_t)18);
     uri[n] = '\0';
     ASSERT_STR_EQ((const char *)uri, "http://example.com");
@@ -475,7 +475,7 @@ static void test_osc8_with_id_param(void)
     ASSERT_NOT_NULL(c);
     ASSERT_NEQ(c->hyperlink_id, 0);
     uint8_t uri[64];
-    size_t n = cfr_cell_get_hyperlink(vt, c, uri, sizeof(uri));
+    size_t n = cfr_cell_get_hyperlink(vt, 0, 0, uri, sizeof(uri));
     ASSERT_EQ(n, (size_t)8);
     uri[n] = '\0';
     ASSERT_STR_EQ((const char *)uri, "http://x");
@@ -510,18 +510,16 @@ static void test_osc8_scrollback_reintern(void)
     int sb = cfr_get_scrollback_lines(vt);
     ASSERT_NEQ(sb, 0);
     /* Find the row with 'L' in scrollback (the first scrolled-out row). */
-    const CfrCell *l = NULL;
-    for (int i = 0; i < sb; ++i) {
-        const CfrCell *cell = cfr_get_scrollback_cell(vt, i, 0);
-        if (cell && cell->cp == (uint32_t)'L') {
-            l = cell;
-            break;
-        }
+    int l_row = 0;
+    for (int i = 0; i < sb && l_row == 0; ++i) {
+        const CfrCell *cell = cfr_get_cell(vt, -(i + 1), 0);
+        if (cell && cell->cp == (uint32_t)'L')
+            l_row = -(i + 1);
     }
-    ASSERT_NOT_NULL(l);
-    ASSERT_NEQ(l->hyperlink_id, 0);
+    ASSERT_NEQ(l_row, 0);
+    ASSERT_NEQ(cfr_get_cell(vt, l_row, 0)->hyperlink_id, 0);
     uint8_t uri[64];
-    size_t n = cfr_cell_get_hyperlink(vt, l, uri, sizeof(uri));
+    size_t n = cfr_cell_get_hyperlink(vt, l_row, 0, uri, sizeof(uri));
     ASSERT_EQ(n, (size_t)18);
     uri[n] = '\0';
     ASSERT_STR_EQ((const char *)uri, "http://example.com");
@@ -538,7 +536,7 @@ static void test_osc8_st_terminator(void)
     ASSERT_NOT_NULL(c);
     ASSERT_NEQ(c->hyperlink_id, 0);
     uint8_t uri[64];
-    size_t n = cfr_cell_get_hyperlink(vt, c, uri, sizeof(uri));
+    size_t n = cfr_cell_get_hyperlink(vt, 0, 0, uri, sizeof(uri));
     ASSERT_EQ(n, (size_t)18);
     cfr_free(vt);
 }
@@ -627,7 +625,7 @@ static void test_style_intern_dedup(void)
     /* B is the default style → id 0. */
     ASSERT_EQ(b->style_id, 0u);
 
-    const CfrStyle *as = cfr_cell_style(vt, a);
+    const CfrStyle *as = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(as);
     ASSERT_TRUE((as->attrs & CFR_ATTR_BOLD) != 0);
     cfr_free(vt);
@@ -726,7 +724,7 @@ static void test_vs16_widens_ambiguous(void)
     ASSERT_EQ(xc->cp, (uint32_t)'x');
     /* Verify the cluster stored both codepoints. */
     uint32_t cps[8] = { 0 };
-    size_t n = cfr_cell_get_grapheme(vt, vs, cps, 8);
+    size_t n = cfr_cell_get_grapheme(vt, 0, 0, cps, 8);
     ASSERT_EQ(n, 2u);
     ASSERT_EQ(cps[0], 0x26A0u);
     ASSERT_EQ(cps[1], 0xFE0Fu);
@@ -779,7 +777,7 @@ static void test_combining_mark(void)
     ASSERT_EQ(f->cp, (uint32_t)'f');
 
     uint32_t cps[4] = { 0 };
-    size_t n = cfr_cell_get_grapheme(vt, eacute, cps, 4);
+    size_t n = cfr_cell_get_grapheme(vt, 0, 0, cps, 4);
     ASSERT_EQ(n, 2u);
     ASSERT_EQ(cps[0], (uint32_t)'e');
     ASSERT_EQ(cps[1], 0x0301u);
@@ -821,7 +819,7 @@ static void test_zwj_family(void)
     ASSERT_EQ(fam->cp, 0x1F468u);
     ASSERT_EQ(fam->width, 2);
     uint32_t cps[16] = { 0 };
-    size_t n = cfr_cell_get_grapheme(vt, fam, cps, 16);
+    size_t n = cfr_cell_get_grapheme(vt, 0, 0, cps, 16);
     ASSERT_EQ(n, 7u);
     ASSERT_EQ(cps[0], 0x1F468u);
     ASSERT_EQ(cps[1], 0x200Du);
@@ -875,7 +873,7 @@ static void test_skin_tone(void)
     ASSERT_EQ(wave->cp, 0x1F44Bu);
     ASSERT_EQ(wave->width, 2);
     uint32_t cps[4] = { 0 };
-    size_t n = cfr_cell_get_grapheme(vt, wave, cps, 4);
+    size_t n = cfr_cell_get_grapheme(vt, 0, 0, cps, 4);
     ASSERT_EQ(n, 2u);
     ASSERT_EQ(cps[1], 0x1F3FDu);
     const CfrCell *k = cfr_get_cell(vt, 0, 2);
@@ -893,10 +891,10 @@ static void test_scrollback_push_read(void)
     int sb = cfr_get_scrollback_lines(vt);
     ASSERT_EQ(sb, 1);
 
-    const CfrCell *first = cfr_get_scrollback_cell(vt, 0, 0);
+    const CfrCell *first = cfr_get_cell(vt, -1, 0);
     ASSERT_NOT_NULL(first);
     ASSERT_EQ(first->cp, (uint32_t)'A');
-    const CfrCell *fifth = cfr_get_scrollback_cell(vt, 0, 4);
+    const CfrCell *fifth = cfr_get_cell(vt, -1, 4);
     ASSERT_EQ(fifth->cp, (uint32_t)'A');
 
     /* Active grid row 0 is now BBBBB, row 1 is CCCCC, row 2 is DDDDD. */
@@ -922,7 +920,7 @@ static void test_ris_clears_scrollback(void)
              "c"); /* RIS */
 
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
-    ASSERT_NULL(cfr_get_scrollback_cell(vt, 0, 0));
+    ASSERT_NULL(cfr_get_cell(vt, -1, 0));
     /* Grid is cleared too. */
     const CfrCell *cell = cfr_get_cell(vt, 0, 0);
     ASSERT_EQ(cell->cp, 0u);
@@ -944,7 +942,7 @@ static void test_ed3_clears_scrollback(void)
     /* ED 3 purges scrollback as well. */
     feed(vt, "\x1b[3J");
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
-    ASSERT_NULL(cfr_get_scrollback_cell(vt, 0, 0));
+    ASSERT_NULL(cfr_get_cell(vt, -1, 0));
     cfr_free(vt);
 }
 
@@ -963,14 +961,14 @@ static void test_scrollback_grapheme_reintern(void)
     int sb = cfr_get_scrollback_lines(vt);
     ASSERT_EQ(sb, 1);
 
-    const CfrCell *fam = cfr_get_scrollback_cell(vt, 0, 0);
+    const CfrCell *fam = cfr_get_cell(vt, -1, 0);
     ASSERT_NOT_NULL(fam);
     ASSERT_EQ(fam->cp, 0x1F468u);
     ASSERT_EQ(fam->width, 2);
     ASSERT_NEQ(fam->grapheme_id, 0u);
 
     uint32_t cps[8] = { 0 };
-    size_t n = cfr_cell_get_grapheme(vt, fam, cps, 8);
+    size_t n = cfr_cell_get_grapheme(vt, -1, 0, cps, 8);
     ASSERT_EQ(n, 3u);
     ASSERT_EQ(cps[0], 0x1F468u);
     ASSERT_EQ(cps[1], 0x200Du);
@@ -1373,8 +1371,7 @@ static void test_sgr_truecolor(void)
     CfrTerm *vt = make_term(24, 80);
     /* SGR 38;2;255;128;0 — RGB orange foreground. */
     feed(vt, "\x1b[38;2;255;128;0mX");
-    const CfrCell *x = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, x);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
     ASSERT_EQ(s->fg_rgb, 0xFF8000u);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
@@ -1386,7 +1383,7 @@ static void test_sgr_truecolor_colon_form(void)
     /* CSI 38:2:R:G:B — ITU form, no empty colourspace slot. */
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[38:2:255:128:0mX");
-    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
     ASSERT_EQ(s->fg_rgb, 0xFF8000u);
     ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
@@ -1400,7 +1397,7 @@ static void test_sgr_truecolor_colon_form_empty_slot(void)
      * leaking the trailing param into the SGR loop as a stray code. */
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[38:2::255:128:0mX");
-    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
     ASSERT_EQ(s->fg_rgb, 0xFF8000u);
     /* Bg must remain default — no leak from the trailing param. */
@@ -1413,7 +1410,7 @@ static void test_sgr_underline_color_itu(void)
     /* SGR 4 + 58:2::R:G:B (the form used by examples/basic/attributes.sh). */
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[4;58:2::255:100:100mR");
-    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
     ASSERT_EQ(s->ul_rgb, 0xFF6464u);
     ASSERT_EQ(s->underline, CFR_UL_SINGLE);
@@ -1428,7 +1425,7 @@ static void test_sgr_underline_color_curly_orange(void)
     /* 4:3 (curly) followed by 58:2::255:200:50 (orange). */
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[4:3;58:2::255:200:50mO");
-    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
     ASSERT_EQ(s->underline, CFR_UL_CURLY);
     ASSERT_EQ(s->ul_rgb, 0xFFC832u);
@@ -1443,7 +1440,7 @@ static void test_sgr_underline_style_subparam_only(void)
      * underline style. */
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[4:3mC");
-    const CfrStyle *s = cfr_cell_style(vt, cfr_get_cell(vt, 0, 0));
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
     ASSERT_EQ(s->underline, CFR_UL_CURLY);
     ASSERT_TRUE((s->attrs & CFR_ATTR_ITALIC) == 0);
@@ -1451,7 +1448,7 @@ static void test_sgr_underline_style_subparam_only(void)
 
     CfrTerm *vt2 = make_term(24, 80);
     feed(vt2, "\x1b[4;3mI");
-    const CfrStyle *s2 = cfr_cell_style(vt2, cfr_get_cell(vt2, 0, 0));
+    const CfrStyle *s2 = cfr_cell_style(vt2, 0, 0);
     ASSERT_NOT_NULL(s2);
     ASSERT_EQ(s2->underline, CFR_UL_SINGLE);
     ASSERT_TRUE((s2->attrs & CFR_ATTR_ITALIC) != 0);
@@ -1486,8 +1483,7 @@ static void test_sgr_indexed(void)
 {
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[31mY"); /* red 30+1 */
-    const CfrCell *y = cfr_get_cell(vt, 0, 0);
-    const CfrStyle *s = cfr_cell_style(vt, y);
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
     /* Dracula red (SGR 31) is 0xFF5555 per palette.c. */
     ASSERT_EQ(s->fg_rgb, 0xFF5555u);
@@ -1557,8 +1553,8 @@ static void test_reflow_preserves_styles(void)
     const CfrCell *b = cfr_get_cell(vt, 0, 5);
     ASSERT_EQ(a->cp, (uint32_t)'A');
     ASSERT_EQ(b->cp, (uint32_t)'B');
-    const CfrStyle *as = cfr_cell_style(vt, a);
-    const CfrStyle *bs = cfr_cell_style(vt, b);
+    const CfrStyle *as = cfr_cell_style(vt, 0, 0);
+    const CfrStyle *bs = cfr_cell_style(vt, 0, 5);
     ASSERT_NOT_NULL(as);
     ASSERT_NOT_NULL(bs);
     ASSERT_EQ(as->fg_rgb, 0xFF5555u); /* red */
