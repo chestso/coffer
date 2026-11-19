@@ -60,6 +60,10 @@
  * with a huge ring), so the rewrite stops here; older rows of that line
  * keep the width they were written at and still join (see reflow.c). */
 #define CFR_REFLOW_PREFIX_ROWS 1024
+/* Most cells a double-click scans either way from the click to find the
+ * word's edges (selection.c). Same reasoning: the work a click costs must
+ * not depend on how long the line under it is. */
+#define CFR_WORD_SCAN_CELLS 4096
 
 /* Grapheme arena: codepoints / dedup table initial sizes (bytes). */
 #define CFR_ARENA_CP_INIT    1024u
@@ -614,15 +618,8 @@ const CfrPage *cfr_row_page(const CfrTerm *vt, int unified_row,
  * AND both rows share the same nonzero lineage. */
 bool cfr_row_continues(const CfrTerm *vt, int unified_row);
 
-/* Bounds of the logical line containing unified `row`. Both outputs are
- * inclusive unified row coordinates; the line never extends past
- * `lo_limit`/`hi_limit` (the caller passes the scrollback/visible
- * extents it wants to consider). */
-void cfr_logical_line_bounds(const CfrTerm *vt, int row, int lo_limit,
-                             int hi_limit, int *out_start, int *out_end);
-
 /* Page width for a unified row (any page in sb/grid/altgrid; rows can
- * differ across the scrollback boundary). Used by the word-scan walk. */
+ * differ across the scrollback boundary). */
 int cfr_row_width(const CfrTerm *vt, int unified_row);
 
 /* Width / grapheme break (width.c). */

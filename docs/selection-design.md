@@ -209,7 +209,10 @@ Word expansion logic (mirrors portty's existing `expand_word`):
    checks the margin cell's `CFR_CELL_WRAPLINE` bit plus the shared
    logical-line lineage id — see `docs/wrapped-lines-design.md`).
 4. Scan right: same, extend rightward.
-5. For the union of anchor and cursor word expansions, take the min
+5. Each scan looks at most `CFR_WORD_SCAN_CELLS` (4096) cells from the
+   click, so a double-click costs the same on a megabyte-long unbroken
+   line as on a short one; a word longer than that is cut at the limit.
+6. For the union of anchor and cursor word expansions, take the min
    start and max end.
 
 `cfr_selection_set_word_chars` configures the word character set.

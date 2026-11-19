@@ -97,6 +97,12 @@ static int last_col(const CfrTerm *vt, int row)
     return w > 0 ? w - 1 : 0;
 }
 
+/* Word expansion for a double-click. Scans outward from (row, col) while
+ * cells keep the clicked cell's class, crossing soft wraps (a row that
+ * continues the one before it) but never a hard line break. It looks at
+ * most CFR_WORD_SCAN_CELLS cells each way: in a megabyte-long unbroken
+ * line every cell is a word character, and an unbounded scan would walk
+ * all of it for one click. A word longer than the limit is cut there. */
 static void expand_word(const CfrTerm *vt, int row, int col,
                         CfrSelectionPoint *out_start,
                         CfrSelectionPoint *out_end)
@@ -112,23 +118,18 @@ static void expand_word(const CfrTerm *vt, int row, int col,
     }
     int cls = char_class(cell->cp, wchars);
 
-    /* Bound the scan to the logical line: walks cross wrap boundaries via
-     * the two-sided predicate, and rows can have different widths across
-     * the scrollback boundary. */
-    int sb = cfr_get_scrollback_lines(vt);
-    int ls = row, le = row;
-    cfr_logical_line_bounds(vt, row, -sb, vt->rows - 1, &ls, &le);
-
     int sr = row, sc = col;
     int r = row, c = col;
-    while (r > ls || c > 0) {
+    for (int budget = CFR_WORD_SCAN_CELLS; budget > 0; --budget) {
         if (c > 0) {
             c--;
-        } else {
+        } else if (cfr_row_continues(vt, r)) {
             r--;
             c = cfr_row_width(vt, r) - 1;
             if (c < 0)
                 break;
+        } else {
+            break; /* hard line start */
         }
         const CfrCell *x = cfr_get_cell(vt, r, c);
         if (!x || char_class(x->cp, wchars) != cls)
@@ -140,15 +141,14 @@ static void expand_word(const CfrTerm *vt, int row, int col,
     int er = row, ec = col;
     r = row;
     c = col;
-    for (;;) {
-        int w = cfr_row_width(vt, r);
-        if (c < w - 1) {
+    for (int budget = CFR_WORD_SCAN_CELLS; budget > 0; --budget) {
+        if (c < cfr_row_width(vt, r) - 1) {
             c++;
-        } else if (r < le) {
+        } else if (cfr_row_continues(vt, r + 1)) {
             r++;
             c = 0;
         } else {
-            break;
+            break; /* hard line end */
         }
         const CfrCell *x = cfr_get_cell(vt, r, c);
         if (!x || char_class(x->cp, wchars) != cls)

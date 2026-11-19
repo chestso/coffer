@@ -169,25 +169,3 @@ bool cfr_row_continues(const CfrTerm *vt, int unified_row)
     uint32_t lc = lineage_in_page(cp, cr);
     return lp != 0 && lp == lc;
 }
-
-void cfr_logical_line_bounds(const CfrTerm *vt, int row, int lo_limit,
-                             int hi_limit, int *out_start, int *out_end)
-{
-    int start = row;
-    int end = row;
-    if (row < lo_limit || row > hi_limit) {
-        if (out_start)
-            *out_start = row;
-        if (out_end)
-            *out_end = row;
-        return;
-    }
-    while (start > lo_limit && cfr_row_continues(vt, start))
-        start--;
-    while (end < hi_limit && cfr_row_continues(vt, end + 1))
-        end++;
-    if (out_start)
-        *out_start = start;
-    if (out_end)
-        *out_end = end;
-}

@@ -550,6 +550,90 @@ static void test_selection_get_text_wrap_into_scrollback(void)
     cfr_free(vt);
 }
 
+/* ------------------------------------------------------------------ */
+/* Word scan budget                                                    */
+/* ------------------------------------------------------------------ */
+
+/* A one-line, unbroken run of word characters spanning thousands of rows:
+ * a double-click looks CFR_WORD_SCAN_CELLS cells either way and no further
+ * (the click must not cost the length of the line). */
+enum
+{
+    LONG_COLS = 10,
+    LONG_ROWS = 2000
+};
+
+static CfrTerm *make_long_line(void)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 4;
+    cfg.cols = LONG_COLS;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.scrollback = LONG_ROWS;
+    CfrTerm *vt = cfr_new(&cfg);
+    char *line = malloc((size_t)LONG_ROWS * LONG_COLS + 1);
+    if (!line) {
+        cfr_free(vt);
+        return NULL;
+    }
+    for (int i = 0; i < LONG_ROWS * LONG_COLS; ++i)
+        line[i] = (char)('a' + i % 26);
+    line[LONG_ROWS * LONG_COLS] = '\0';
+    feed(vt, line);
+    free(line);
+    return vt;
+}
+
+/* Linear cell index of a point, oldest history row first (all rows here
+ * are LONG_COLS wide). */
+static long cell_index(const CfrTerm *vt, CfrSelectionPoint p)
+{
+    return (long)(p.row + cfr_get_scrollback_lines(vt)) * LONG_COLS + p.col;
+}
+
+static void test_word_scan_is_bounded_in_a_long_line(void)
+{
+    CfrTerm *vt = make_long_line();
+    ASSERT_NOT_NULL(vt);
+    int sb = cfr_get_scrollback_lines(vt);
+    ASSERT_TRUE(sb > 2 * (CFR_WORD_SCAN_CELLS / LONG_COLS));
+
+    CfrSelectionPoint click = { -(sb / 2), 3 };
+    cfr_selection_start(vt, click.row, click.col, CFR_SEL_WORD);
+    const CfrSelection *sel = cfr_selection_get(vt);
+    ASSERT_NOT_NULL(sel);
+    long at = cell_index(vt, click);
+    ASSERT_EQ(at - cell_index(vt, sel->start), (long)CFR_WORD_SCAN_CELLS);
+    ASSERT_EQ(cell_index(vt, sel->end) - at, (long)CFR_WORD_SCAN_CELLS);
+    cfr_free(vt);
+}
+
+/* Near the ends of the line the word stops at the line's edge, not at the
+ * budget: the row above the oldest does not exist, and the cursor row
+ * below the text is blank. */
+static void test_word_scan_stops_at_the_line_edges(void)
+{
+    CfrTerm *vt = make_long_line();
+    ASSERT_NOT_NULL(vt);
+    int sb = cfr_get_scrollback_lines(vt);
+
+    cfr_selection_start(vt, -sb, 5, CFR_SEL_WORD); /* near the very start */
+    const CfrSelection *sel = cfr_selection_get(vt);
+    ASSERT_NOT_NULL(sel);
+    ASSERT_EQ(sel->start.row, -sb);
+    ASSERT_EQ(sel->start.col, 0);
+    ASSERT_EQ(cell_index(vt, sel->end) - cell_index(vt, (CfrSelectionPoint){ -sb, 5 }),
+              (long)CFR_WORD_SCAN_CELLS);
+
+    cfr_selection_start(vt, 3, 4, CFR_SEL_WORD); /* near the very end */
+    sel = cfr_selection_get(vt);
+    ASSERT_NOT_NULL(sel);
+    ASSERT_EQ(sel->end.row, 3);
+    ASSERT_EQ(sel->end.col, LONG_COLS - 1);
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -578,6 +662,9 @@ int main(int argc, char *argv[])
     RUN_TEST(test_callback_fires_on_clear);
     RUN_TEST(test_callback_not_fired_on_update);
     RUN_TEST(test_callback_fires_on_draw_clear);
+
+    RUN_TEST(test_word_scan_is_bounded_in_a_long_line);
+    RUN_TEST(test_word_scan_stops_at_the_line_edges);
 
     RUN_TEST(test_selection_get_text_basic);
     RUN_TEST(test_selection_get_text_multiline);

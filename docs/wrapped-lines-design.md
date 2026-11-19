@@ -268,8 +268,7 @@ Two-sided handshake (why: §2.3): both sides invalidated by content
 rewrite, zero coupling to row indices. Every consumer funnels through
 it: selection
 word-scan (`selection.c`), `cfr_selection_get_text`, reflow
-(`reflow.c`), scrollback joins, and the public query API (plus a small
-`cfr_logical_line_bounds()` helper for word-scan/reflow walks).
+(`reflow.c`), scrollback joins, and the public query API.
 `cfr_get_line_continuation` and `cfr_row_is_continuation` collapse
 into one predicate; the direction-inverted twin and its header caveat
 are deleted.
