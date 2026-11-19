@@ -48,6 +48,13 @@ on. Order is roughly priority, not strict dependency.
   change styling would silently miscolour pending text. Defensive
   hardening with minimal cost.
 
+- **Cell re-interning degrades silently on failure.** `cfr_cell_reintern()`
+  maps an allocation failure, or a full hyperlink table (65535 ids), to
+  default style / no cluster / no link, because the intern functions
+  return 0 for both "failed" and "default". Resize and scrollback moves
+  therefore lose an attribute rather than abort. Fixing it means giving
+  the intern functions a distinct failure return.
+
 - **`CfrCallbacks.moverect` is never emitted.** The callback is in the
   public header, but no engine path fires it (`grep moverect src/` is
   empty), so a host that wires it for a scroll-blit gets silence. Either

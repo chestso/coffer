@@ -478,7 +478,12 @@ void cfr_page_free(CfrTerm *vt, CfrPage *page);
  * hyperlink_id are page-scoped, so every cross-page cell move (reflow,
  * clamp resize, scrollback push) must route through this: a raw id copy
  * either finds nothing in the destination table or, worse, silently
- * attaches a different style/cluster/link. */
+ * attaches a different style/cluster/link. `dst` and `src` must be
+ * distinct, non-NULL pages (bug check otherwise).
+ *
+ * Failure is lossy, not fatal: an allocation failure, or a table at its
+ * id cap, degrades that attribute to default style / no cluster / no
+ * link (the intern functions cannot tell "failed" from "default"). */
 CfrCell cfr_cell_reintern(CfrTerm *vt, CfrPage *dst, const CfrPage *src,
                           CfrCell cell);
 

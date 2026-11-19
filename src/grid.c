@@ -68,7 +68,15 @@ void cfr_page_free(CfrTerm *vt, CfrPage *page)
 CfrCell cfr_cell_reintern(CfrTerm *vt, CfrPage *dst, const CfrPage *src,
                           CfrCell cell)
 {
-    if (!dst || !src)
+    /* A NULL or aliased page is a caller bug; passing the cell through
+     * would be exactly the raw-id copy this helper exists to prevent. */
+    CFR_BUG_CHECK(dst && src && dst != src,
+                  "cell reintern: bad pages (dst=%p src=%p)", (void *)dst,
+                  (void *)src);
+
+    /* Nothing page-scoped to move (the common case for plain text). */
+    if (cell.style_id == 0u && cell.grapheme_id == 0u &&
+        cell.hyperlink_id == 0u)
         return cell;
 
     const CfrStyle *st = cfr_style_lookup(src, cell.style_id);
