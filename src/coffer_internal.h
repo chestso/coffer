@@ -680,6 +680,18 @@ void cfr_damage_span(CfrTerm *vt, int start_row, int start_col, int end_row,
 /* Scrollback (scrollback.c). */
 void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols, uint32_t lineage);
 void cfr_scrollback_clear(CfrTerm *vt);
+/* Remove the `n` NEWEST scrollback rows (the end nearest the grid),
+ * freeing any page that empties. `n` is clamped to the row count.
+ *
+ * The caller must have copied whatever it needs out of those rows
+ * first: a page that empties is freed, and a push after the pop reuses
+ * the freed slot. Reflow is the intended caller — it re-interns the
+ * rows into the old grid while collecting, then pops once the new grid
+ * is allocated, so no failure path can strand history.
+ *
+ * No image bookkeeping: cfr_resize() drops anchored images before
+ * reflow, so nothing can be anchored to a row that moves here. */
+void cfr_scrollback_pop_rows(CfrTerm *vt, int n);
 /* Page/row lookup for a scrollback row, used by lines.c's unified-row
  * resolver. */
 const CfrPage *cfr_sb_page_for_row(const CfrTerm *vt, int sb_row, int *out_row_in_page);

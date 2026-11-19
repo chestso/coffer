@@ -323,6 +323,33 @@ static void test_resize_carries_hyperlink(void)
     cfr_free(vt);
 }
 
+/* The pop contract reflow relies on: rows come off the newest end, the
+ * oldest survive, an emptied page leaves the ring consistent, and a
+ * later push reuses the freed slot. */
+static void test_scrollback_pop_rows(void)
+{
+    CfrTerm *vt = make_term(2, 10, true);
+    feed(vt, "a\r\nb\r\nc\r\nd\r\n");
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 3);
+    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'c');
+    ASSERT_EQ(cfr_get_scrollback_cell(vt, 2, 0)->cp, (uint32_t)'a');
+
+    cfr_scrollback_pop_rows(vt, 2);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
+    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'a');
+
+    /* Over-popping clamps; the ring empties cleanly. */
+    cfr_scrollback_pop_rows(vt, 5);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    ASSERT_NULL(vt->sb_head);
+    ASSERT_NULL(vt->sb_tail);
+
+    feed(vt, "e\r\n");
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
+    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'d');
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -337,5 +364,6 @@ int main(int argc, char *argv[])
     RUN_TEST(test_reflow_preserves_line_identity);
     RUN_TEST(test_reflow_roundtrip_shrink_grow);
     RUN_TEST(test_resize_carries_hyperlink);
+    RUN_TEST(test_scrollback_pop_rows);
     TEST_SUMMARY();
 }

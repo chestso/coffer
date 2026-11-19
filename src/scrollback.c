@@ -104,6 +104,35 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrCell *src_cells, int cols,
     evict_to_capacity(vt);
 }
 
+void cfr_scrollback_pop_rows(CfrTerm *vt, int n)
+{
+    if (!vt || n <= 0)
+        return;
+    if (n > vt->sb_lines)
+        n = vt->sb_lines;
+    while (n > 0) {
+        CfrPage *head = vt->sb_head;
+        CFR_BUG_CHECK(head != NULL, "scrollback pop: %d rows left, no head",
+                      n);
+        if (!head)
+            break;
+        int take = (n < (int)head->row_count) ? n : (int)head->row_count;
+        head->row_count = (uint16_t)(head->row_count - (uint16_t)take);
+        vt->sb_lines -= take;
+        n -= take;
+        if (head->row_count == 0) {
+            vt->sb_head = head->next; /* older neighbor */
+            if (vt->sb_head)
+                vt->sb_head->prev = NULL;
+            else
+                vt->sb_tail = NULL;
+            cfr_page_free(vt, head);
+        }
+    }
+    CFR_BUG_CHECK(vt->sb_lines >= 0, "scrollback pop: sb_lines=%d",
+                  vt->sb_lines);
+}
+
 void cfr_scrollback_clear(CfrTerm *vt)
 {
     if (!vt)
