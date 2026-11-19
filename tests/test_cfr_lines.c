@@ -251,6 +251,52 @@ static void test_reflow_join_repushes_scrollback(void)
     cfr_free(vt);
 }
 
+/* Page-scoped ids (style, grapheme cluster, hyperlink) survive every hop
+ * a straddling line makes: ring page -> old grid -> ring page (re-push)
+ * and ring page -> old grid -> new grid (visible). The first cell of the
+ * line carries all three and lives in history for the shrunken widths. */
+static void check_rich_cell(CfrTerm *vt, const CfrCell *cell)
+{
+    ASSERT_NOT_NULL(cell);
+    ASSERT_EQ(cell->cp, (uint32_t)'e');
+
+    uint32_t cps[4];
+    ASSERT_EQ(cfr_cell_get_grapheme(vt, cell, cps, 4), 2u);
+    ASSERT_EQ(cps[1], 0x0301u);
+
+    const CfrStyle *st = cfr_cell_style(vt, cell);
+    ASSERT_NOT_NULL(st);
+    ASSERT_TRUE((st->attrs & CFR_ATTR_BOLD) != 0);
+    ASSERT_EQ(st->fg_rgb, 0x010203u);
+
+    uint8_t uri[64];
+    size_t n = cfr_cell_get_hyperlink(vt, cell, uri, sizeof(uri) - 1);
+    uri[n] = '\0';
+    ASSERT_STR_EQ((const char *)uri, "https://example.com/r");
+}
+
+static void test_reflow_straddle_carries_cell_attributes(void)
+{
+    CfrTerm *vt = make_term(4, 10, true);
+    feed(vt, "\x1b]8;;https://example.com/r\x1b\\"
+             "\x1b[1;38;2;1;2;3me\xcc\x81"
+             "123456789012345678901234567890123456789"); /* 40 cells */
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 3));
+
+    cfr_resize(vt, 4, 5); /* 8 rows of 5: the first four go to history */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 4);
+    check_rich_cell(vt, cfr_get_scrollback_cell(vt, 3, 0));
+
+    cfr_resize(vt, 4, 8); /* 5 rows of 8: pop four, re-push one */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
+    check_rich_cell(vt, cfr_get_scrollback_cell(vt, 0, 0));
+
+    cfr_resize(vt, 4, 20); /* the whole line is visible again */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    check_rich_cell(vt, cfr_get_cell(vt, 0, 0));
+    cfr_free(vt);
+}
+
 /* Scrollback disabled: nothing can be pulled back, so the visible
  * remainder re-emits on its own (a row that would have gone to history is
  * dropped, as before). */
@@ -479,6 +525,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_reflow_joins_scrollback_fragment);
     RUN_TEST(test_reflow_joins_multirow_scrollback_fragment);
     RUN_TEST(test_reflow_join_repushes_scrollback);
+    RUN_TEST(test_reflow_straddle_carries_cell_attributes);
     RUN_TEST(test_reflow_without_scrollback);
     TEST_SUMMARY();
 }

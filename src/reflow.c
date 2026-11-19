@@ -1,31 +1,35 @@
 /*
  * coffer — wrapped-line reflow on resize.
  *
- * Algorithm (Alacritty / foot lineage):
- *   1. Walk the active grid top-to-bottom, collecting cells into a flat
- *      buffer. Continuation cells (width=0) and uninitialized cells are
- *      skipped — the rewrapper rebuilds continuations and trailing
- *      blanks from cell width.
- *   2. Logical lines are sequences of grid rows linked by the wrap
- *      predicate (cfr_row_continues: margin-cell WRAPLINE bit plus a
- *      shared nonzero lineage id); `c.lines[]` records where each line
- *      ends in the flat cell buffer and the id it carries.
- *   3. Cursor position is captured as `cursor_offset` — the index of
- *      the cell at-or-after which the cursor sits in the flat buffer.
- *   4. Re-wrap: for each logical line, lay cells into rows of width
- *      new_cols. Width-2 clusters that don't fit terminate the row
- *      early (logical line continues). Cursor placement falls out of
- *      tracking the row that contains `cursor_offset`.
- *   5. Distribute: the oldest rows beyond `new_rows` are pushed to
- *      scrollback; the last new_rows land in the new active grid. Rows
- *      emitted for one logical line share its lineage id, and every row
- *      but the line's last gets the wrap edge on its new margin cell.
+ * Algorithm (Alacritty / foot lineage), one static function per phase:
+ *   1. collect_prefix / collect_grid: walk the grid top-to-bottom,
+ *      collecting cells into a flat buffer. Continuation cells (width=0)
+ *      are skipped — layout_row rebuilds them, and trailing blanks, from
+ *      cell width. Every collected cell is re-interned against the OLD
+ *      grid, so the flat buffer has exactly one source page.
+ *   2. Logical lines are sequences of rows linked by the wrap predicate
+ *      (cfr_row_continues: margin-cell WRAPLINE bit plus a shared nonzero
+ *      lineage id); `lines[]` records where each line ends in the flat
+ *      buffer and the id it carries. The cursor is captured as the index
+ *      of the cell at-or-after which it sits.
+ *   3. rewrap: for each logical line, lay cells into rows of width
+ *      new_cols. A width-2 cluster that doesn't fit ends the row early
+ *      (the line continues). Cursor placement falls out of tracking the
+ *      row that contains the cursor offset.
+ *   4. install: the oldest rows beyond `new_rows` are pushed to
+ *      scrollback; the last new_rows land in the new grid. Rows emitted
+ *      for one logical line share its lineage id, and every row but the
+ *      line's last gets the wrap edge on its new margin cell.
  *
  * Scope: reflow owns every logical line that touches the visible grid.
  * A line whose head is already in scrollback is pulled back out of the
  * ring and re-emitted as a whole (with its fragment rows re-wrapped at
  * the new width); scrollback older than that line keeps the column
  * width it was written at, which the mixed-cols iterator handles.
+ *
+ * Failure: every fallible step runs before the first mutation of vt
+ * (the old grid's intern tables only grow), so a false return from any
+ * phase falls back to a clamp resize with the terminal intact.
  *
  * Altscreen and "reflow disabled" both fall through to a clamp-only
  * resize that preserves the existing top-left corner of content.
@@ -38,16 +42,10 @@
 
 typedef struct
 {
-    CfrCell cell;
-    const CfrPage *src_page;
-} CellRef;
-
-typedef struct
-{
-    uint32_t start;   /* inclusive index into cells[] */
+    uint32_t start;   /* inclusive index into the flat cells */
     uint32_t end;     /* exclusive */
     uint32_t lineage; /* logical-line id shared by the line's rows */
-    bool wraps;
+    bool wraps;       /* the row continues into the next one */
 } NewRow;
 
 /* One pre-reflow logical line: where it ends in the flat cell buffer, and
@@ -60,38 +58,83 @@ typedef struct
 
 typedef struct
 {
-    CellRef *cells;
+    CfrTerm *vt;
+    CfrPage *old_grid; /* the one page every flat cell's ids refer to */
+    int old_rows, old_cols;
+    int new_rows, new_cols;
+
+    /* Phase 1: collected. */
+    CfrCell *cells;
     uint32_t cells_count, cells_cap;
     Line *lines;
     uint32_t lines_count, lines_cap;
-} Collected;
+    int prefix_rows;       /* scrollback rows of the straddling line */
+    int32_t cursor_offset; /* flat index of the cursor cell */
+    int32_t cursor_line;   /* index into lines[] */
 
-static bool grow_cells(CfrTerm *vt, Collected *c, uint32_t need)
+    /* Phase 2: rewrapped. */
+    NewRow *rows;
+    uint32_t rows_count, rows_cap;
+    int32_t cursor_row; /* index into rows[] */
+    int cursor_col;
+} Reflow;
+
+/* Grow `buf` so `count + need` elements fit; returns the (possibly moved)
+ * buffer, or NULL on failure with the old buffer untouched. */
+static void *grow(CfrTerm *vt, void *buf, uint32_t *cap, uint32_t count,
+                  uint32_t need, size_t elem, uint32_t initial)
 {
-    if (c->cells_count + need <= c->cells_cap)
-        return true;
-    uint32_t nc = c->cells_cap ? c->cells_cap : 256;
-    while (c->cells_count + need > nc)
+    if (count + need <= *cap)
+        return buf;
+    uint32_t nc = *cap ? *cap : initial;
+    while (count + need > nc)
         nc *= 2;
-    CellRef *p = cfr_realloc(vt, c->cells, (size_t)nc * sizeof(CellRef));
+    void *p = cfr_realloc(vt, buf, (size_t)nc * elem);
+    if (!p)
+        return NULL;
+    *cap = nc;
+    return p;
+}
+
+static bool reserve_cells(Reflow *R, uint32_t need)
+{
+    CfrCell *p = grow(R->vt, R->cells, &R->cells_cap, R->cells_count, need,
+                      sizeof(CfrCell), 256);
     if (!p)
         return false;
-    c->cells = p;
-    c->cells_cap = nc;
+    R->cells = p;
     return true;
 }
 
-static bool grow_lines(CfrTerm *vt, Collected *c)
+static bool push_row(Reflow *R, uint32_t start, uint32_t end,
+                     uint32_t lineage, bool wraps)
 {
-    if (c->lines_count < c->lines_cap)
-        return true;
-    uint32_t nc = c->lines_cap ? c->lines_cap * 2 : 32;
-    Line *p = cfr_realloc(vt, c->lines, (size_t)nc * sizeof(Line));
+    NewRow *p = grow(R->vt, R->rows, &R->rows_cap, R->rows_count, 1,
+                     sizeof(NewRow), 32);
     if (!p)
         return false;
-    c->lines = p;
-    c->lines_cap = nc;
+    R->rows = p;
+    p[R->rows_count++] = (NewRow){ start, end, lineage, wraps };
     return true;
+}
+
+static void reflow_free(Reflow *R)
+{
+    cfr_dealloc(R->vt, R->cells);
+    cfr_dealloc(R->vt, R->lines);
+    cfr_dealloc(R->vt, R->rows);
+}
+
+/* Rebuild the default 8-column tab stops for a new width. */
+static void reset_tabstops(CfrTerm *vt, int cols)
+{
+    uint8_t *tabs = cfr_alloc(vt, (size_t)cols);
+    if (!tabs)
+        return;
+    for (int i = 0; i < cols; ++i)
+        tabs[i] = (i % 8 == 0) ? 1u : 0u;
+    cfr_dealloc(vt, vt->tabstops);
+    vt->tabstops = tabs;
 }
 
 /* ------------------------------------------------------------------ */
@@ -130,16 +173,321 @@ void cfr_resize_clamp(CfrTerm *vt, int new_rows, int new_cols)
     vt->scroll_bottom = new_rows - 1;
     cfr_cursor_set(vt, vt->cursor.row, vt->cursor.col);
 
-    /* Resize tabstops. */
-    uint8_t *new_tabs = cfr_alloc(vt, (size_t)new_cols);
-    if (new_tabs) {
-        for (int i = 0; i < new_cols; ++i)
-            new_tabs[i] = (i % 8 == 0) ? 1u : 0u;
-        cfr_dealloc(vt, vt->tabstops);
-        vt->tabstops = new_tabs;
+    reset_tabstops(vt, new_cols);
+    cfr_damage_all(vt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 1: collect                                                    */
+/* ------------------------------------------------------------------ */
+
+/* A logical line can start above the grid: if the top visible row
+ * continues the newest scrollback row, that line's head is in history.
+ * Collect it too and rewrap the line as a whole (the two-sided predicate
+ * already answers across the boundary). The cells are re-interned against
+ * the OLD grid, so the flat buffer never points into a ring page and
+ * those rows can be popped once the new grid is allocated. */
+static bool collect_prefix(Reflow *R)
+{
+    CfrTerm *vt = R->vt;
+    if (vt->sb_lines <= 0 || !cfr_row_continues(vt, 0))
+        return true;
+
+    int rows = 1;
+    while (rows < vt->sb_lines && cfr_row_continues(vt, -rows))
+        rows++;
+    R->prefix_rows = rows;
+
+    for (int sr = rows - 1; sr >= 0; --sr) { /* oldest first */
+        int row_in_page = 0;
+        const CfrPage *page = cfr_sb_page_for_row(vt, sr, &row_in_page);
+        CFR_BUG_CHECK(page != NULL, "reflow prefix: no page for sb row %d",
+                      sr);
+        if (!page)
+            return false;
+        int page_cols = page->cols;
+        if (!reserve_cells(R, (uint32_t)page_cols))
+            return false;
+        for (int col = 0; col < page_cols; ++col) {
+            CfrCell cell = page->cells[(size_t)row_in_page * page_cols + col];
+            if (cell.width == 0)
+                continue;
+            cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
+            R->cells[R->cells_count++] =
+                cfr_cell_reintern(vt, R->old_grid, page, cell);
+        }
+    }
+    return true;
+}
+
+/* Close the logical line that began at grid row `start_row` and ended at
+ * row `end_row`. Reuses the first row's own id, or mints one when that
+ * row never had content (lineage 0). */
+static bool close_line(Reflow *R, int start_row, int end_row, int cursor_row)
+{
+    Line *p = grow(R->vt, R->lines, &R->lines_cap, R->lines_count, 1,
+                   sizeof(Line), 32);
+    if (!p)
+        return false;
+    R->lines = p;
+    uint32_t id = R->old_grid->lineage[start_row];
+    if (id == 0)
+        id = cfr_lineage_next(R->vt);
+    p[R->lines_count] = (Line){ R->cells_count, id };
+    if (cursor_row >= start_row && cursor_row <= end_row)
+        R->cursor_line = (int32_t)R->lines_count;
+    R->lines_count++;
+    return true;
+}
+
+static bool collect_grid(Reflow *R)
+{
+    const CfrPage *grid = R->old_grid;
+    int cursor_row = R->vt->cursor.row;
+    int cursor_col = R->vt->cursor.col;
+    int line_start_row = 0; /* first grid row of the line being collected */
+
+    if (!reserve_cells(R, (uint32_t)(R->old_rows * R->old_cols + 1)))
+        return false;
+
+    for (int r = 0; r < R->old_rows; ++r) {
+        uint32_t row_start = R->cells_count;
+        int32_t cursor_in_row = -1;
+
+        for (int col = 0; col < R->old_cols; ++col) {
+            if (r == cursor_row && col == cursor_col)
+                cursor_in_row = (int32_t)(R->cells_count - row_start);
+            CfrCell cell = grid->cells[(size_t)r * R->old_cols + col];
+            if (cell.width == 0)
+                continue;
+            /* Wrap edges are re-stamped on the new margin cells; a stale
+             * bit carried in the flat buffer could land on an interior
+             * cell and spuriously join. */
+            cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
+            R->cells[R->cells_count++] = cell;
+        }
+        if (r == cursor_row) {
+            if (cursor_in_row < 0)
+                cursor_in_row = (int32_t)(R->cells_count - row_start);
+            R->cursor_offset = (int32_t)(row_start + (uint32_t)cursor_in_row);
+        }
+
+        /* Row r continues into r+1 when the two-sided predicate says so. */
+        bool wraps = (r + 1 < R->old_rows) && cfr_row_continues(R->vt, r + 1);
+        if (!wraps) {
+            if (!close_line(R, line_start_row, r, cursor_row))
+                return false;
+            line_start_row = r + 1;
+        }
+    }
+    /* The last row never wraps, so it always closes a line. */
+    CFR_BUG_CHECK(R->lines_count > 0, "reflow collect: no lines for %d rows",
+                  R->old_rows);
+
+    if (R->cursor_offset < 0)
+        R->cursor_offset = (int32_t)R->cells_count;
+    if (R->cursor_line < 0)
+        R->cursor_line = (int32_t)R->lines_count - 1;
+    return true;
+}
+
+/* Trim trailing blank logical lines that don't host the cursor. The
+ * original grid often has blank rows (spaces from \e[2J or uninitialized
+ * cells) below content; propagating them through reflow would push real
+ * content into scrollback unnecessarily. */
+static void trim_blank_lines(Reflow *R)
+{
+    while (R->lines_count > 0) {
+        uint32_t end = R->lines[R->lines_count - 1].end;
+        uint32_t start =
+            (R->lines_count > 1) ? R->lines[R->lines_count - 2].end : 0u;
+        /* A blank cell is one whose codepoint is space (0x20) or NUL. */
+        bool has_content = false;
+        for (uint32_t k = start; k < end; ++k) {
+            uint32_t cp = R->cells[k].cp;
+            if (cp != 0u && cp != 0x20u) {
+                has_content = true;
+                break;
+            }
+        }
+        if (has_content)
+            break;
+        if (R->cursor_line == (int32_t)(R->lines_count - 1))
+            break;
+        R->lines_count--;
+        R->cells_count = start;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 2: rewrap                                                     */
+/* ------------------------------------------------------------------ */
+
+static bool rewrap(Reflow *R)
+{
+    bool cursor_placed = false;
+    uint32_t line_start = 0;
+
+    for (uint32_t li = 0; li < R->lines_count; ++li) {
+        const Line *line = &R->lines[li];
+        bool is_cursor_line = ((int32_t)li == R->cursor_line);
+        uint32_t i = line_start;
+
+        /* do/while: an empty line still emits one (empty) row. */
+        do {
+            uint32_t row_start = i;
+            int row_used = 0;
+
+            while (i < line->end) {
+                int w = R->cells[i].width;
+                if (w <= 0) {
+                    ++i;
+                    continue;
+                }
+                if (row_used + w > R->new_cols)
+                    break;
+                row_used += w;
+                ++i;
+            }
+            if (i == row_start && i < line->end)
+                ++i; /* a cluster wider than the grid: force progress */
+
+            if (!cursor_placed && is_cursor_line) {
+                uint32_t off = (uint32_t)R->cursor_offset;
+                if (off >= row_start && off < i) {
+                    int w = 0;
+                    for (uint32_t k = row_start; k < off; ++k)
+                        w += R->cells[k].width;
+                    R->cursor_row = (int32_t)R->rows_count;
+                    R->cursor_col = w;
+                    cursor_placed = true;
+                } else if (off == i) {
+                    R->cursor_row = (int32_t)R->rows_count;
+                    R->cursor_col =
+                        (row_used >= R->new_cols) ? R->new_cols - 1 : row_used;
+                    cursor_placed = true;
+                }
+            }
+            if (!push_row(R, row_start, i, line->lineage, i < line->end))
+                return false;
+        } while (i < line->end);
+
+        line_start = line->end;
+    }
+    if (!cursor_placed) {
+        R->cursor_row = (R->rows_count > 0) ? (int32_t)(R->rows_count - 1) : 0;
+        R->cursor_col = 0;
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 3: install                                                    */
+/* ------------------------------------------------------------------ */
+
+/* Lay one rewrapped row into `dst` (new_cols cells). The cells still
+ * carry old-grid ids: the caller re-interns them into the page that
+ * receives the row. */
+static void layout_row(const Reflow *R, const NewRow *nr, CfrCell *dst)
+{
+    int cols = R->new_cols;
+    memset(dst, 0, (size_t)cols * sizeof(CfrCell));
+    int col = 0;
+    for (uint32_t k = nr->start; k < nr->end && col < cols; ++k) {
+        CfrCell cell = R->cells[k];
+        int w = cell.width;
+        if (col + w > cols)
+            break;
+        dst[col] = cell;
+        if (w == 2 && col + 1 < cols) {
+            CfrCell cont = (CfrCell){ 0 };
+            cont.style_id = cell.style_id;
+            dst[col + 1] = cont;
+        }
+        col += w;
+    }
+    /* The wrap edge belongs to the new geometry's margin cell only. */
+    if (nr->wraps)
+        dst[cols - 1].flags |= CFR_CELL_WRAPLINE;
+}
+
+static bool install(Reflow *R)
+{
+    CfrTerm *vt = R->vt;
+    int new_rows = R->new_rows;
+    int new_cols = R->new_cols;
+
+    int total = (int)R->rows_count;
+    int sb_count = (total > new_rows) ? total - new_rows : 0;
+    int visible_count = total - sb_count;
+
+    /* distribute partitions [0..total) into sb-bound + visible; the
+     * per-row range checks catch a rewrap bug that left a NewRow pointing
+     * outside the flat buffer. */
+    CFR_BUG_CHECK(visible_count <= new_rows,
+                  "reflow distribute: visible=%d > new_rows=%d",
+                  visible_count, new_rows);
+    for (uint32_t k = 0; k < R->rows_count; ++k) {
+        CFR_BUG_CHECK(R->rows[k].start <= R->rows[k].end,
+                      "reflow row %u: start=%u > end=%u", k, R->rows[k].start,
+                      R->rows[k].end);
+        CFR_BUG_CHECK(R->rows[k].end <= R->cells_count,
+                      "reflow row %u: end=%u beyond cells_count=%u", k,
+                      R->rows[k].end, R->cells_count);
     }
 
+    /* Every allocation reflow itself makes happens before the first
+     * mutation below, so a failure here still falls back to clamp. */
+    CfrPage *new_grid = cfr_page_new(vt, new_rows, new_cols);
+    if (!new_grid)
+        return false;
+    CfrCell *row_buf = cfr_alloc(vt, (size_t)new_cols * sizeof(CfrCell));
+    if (!row_buf) {
+        cfr_page_free(vt, new_grid);
+        return false;
+    }
+
+    /* The rows pulled out of history are in the flat buffer (re-interned
+     * against the old grid), so they can leave the ring now. (A later
+     * ring-page allocation failure inside cfr_scrollback_push still drops
+     * that row; push has no way to report it.) */
+    if (R->prefix_rows > 0)
+        cfr_scrollback_pop_rows(vt, R->prefix_rows);
+
+    /* Oldest rows go to scrollback; the push re-interns from old_grid. */
+    for (int i = 0; i < sb_count; ++i) {
+        layout_row(R, &R->rows[i], row_buf);
+        cfr_scrollback_push(vt, R->old_grid, row_buf, new_cols,
+                            R->rows[i].lineage);
+    }
+
+    /* The newest rows land in the new grid. */
+    for (int i = 0; i < visible_count; ++i) {
+        const NewRow *nr = &R->rows[sb_count + i];
+        layout_row(R, nr, row_buf);
+        CfrCell *dst = &new_grid->cells[(size_t)i * new_cols];
+        for (int c = 0; c < new_cols; ++c)
+            dst[c] = cfr_cell_reintern(vt, new_grid, R->old_grid, row_buf[c]);
+        new_grid->lineage[i] = nr->lineage;
+    }
+    cfr_dealloc(vt, row_buf);
+
+    cfr_page_free(vt, R->old_grid);
+    vt->grid = new_grid;
+    vt->rows = new_rows;
+    vt->cols = new_cols;
+    vt->scroll_top = 0;
+    vt->scroll_bottom = new_rows - 1;
+
+    int target_row = (int)R->cursor_row - sb_count;
+    if (target_row < 0)
+        cfr_cursor_set(vt, 0, 0);
+    else
+        cfr_cursor_set(vt, target_row, R->cursor_col);
+
+    reset_tabstops(vt, new_cols);
     cfr_damage_all(vt);
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -163,396 +511,31 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
 
     cfr_flush_cluster(vt);
 
-    CfrPage *old_grid = vt->grid;
-    if (!old_grid) {
+    if (!vt->grid) {
         cfr_resize_clamp(vt, new_rows, new_cols);
         return;
     }
 
-    int old_rows = vt->rows;
-    int old_cols = vt->cols;
-    int cursor_row = vt->cursor.row;
-    int cursor_col = vt->cursor.col;
+    Reflow R = {
+        .vt = vt,
+        .old_grid = vt->grid,
+        .old_rows = vt->rows,
+        .old_cols = vt->cols,
+        .new_rows = new_rows,
+        .new_cols = new_cols,
+        .cursor_offset = -1,
+        .cursor_line = -1,
+    };
 
-    /* ---------- Phase 1: collect ---------- */
-    Collected c = (Collected){ 0 };
-    int32_t cursor_offset = -1;
-    int32_t cursor_line = -1;
-    bool cursor_line_pending = false;
-
-    int line_start_row = 0; /* first grid row of the line being collected */
-
-    if (!grow_cells(vt, &c, (uint32_t)(old_rows * old_cols + 1)))
-        goto fail;
-
-    /* A logical line can start above the grid: if the top visible row
-     * continues the newest scrollback row, that line's head is in
-     * history. Collect it too and rewrap the line as a whole (the
-     * two-sided predicate already answers across the boundary). The
-     * cells are re-interned against the OLD grid, so the flat buffer
-     * never points into a ring page and those rows can be popped once
-     * the new grid is allocated. */
-    int prefix_rows = 0;
-    if (vt->sb_lines > 0 && cfr_row_continues(vt, 0)) {
-        prefix_rows = 1;
-        while (prefix_rows < vt->sb_lines && cfr_row_continues(vt, -prefix_rows))
-            prefix_rows++;
+    bool ok = collect_prefix(&R) && collect_grid(&R);
+    if (ok) {
+        trim_blank_lines(&R);
+        ok = rewrap(&R) && install(&R);
     }
-    for (int sr = prefix_rows - 1; sr >= 0; --sr) {
-        int row_in_page = 0;
-        const CfrPage *page = cfr_sb_page_for_row(vt, sr, &row_in_page);
-        if (!page)
-            break; /* unreachable: sr < sb_lines */
-        int page_cols = page->cols;
-        if (!grow_cells(vt, &c, (uint32_t)page_cols))
-            goto fail;
-        for (int col = 0; col < page_cols; ++col) {
-            CfrCell cell = page->cells[(size_t)row_in_page * page_cols + col];
-            if (cell.width == 0)
-                continue;
-            cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
-            c.cells[c.cells_count].cell =
-                cfr_cell_reintern(vt, old_grid, page, cell);
-            c.cells[c.cells_count].src_page = old_grid;
-            c.cells_count++;
-        }
-    }
+    reflow_free(&R);
 
-    for (int r = 0; r < old_rows; ++r) {
-        uint32_t row_start_idx = c.cells_count;
-        int32_t cursor_in_row = -1;
-
-        if (!grow_cells(vt, &c, (uint32_t)old_cols))
-            goto fail;
-
-        for (int col = 0; col < old_cols; ++col) {
-            if (r == cursor_row && col == cursor_col)
-                cursor_in_row = (int32_t)(c.cells_count - row_start_idx);
-            const CfrCell *cell = &old_grid->cells[(size_t)r * old_cols + col];
-            if (cell->width == 0)
-                continue;
-            c.cells[c.cells_count].cell = *cell;
-            /* Wrap edges are re-stamped on the new margin cells below; a
-             * stale bit carried in the flat buffer could land on an
-             * interior cell and spuriously join. */
-            c.cells[c.cells_count].cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
-            c.cells[c.cells_count].src_page = old_grid;
-            c.cells_count++;
-        }
-        if (r == cursor_row) {
-            if (cursor_in_row < 0)
-                cursor_in_row = (int32_t)(c.cells_count - row_start_idx);
-            cursor_offset = (int32_t)(row_start_idx + (uint32_t)cursor_in_row);
-            cursor_line_pending = true;
-        }
-
-        /* Row r continues into r+1 when the two-sided predicate says so. */
-        bool wraps = (r + 1 < old_rows) && cfr_row_continues(vt, r + 1);
-        if (!wraps) {
-            /* The logical line starting at `line_start_row` ends here. */
-            if (!grow_lines(vt, &c))
-                goto fail;
-            Line *ln = &c.lines[c.lines_count++];
-            ln->end = c.cells_count;
-            /* Reuse the first row's own id, or mint one when that row
-             * never had content (lineage 0). */
-            ln->lineage = old_grid->lineage[line_start_row];
-            if (ln->lineage == 0)
-                ln->lineage = cfr_lineage_next(vt);
-            if (cursor_line_pending) {
-                cursor_line = (int32_t)(c.lines_count - 1);
-                cursor_line_pending = false;
-            }
-            line_start_row = r + 1;
-        }
-    }
-    /* Force-close any unclosed final line. Only reachable when the grid
-     * had no rows at all (every real row closes its own line above). */
-    if (c.lines_count == 0 || c.lines[c.lines_count - 1].end != c.cells_count) {
-        if (!grow_lines(vt, &c))
-            goto fail;
-        Line *ln = &c.lines[c.lines_count++];
-        ln->end = c.cells_count;
-        ln->lineage = cfr_lineage_next(vt);
-        if (cursor_line_pending) {
-            cursor_line = (int32_t)(c.lines_count - 1);
-            cursor_line_pending = false;
-        }
-    }
-    if (cursor_offset < 0)
-        cursor_offset = (int32_t)c.cells_count;
-    if (cursor_line < 0)
-        cursor_line = (int32_t)c.lines_count - 1;
-
-    /* Trim trailing blank logical lines that don't host the cursor.
-     * The original grid often has blank rows (spaces from \e[2J or
-     * uninitialized cells) below content; propagating them through
-     * reflow would push real content into scrollback unnecessarily. */
-    while (c.lines_count > 0) {
-        uint32_t end = c.lines[c.lines_count - 1].end;
-        uint32_t start = (c.lines_count > 1)
-                             ? c.lines[c.lines_count - 2].end
-                             : 0u;
-        /* Check if the line has any non-blank content. A blank cell is
-         * one whose codepoint is space (0x20) or NUL (0x00). */
-        bool has_content = false;
-        for (uint32_t k = start; k < end; ++k) {
-            uint32_t cp = c.cells[k].cell.cp;
-            if (cp != 0u && cp != 0x20u) {
-                has_content = true;
-                break;
-            }
-        }
-        if (has_content)
-            break;
-        if (cursor_line == (int32_t)(c.lines_count - 1))
-            break;
-        c.lines_count--;
-        c.cells_count = start;
-    }
-
-    /* ---------- Phase 2: rewrap ---------- */
-    NewRow *new_rows_arr = NULL;
-    uint32_t new_rows_count = 0, new_rows_cap = 0;
-    int32_t new_cursor_row = 0;
-    int new_cursor_col = 0;
-    bool cursor_placed = false;
-
-    uint32_t line_start = 0;
-    for (uint32_t li = 0; li < c.lines_count; ++li) {
-        const Line *line = &c.lines[li];
-        uint32_t line_end = line->end;
-        bool is_cursor_line = ((int32_t)li == cursor_line);
-        uint32_t i = line_start;
-        uint32_t line_id = line->lineage;
-
-        bool emitted_any = false;
-        while (i < line_end) {
-            uint32_t row_start = i;
-            int row_used = 0;
-
-            while (i < line_end) {
-                int w = c.cells[i].cell.width;
-                if (w <= 0) {
-                    ++i;
-                    continue;
-                }
-                if (row_used + w > new_cols)
-                    break;
-                row_used += w;
-                ++i;
-            }
-            if (i == row_start && i < line_end)
-                ++i;
-
-            if (new_rows_count == new_rows_cap) {
-                uint32_t nc = new_rows_cap ? new_rows_cap * 2 : 32;
-                NewRow *np = cfr_realloc(vt, new_rows_arr,
-                                         (size_t)nc * sizeof(NewRow));
-                if (!np)
-                    goto fail2;
-                new_rows_arr = np;
-                new_rows_cap = nc;
-            }
-            new_rows_arr[new_rows_count].start = row_start;
-            new_rows_arr[new_rows_count].end = i;
-            new_rows_arr[new_rows_count].lineage = line_id;
-            new_rows_arr[new_rows_count].wraps = (i < line_end);
-
-            if (!cursor_placed && is_cursor_line) {
-                if ((uint32_t)cursor_offset >= row_start &&
-                    (uint32_t)cursor_offset < i) {
-                    int w = 0;
-                    for (uint32_t k = row_start;
-                         k < (uint32_t)cursor_offset; ++k) {
-                        w += c.cells[k].cell.width;
-                    }
-                    new_cursor_row = (int32_t)new_rows_count;
-                    new_cursor_col = w;
-                    cursor_placed = true;
-                } else if ((uint32_t)cursor_offset == i) {
-                    new_cursor_row = (int32_t)new_rows_count;
-                    new_cursor_col = row_used;
-                    if (new_cursor_col >= new_cols)
-                        new_cursor_col = new_cols - 1;
-                    cursor_placed = true;
-                }
-            }
-            new_rows_count++;
-            emitted_any = true;
-        }
-        if (!emitted_any) {
-            if (new_rows_count == new_rows_cap) {
-                uint32_t nc = new_rows_cap ? new_rows_cap * 2 : 32;
-                NewRow *np = cfr_realloc(vt, new_rows_arr,
-                                         (size_t)nc * sizeof(NewRow));
-                if (!np)
-                    goto fail2;
-                new_rows_arr = np;
-                new_rows_cap = nc;
-            }
-            new_rows_arr[new_rows_count].start = line_start;
-            new_rows_arr[new_rows_count].end = line_start;
-            new_rows_arr[new_rows_count].lineage = line_id;
-            new_rows_arr[new_rows_count].wraps = false;
-            if (!cursor_placed && is_cursor_line) {
-                new_cursor_row = (int32_t)new_rows_count;
-                new_cursor_col = 0;
-                cursor_placed = true;
-            }
-            new_rows_count++;
-        }
-        line_start = line_end;
-    }
-    if (!cursor_placed) {
-        new_cursor_row = (new_rows_count > 0)
-                             ? (int32_t)(new_rows_count - 1)
-                             : 0;
-        new_cursor_col = 0;
-    }
-
-    /* ---------- Phase 3: distribute ---------- */
-    int total = (int)new_rows_count;
-    int sb_count = total - new_rows;
-    if (sb_count < 0)
-        sb_count = 0;
-    int visible_count = total - sb_count;
-    if (visible_count > new_rows)
-        visible_count = new_rows;
-
-    /* Invariants: distribute partitions [0..total) into sb-bound +
-     * visible. A miscount here means we'd push past the end of
-     * new_rows_arr or skip rows; both have shown up as latent off-by-
-     * ones in similar engines. The per-row range checks catch a
-     * rewrap bug that left a NewRow pointing outside the collected
-     * cells flat buffer. */
-    CFR_BUG_CHECK(sb_count + visible_count == total,
-                  "reflow distribute: sb=%d + visible=%d != total=%d",
-                  sb_count, visible_count, total);
-    for (uint32_t k = 0; k < new_rows_count; ++k) {
-        CFR_BUG_CHECK(new_rows_arr[k].start <= new_rows_arr[k].end,
-                      "reflow row %u: start=%u > end=%u", k,
-                      new_rows_arr[k].start, new_rows_arr[k].end);
-        CFR_BUG_CHECK(new_rows_arr[k].end <= c.cells_count,
-                      "reflow row %u: end=%u beyond cells_count=%u", k,
-                      new_rows_arr[k].end, c.cells_count);
-    }
-
-    CfrPage *new_grid = cfr_page_new(vt, new_rows, new_cols);
-    if (!new_grid)
-        goto fail2;
-
-    /* Push sb_count oldest rows to scrollback. We need a temporary
-     * row buffer at new_cols width and route through cfr_scrollback_push;
-     * its cells carry old_grid ids, which it re-interns into the ring. */
-    CfrCell *row_buf = cfr_alloc(vt, (size_t)new_cols * sizeof(CfrCell));
-    if (!row_buf) {
-        cfr_page_free(vt, new_grid);
-        goto fail2;
-    }
-
-    /* The rows that were pulled out of history are now in the flat
-     * buffer (re-interned against the old grid), so they can leave the
-     * ring. Do it only here — after every allocation reflow itself makes
-     * — so a failure in reflow falls back to clamp with history intact.
-     * (A later ring-page allocation failure inside cfr_scrollback_push
-     * still drops that row; push has no way to report it.) */
-    if (prefix_rows > 0)
-        cfr_scrollback_pop_rows(vt, prefix_rows);
-
-    for (int i = 0; i < sb_count; ++i) {
-        memset(row_buf, 0, (size_t)new_cols * sizeof(CfrCell));
-        NewRow nr = new_rows_arr[i];
-        int col = 0;
-        for (uint32_t k = nr.start; k < nr.end && col < new_cols; ++k) {
-            CellRef *ref = &c.cells[k];
-            int w = ref->cell.width;
-            if (col + w > new_cols)
-                break;
-            row_buf[col] = ref->cell;
-            /* The wrap edge belongs to the new geometry's margin cell only. */
-            row_buf[col].flags &= (uint8_t)~CFR_CELL_WRAPLINE;
-            if (w == 2 && col + 1 < new_cols) {
-                CfrCell cont = (CfrCell){ 0 };
-                cont.width = 0;
-                cont.style_id = ref->cell.style_id;
-                row_buf[col + 1] = cont;
-            }
-            col += w;
-        }
-        if (nr.wraps)
-            row_buf[new_cols - 1].flags |= CFR_CELL_WRAPLINE;
-        cfr_scrollback_push(vt, old_grid, row_buf, new_cols, nr.lineage);
-    }
-    cfr_dealloc(vt, row_buf);
-
-    /* Place visible rows into new_grid. */
-    for (int i = 0; i < visible_count; ++i) {
-        NewRow nr = new_rows_arr[sb_count + i];
-        int col = 0;
-        for (uint32_t k = nr.start; k < nr.end && col < new_cols; ++k) {
-            CellRef *ref = &c.cells[k];
-            int w = ref->cell.width;
-            if (col + w > new_cols)
-                break;
-
-            CfrCell new_cell =
-                cfr_cell_reintern(vt, new_grid, ref->src_page, ref->cell);
-            new_cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
-            new_grid->cells[(size_t)i * new_cols + col] = new_cell;
-            if (w == 2 && col + 1 < new_cols) {
-                CfrCell cont = (CfrCell){ 0 };
-                cont.width = 0;
-                cont.style_id = new_cell.style_id;
-                new_grid->cells[(size_t)i * new_cols + col + 1] = cont;
-            }
-            col += w;
-        }
-        /* A wrapped row keeps its wrap edge on the new margin cell. */
-        if (nr.wraps)
-            new_grid->cells[(size_t)i * new_cols + (new_cols - 1)].flags |=
-                CFR_CELL_WRAPLINE;
-        new_grid->lineage[i] = nr.lineage;
-    }
-
-    /* Install new grid + free old. */
-    cfr_page_free(vt, vt->grid);
-    vt->grid = new_grid;
-
-    vt->rows = new_rows;
-    vt->cols = new_cols;
-    vt->scroll_top = 0;
-    vt->scroll_bottom = new_rows - 1;
-
-    /* Cursor mapping. */
-    int target_visible_row = (int)new_cursor_row - sb_count;
-    if (target_visible_row < 0)
-        cfr_cursor_set(vt, 0, 0);
-    else
-        cfr_cursor_set(vt, target_visible_row, new_cursor_col);
-
-    /* Tabstops. */
-    uint8_t *new_tabs = cfr_alloc(vt, (size_t)new_cols);
-    if (new_tabs) {
-        for (int i = 0; i < new_cols; ++i)
-            new_tabs[i] = (i % 8 == 0) ? 1u : 0u;
-        cfr_dealloc(vt, vt->tabstops);
-        vt->tabstops = new_tabs;
-    }
-
-    cfr_damage_all(vt);
-
-    cfr_dealloc(vt, c.cells);
-    cfr_dealloc(vt, c.lines);
-    cfr_dealloc(vt, new_rows_arr);
-    return;
-
-fail2:
-    cfr_dealloc(vt, new_rows_arr);
-fail:
-    cfr_dealloc(vt, c.cells);
-    cfr_dealloc(vt, c.lines);
-    /* On failure we fall through to clamp resize so the user isn't
-     * left with a broken geometry. */
-    cfr_resize_clamp(vt, new_rows, new_cols);
+    /* On failure fall back to clamp so the user isn't left with a broken
+     * geometry. */
+    if (!ok)
+        cfr_resize_clamp(vt, new_rows, new_cols);
 }
