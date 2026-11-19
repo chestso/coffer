@@ -21,10 +21,11 @@
  *      emitted for one logical line share its lineage id, and every row
  *      but the line's last gets the wrap edge on its new margin cell.
  *
- * Scope: this first cut reflows only the active grid. Pre-existing
- * scrollback stays at its original column widths (mixed-cols sb pages
- * are well-supported by the iterator). A future revision can join sb
- * + grid into one logical stream and re-emit both.
+ * Scope: reflow owns every logical line that touches the visible grid.
+ * A line whose head is already in scrollback is pulled back out of the
+ * ring and re-emitted as a whole (with its fragment rows re-wrapped at
+ * the new width); scrollback older than that line keeps the column
+ * width it was written at, which the mixed-cols iterator handles.
  *
  * Altscreen and "reflow disabled" both fall through to a clamp-only
  * resize that preserves the existing top-left corner of content.
@@ -183,6 +184,40 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
 
     if (!grow_cells(vt, &c, (uint32_t)(old_rows * old_cols + 1)))
         goto fail;
+
+    /* A logical line can start above the grid: if the top visible row
+     * continues the newest scrollback row, that line's head is in
+     * history. Collect it too and rewrap the line as a whole (the
+     * two-sided predicate already answers across the boundary). The
+     * cells are re-interned against the OLD grid, so the flat buffer
+     * never points into a ring page and those rows can be popped once
+     * the new grid is allocated — that is also what keeps
+     * cfr_scrollback_push's contract (it interns from vt->grid). */
+    int prefix_rows = 0;
+    if (vt->sb_lines > 0 && cfr_row_continues(vt, 0)) {
+        prefix_rows = 1;
+        while (prefix_rows < vt->sb_lines && cfr_row_continues(vt, -prefix_rows))
+            prefix_rows++;
+    }
+    for (int sr = prefix_rows - 1; sr >= 0; --sr) {
+        int row_in_page = 0;
+        const CfrPage *page = cfr_sb_page_for_row(vt, sr, &row_in_page);
+        if (!page)
+            break; /* unreachable: sr < sb_lines */
+        int page_cols = page->cols;
+        if (!grow_cells(vt, &c, (uint32_t)page_cols))
+            goto fail;
+        for (int col = 0; col < page_cols; ++col) {
+            CfrCell cell = page->cells[(size_t)row_in_page * page_cols + col];
+            if (cell.width == 0)
+                continue;
+            cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
+            c.cells[c.cells_count].cell =
+                cfr_cell_reintern(vt, old_grid, page, cell);
+            c.cells[c.cells_count].src_page = old_grid;
+            c.cells_count++;
+        }
+    }
 
     for (int r = 0; r < old_rows; ++r) {
         uint32_t row_start_idx = c.cells_count;
@@ -418,6 +453,13 @@ void cfr_reflow(CfrTerm *vt, int new_rows, int new_cols)
         cfr_page_free(vt, new_grid);
         goto fail2;
     }
+
+    /* The rows that were pulled out of history are now in the flat
+     * buffer (re-interned against the old grid), so they can leave the
+     * ring. Do it only here — after every allocation that can fail — so
+     * the clamp-resize fallback can never strand history. */
+    if (prefix_rows > 0)
+        cfr_scrollback_pop_rows(vt, prefix_rows);
 
     for (int i = 0; i < sb_count; ++i) {
         memset(row_buf, 0, (size_t)new_cols * sizeof(CfrCell));

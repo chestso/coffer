@@ -169,12 +169,71 @@ static void test_reflow_preserves_line_identity(void)
     /* 24 chars / 5 cols = 5 rows; the oldest one scrolled into history, so
      * the visible grid starts at '5'. */
     ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'5');
-    /* Grow back: the visible remainder unwraps to a single row. The first
-     * fragment ('01234') is in scrollback, which reflow does not join back
-     * in (§3 step 5 lists carrying ids across the sb/grid split); the
-     * visible line is the 19 chars '5'..'3'. */
+    /* Grow back: the head fragment ('01234') is in scrollback, but the
+     * line straddles the boundary, so reflow pulls the fragment back and
+     * restores the whole 24-char line to a single row. */
     cfr_resize(vt, 4, 30);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
     ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'0');
+    ASSERT_EQ(cfr_get_cell(vt, 0, 23)->cp, (uint32_t)'3');
+    /* The 5-col row's trailing blank is not content, so the line is
+     * exactly 24 cells long. */
+    ASSERT_EQ(cfr_get_cell(vt, 0, 24)->cp, 0u);
+    /* The cursor was at the end of the line and the join moved the line
+     * under it: it stays after the last cell. */
+    ASSERT_EQ(vt->cursor.row, 0);
+    ASSERT_EQ(vt->cursor.col, 24);
+    cfr_free(vt);
+}
+
+/* A fragment spanning several scrollback rows is joined whole, and the
+ * older history above it keeps the column width it was written at. */
+static void test_reflow_joins_multirow_scrollback_fragment(void)
+{
+    CfrTerm *vt = make_term(4, 10, true);
+    feed(vt, "M\r\n");                    /* a hard line, stays above */
+    feed(vt, "012345678901234567890123"); /* 24 chars, one logical line */
+    cfr_resize(vt, 4, 6);                 /* 1 + 4 rows of 6: 4 rows to sb */
+    cfr_resize(vt, 4, 3);                 /* 1 + 8 rows of 3: 5 rows to sb */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 5);
+    /* The four newest scrollback rows are the straddling line's own
+     * fragments; 'M' sits below them and is not part of the line. */
+    ASSERT_TRUE(cfr_row_is_continuation(vt, -3));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, -4));
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'2');
+
+    cfr_resize(vt, 4, 20); /* whole line: 20 + 4 cells */
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 2));
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'0');
+    ASSERT_EQ(cfr_get_cell(vt, 0, 19)->cp, (uint32_t)'9');
+    ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, (uint32_t)'0');
+    ASSERT_EQ(cfr_get_cell(vt, 1, 3)->cp, (uint32_t)'3');
+
+    /* One row remains in history: 'M', still at the width it was pushed
+     * at (6 cols) — the join rewrote only its own fragments. */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
+    ASSERT_EQ(cfr_get_scrollback_cell(vt, 0, 0)->cp, (uint32_t)'M');
+    ASSERT_NOT_NULL(cfr_get_scrollback_cell(vt, 0, 5));
+    ASSERT_NULL(cfr_get_scrollback_cell(vt, 0, 6));
+    cfr_free(vt);
+}
+
+/* Scrollback disabled: nothing can be pulled back, so the visible
+ * remainder re-emits on its own (a row that would have gone to history is
+ * dropped, as before). */
+static void test_reflow_without_scrollback(void)
+{
+    CfrTerm *vt = make_term(4, 10, true);
+    cfr_set_scrollback_size(vt, 0);
+    feed(vt, "012345678901234567890123");
+    cfr_resize(vt, 4, 5);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'5');
+
+    cfr_resize(vt, 4, 30);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
     ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'5');
     ASSERT_EQ(cfr_get_cell(vt, 0, 18)->cp, (uint32_t)'3');
     cfr_free(vt);
@@ -190,13 +249,14 @@ static void test_reflow_preserves_line_identity(void)
  *     its joins are intact.
  *  2. Content pushed into scrollback during the shrink does NOT
  *     re-expand on grow-back. Scrollback pages keep the column width
- *     they were written at (design §5: reflow scope is the active grid
- *     only), the scrollback line count is unchanged by the grow, and
- *     reflow does not carry lineage across the scrollback/grid split.
+ *     they were written at, and the scrollback line count is unchanged
+ *     by the grow.
  *
- * If the FOLLOWUPS "carry lineage across the scrollback/grid split" item
- * is implemented, part 2 starts failing — which is the intended signal
- * that this test needs updating.
+ * Part 2 holds because nothing straddles the boundary in this fixture:
+ * the top visible row is the start of line C, a hard line break, so
+ * there is no scrollback fragment joined to it. A line whose head is in
+ * history is pulled back and re-emitted whole — see
+ * test_reflow_joins_scrollback_fragment.
  *
  * Setup: 8x20 grid, four 40-char lines (A/B/C/D), each a soft-wrapped
  * pair of rows. Shrinking to 10 cols makes each line four rows (16
@@ -350,6 +410,26 @@ static void test_scrollback_pop_rows(void)
     cfr_free(vt);
 }
 
+/* A logical line whose head is already in scrollback is rewrapped as a
+ * whole: the head fragment is pulled back out of the ring, joined with
+ * the visible remainder, and re-emitted. Before this, the fragment was
+ * re-emitted as its own line ("5"-"3" split from "01234"). */
+static void test_reflow_joins_scrollback_fragment(void)
+{
+    CfrTerm *vt = make_term(4, 10, true);
+    feed(vt, "012345678901234567890123"); /* one 24-char logical line */
+    cfr_resize(vt, 4, 5);                 /* 5 rows of 5; oldest -> sb */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'5');
+
+    cfr_resize(vt, 4, 30); /* grow: the whole line fits one row again */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'0');
+    ASSERT_EQ(cfr_get_cell(vt, 0, 23)->cp, (uint32_t)'3');
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -365,5 +445,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_reflow_roundtrip_shrink_grow);
     RUN_TEST(test_resize_carries_hyperlink);
     RUN_TEST(test_scrollback_pop_rows);
+    RUN_TEST(test_reflow_joins_scrollback_fragment);
+    RUN_TEST(test_reflow_joins_multirow_scrollback_fragment);
+    RUN_TEST(test_reflow_without_scrollback);
     TEST_SUMMARY();
 }

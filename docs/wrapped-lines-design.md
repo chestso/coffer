@@ -1,7 +1,8 @@
 # coffer — wrapped-line representation design
 
-Status: **implemented** (steps 1–5; see §7 for the FOLLOWUPS items the
-later behavior spec owns). Written down so work could resume. Reference
+Status: **implemented** (steps 1–5, including reflow's scrollback/grid
+join; see §7 for the FOLLOWUPS items the later behavior spec owns).
+Written down so work could resume. Reference
 for behavior questions during implementation: tmux only. Pre-alpha: no
 backwards compatibility, architecture over expedience. Scope is the
 _internal representation_ only — no behavior fixes ride along; behavior
@@ -294,8 +295,10 @@ are deleted.
    regressions.
 5. **Consumer unification.** Selection, get_text, reflow, scrollback
    join, public API collapse; `sb_pushline` callback gains lineage
-   (pre-alpha break, fine). Reflow must propagate lineage across its
-   sb/grid split — ids must match across that boundary; call this out.
+   (pre-alpha break, fine). Reflow propagates lineage across its
+   sb/grid split: a logical line that straddles the boundary has its
+   scrollback fragment pulled back (`cfr_scrollback_pop_rows`) and the
+   line re-emitted whole, so the ids match across that boundary.
 
 ## 4. Policy knobs (spec + tests later; tmux is the reference)
 

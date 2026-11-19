@@ -34,14 +34,6 @@ on. Order is roughly priority, not strict dependency.
   boundary split them) re-attaches to that cell in the same row and
   re-commits the combined cluster — cross-row re-attach stays a drop.
 
-- **Reflow does not carry lineage across the scrollback/grid split.**
-  `cfr_reflow()` rewraps only the visible grid; a logical line whose
-  earlier fragment is already in scrollback is re-emitted as separate
-  lines (the ids no longer match across the boundary). The
-  representation supports the join (ids travel inside the scrollback
-  memmove), but reflow's `line_start_row` walk needs to consult the
-  scrollback tail. See §3 step 5 of the design.
-
 - **Hoist `cfr_flush_cluster()` into `cfr_osc_dispatch`.** OSC 8 added a
   flush at the top of its handler (mirroring the csi.c / esc.c / modes.c
   pattern) so the previous link's still-pending cluster gets the old
