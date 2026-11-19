@@ -213,7 +213,7 @@ static bool collect_prefix(Reflow *R)
 
     for (int sr = rows - 1; sr >= 0; --sr) { /* oldest first */
         int row_in_page = 0;
-        const CfrPage *page = cfr_sb_page_for_row(vt, sr, &row_in_page);
+        const CfrPage *page = cfr_row_page(vt, -(sr + 1), &row_in_page);
         CFR_BUG_CHECK(page != NULL, "reflow prefix: no page for sb row %d",
                       sr);
         if (!page)

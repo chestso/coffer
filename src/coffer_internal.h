@@ -594,6 +594,17 @@ bool cfr_wrap_commit(CfrTerm *vt);
 void cfr_lineage_stamp(CfrTerm *vt, int row);
 uint32_t cfr_lineage_next(CfrTerm *vt);
 
+/* The one row resolver (lines.c). Every consumer that reaches a row by
+ * unified coordinate goes through here: `unified_row` >= 0 is a visible
+ * grid row, < 0 is scrollback (-1 = the line most recently scrolled off).
+ * Returns the page that owns the row and sets *out_row_in_page, or NULL
+ * when the row does not exist. A page's `cols` is that row's own width —
+ * scrollback rows keep the width they were written at, so it can differ
+ * from the grid's. All page-scoped ids in the row's cells resolve against
+ * the returned page. */
+const CfrPage *cfr_row_page(const CfrTerm *vt, int unified_row,
+                            int *out_row_in_page);
+
 /* Logical-line predicate (lines.c). True when unified `row` continues
  * the row above it: the row above's margin cell carries the wrap edge
  * AND both rows share the same nonzero lineage. */

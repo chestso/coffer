@@ -62,28 +62,14 @@ size_t cfr_row_text(const CfrTerm *vt, int row, char *buf, size_t cap)
     if (row >= rows || row < -cfr_get_scrollback_lines(vt))
         return 0;
 
-    /* Resolve the row once. A scrollback row lives in one page, and the
-     * per-column lookup re-walks the page list for every cell — a
-     * full-buffer scan (wait-for, assert-contains) is quadratic in the
-     * page count without this. The owning page also serves the grapheme
-     * read directly, skipping the page search per multi-codepoint
-     * cluster. */
-    const CfrPage *page = NULL;
-    int row_cols = cols;
-    const CfrCell *row_cells;
-    if (row >= 0) {
-        if (!vt->grid)
-            return 0;
-        page = vt->grid;
-        row_cells = &vt->grid->cells[(size_t)row * cols];
-    } else {
-        int row_in_page = 0;
-        page = cfr_sb_page_for_row(vt, -row - 1, &row_in_page);
-        if (!page)
-            return 0;
-        row_cols = page->cols;
-        row_cells = &page->cells[(size_t)row_in_page * page->cols];
-    }
+    /* Resolve the row once; the owning page serves the grapheme reads
+     * directly. */
+    int row_in_page = 0;
+    const CfrPage *page = cfr_row_page(vt, row, &row_in_page);
+    if (!page)
+        return 0;
+    int row_cols = page->cols;
+    const CfrCell *row_cells = &page->cells[(size_t)row_in_page * page->cols];
 
     size_t n = 0;
     for (int c = 0; c < cols && c < row_cols; c++) {

@@ -27,11 +27,10 @@
 /* Row addressing                                                      */
 /* ------------------------------------------------------------------ */
 
-/* Resolve a unified row to the page that owns it and the row index
- * within that page. Unified rows: >= 0 are visible grid rows, < 0 are
- * scrollback (-1 = the line most recently scrolled off). */
-static const CfrPage *unified_page(const CfrTerm *vt, int unified_row,
-                                   int *out_row_in_page)
+/* See cfr_row_page() in coffer_internal.h. The only place that turns a
+ * unified row into scrollback depth. */
+const CfrPage *cfr_row_page(const CfrTerm *vt, int unified_row,
+                            int *out_row_in_page)
 {
     if (!vt)
         return NULL;
@@ -41,8 +40,7 @@ static const CfrPage *unified_page(const CfrTerm *vt, int unified_row,
         *out_row_in_page = unified_row;
         return vt->grid;
     }
-    int sb_row = -(unified_row + 1);
-    return cfr_sb_page_for_row(vt, sb_row, out_row_in_page);
+    return cfr_sb_page_for_row(vt, -(unified_row + 1), out_row_in_page);
 }
 
 static uint32_t lineage_in_page(const CfrPage *page, int row_in_page)
@@ -55,7 +53,7 @@ static uint32_t lineage_in_page(const CfrPage *page, int row_in_page)
 int cfr_row_width(const CfrTerm *vt, int unified_row)
 {
     int r = 0;
-    const CfrPage *p = unified_page(vt, unified_row, &r);
+    const CfrPage *p = cfr_row_page(vt, unified_row, &r);
     return p ? p->cols : 0;
 }
 
@@ -155,8 +153,8 @@ bool cfr_row_continues(const CfrTerm *vt, int unified_row)
     if (!vt)
         return false;
     int pr = 0, cr = 0;
-    const CfrPage *pp = unified_page(vt, unified_row - 1, &pr);
-    const CfrPage *cp = unified_page(vt, unified_row, &cr);
+    const CfrPage *pp = cfr_row_page(vt, unified_row - 1, &pr);
+    const CfrPage *cp = cfr_row_page(vt, unified_row, &cr);
     if (!pp || !cp || pp->cols == 0)
         return false;
 
