@@ -258,6 +258,13 @@ struct CfrTerm
     CfrPage *sb_tail;
     int sb_lines;
     int sb_capacity;
+    /* Row-lookup hint (scrollback.c): the page the last lookup landed on
+     * and how many rows sit in pages newer than it. Walks and word scans
+     * read neighbouring rows, so starting from here makes them O(1)
+     * instead of O(pages). A cache only — every ring mutation clears it,
+     * and const readers refresh it. */
+    const CfrPage *sb_hint_page;
+    int sb_hint_before;
 
     CfrCursorState cursor;
     /* One saved-cursor register per screen: [0]=normal, [1]=alt. DECSC/DECRC

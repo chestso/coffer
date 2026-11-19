@@ -475,6 +475,81 @@ static void test_reflow_prefix_is_capped(void)
     cfr_free(vt);
 }
 
+/* -------- scrollback row lookup hint ------------------------------------
+ *
+ * find_sb_row keeps the page the last lookup landed on and walks from
+ * there. Whatever the ring does underneath — pushes, evictions, reflow
+ * pops, partial pages of mixed widths — every lookup must still match a
+ * plain walk from the head, and a cell must resolve to its own page. */
+static const CfrPage *ref_sb_page(const CfrTerm *vt, int k, int *row)
+{
+    int rem = k;
+    if (k < 0)
+        return NULL;
+    for (const CfrPage *p = vt->sb_head; p; p = p->next) {
+        if (rem < p->row_count) {
+            *row = p->row_count - 1 - rem;
+            return p;
+        }
+        rem -= p->row_count;
+    }
+    return NULL;
+}
+
+static void check_sb_lookup(const CfrTerm *vt, int k)
+{
+    int want_row = -1, got_row = -1;
+    const CfrPage *want = ref_sb_page(vt, k, &want_row);
+    const CfrPage *got = cfr_sb_page_for_row(vt, k, &got_row);
+    ASSERT_TRUE(got == want);
+    if (want) {
+        ASSERT_EQ(got_row, want_row);
+        const CfrCell *cell = &want->cells[(size_t)want_row * want->cols];
+        ASSERT_TRUE(cfr_find_owner_page(vt, cell) == want);
+    }
+}
+
+static void test_sb_lookup_hint_matches_walk(void)
+{
+    CfrTerm *vt = make_term(3, 8, true);
+    cfr_set_scrollback_size(vt, 150); /* small: pages get evicted */
+    uint32_t rng = 12345u;
+#define NEXT() (rng = rng * 1664525u + 1013904223u, rng >> 8)
+    for (int step = 0; step < 300; ++step) {
+        switch (NEXT() % 5) {
+        case 0:
+        case 1:
+        {
+            char buf[64];
+            int n = (int)(NEXT() % 40) + 1;
+            for (int i = 0; i < n; ++i)
+                buf[i] = (char)('a' + (i + step) % 26);
+            buf[n] = '\0';
+            feed(vt, buf);
+            feed(vt, "\r\n");
+            break;
+        }
+        case 2:
+            cfr_resize(vt, 3, 5 + (int)(NEXT() % 26)); /* pops + re-pushes */
+            break;
+        case 3: /* random access, including out of range */
+            for (int i = 0; i < 20; ++i)
+                check_sb_lookup(vt, (int)(NEXT() % (uint32_t)(vt->sb_lines + 3)) - 1);
+            break;
+        default: /* sequential scans, both directions */
+            for (int k = 0; k < vt->sb_lines; ++k)
+                check_sb_lookup(vt, k);
+            for (int k = vt->sb_lines - 1; k >= 0; --k)
+                check_sb_lookup(vt, k);
+            break;
+        }
+        check_sb_lookup(vt, (int)(NEXT() % (uint32_t)(vt->sb_lines + 1)));
+    }
+#undef NEXT
+    ASSERT_TRUE(vt->sb_lines > 64); /* the ring really spans pages */
+    cfr_free(vt);
+}
+
 /* Scrollback disabled: nothing can be pulled back, so the visible
  * remainder re-emits on its own (a row that would have gone to history is
  * dropped, as before). */
@@ -707,6 +782,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_scrollback_host_mirror);
     RUN_TEST(test_pushline_fires_with_scrollback_off);
     RUN_TEST(test_reflow_prefix_is_capped);
+    RUN_TEST(test_sb_lookup_hint_matches_walk);
     RUN_TEST(test_reflow_without_scrollback);
     TEST_SUMMARY();
 }

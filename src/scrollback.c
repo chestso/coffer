@@ -63,6 +63,7 @@ static void evict_to_capacity(CfrTerm *vt)
 {
     while (vt->sb_lines > vt->sb_capacity && vt->sb_tail) {
         CfrPage *tail = vt->sb_tail;
+        vt->sb_hint_page = NULL;  /* the hint may name the page we free */
         vt->sb_tail = tail->prev; /* newer than the evicted page */
         if (vt->sb_tail)
             vt->sb_tail->next = NULL;
@@ -78,6 +79,7 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
 {
     if (!vt || cols <= 0 || !src || !src_cells)
         return;
+    vt->sb_hint_page = NULL; /* the ring changes under the hint */
 
     /* Store the row, if the ring retains anything and can allocate. */
     const CfrCell *stored = NULL;
@@ -119,6 +121,7 @@ void cfr_scrollback_pop_rows(CfrTerm *vt, int n)
 {
     if (!vt || n <= 0)
         return;
+    vt->sb_hint_page = NULL;
     if (n > vt->sb_lines)
         n = vt->sb_lines;
     const int popped = n;
@@ -151,6 +154,7 @@ void cfr_scrollback_clear(CfrTerm *vt)
 {
     if (!vt)
         return;
+    vt->sb_hint_page = NULL;
     CfrPage *p = vt->sb_head;
     while (p) {
         CfrPage *next = p->next;
@@ -162,22 +166,42 @@ void cfr_scrollback_clear(CfrTerm *vt)
     vt->sb_lines = 0;
 }
 
+/* Locate scrollback row `sb_row` (0 = newest). Starts from the page the
+ * previous lookup found and walks whichever way the target lies, so a
+ * scan over neighbouring rows — a logical-line walk, a word scan, a
+ * renderer reading consecutive cells — costs O(1) per step rather than
+ * O(pages) from the head. A cold lookup still walks from the head.
+ *
+ * The hint is a cache behind a const interface: the object is never const
+ * (cfr_new allocates it mutable), so refreshing it is well-defined; it does
+ * mean two threads must not use the const accessors on one term at once. */
 static const CfrPage *find_sb_row(const CfrTerm *vt, int sb_row,
                                   int *out_row_in_page)
 {
-    if (!vt || sb_row < 0)
+    if (!vt || sb_row < 0 || sb_row >= vt->sb_lines)
         return NULL;
-    int remaining = sb_row;
-    const CfrPage *p = vt->sb_head;
-    while (p) {
-        if (remaining < p->row_count) {
-            *out_row_in_page = p->row_count - 1 - remaining;
-            return p;
-        }
-        remaining -= p->row_count;
-        p = p->next; /* toward older */
+    const CfrPage *p = vt->sb_hint_page;
+    int before = vt->sb_hint_before; /* rows in pages newer than p */
+    if (!p) {
+        p = vt->sb_head;
+        before = 0;
     }
-    return NULL;
+    while (p && sb_row < before) { /* toward newer */
+        p = p->prev;
+        if (p)
+            before -= p->row_count;
+    }
+    while (p && sb_row >= before + p->row_count) { /* toward older */
+        before += p->row_count;
+        p = p->next;
+    }
+    if (!p)
+        return NULL;
+    CfrTerm *m = (CfrTerm *)vt;
+    m->sb_hint_page = p;
+    m->sb_hint_before = before;
+    *out_row_in_page = p->row_count - 1 - (sb_row - before);
+    return p;
 }
 
 const CfrPage *cfr_sb_page_for_row(const CfrTerm *vt, int sb_row,
@@ -234,6 +258,13 @@ const CfrPage *cfr_find_owner_page(const CfrTerm *vt, const CfrCell *cell)
         size_t n = (size_t)vt->altgrid->row_capacity * vt->altgrid->cols;
         if (cell >= vt->altgrid->cells && cell < vt->altgrid->cells + n)
             return vt->altgrid;
+    }
+    /* A cell is almost always in the page its row was just read from. */
+    const CfrPage *hint = vt->sb_hint_page;
+    if (hint) {
+        size_t n = (size_t)hint->row_capacity * hint->cols;
+        if (cell >= hint->cells && cell < hint->cells + n)
+            return hint;
     }
     for (const CfrPage *p = vt->sb_head; p; p = p->next) {
         size_t n = (size_t)p->row_capacity * p->cols;
