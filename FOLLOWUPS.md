@@ -5,25 +5,6 @@ on. Order is roughly priority, not strict dependency.
 
 ## Investigate
 
-- **The image store's lifetimes are half-unified** (see
-  `docs/image-store-design.md` — design + progress tracker, resume
-  there). Reproduced against the engine (reproducers in
-  `tests/repro/`): the 1:1/1:N split is _inferred_ from "does this
-  image have a placement", so a transmitted-but-unplaced kitty image
-  dies on `ED`/resize; the 256-record overflow evicts the NEWEST
-  image (the swap-remove moves the tail into slot 0); the byte-budget
-  eviction cannot order 1:N images (all their `abs_line` are 0) and
-  takes the newest one; the client's `i=` id and the engine's id
-  share one space, so an iTerm2 or Lottie image silently replaces a
-  kitty image with the same id; the kitty path reports NO damage, so
-  the host never repaints (the "blank space"); and `cfr_img_get()`
-  scales `buf_w`/`buf_h` by `content_scale` while the pixel buffer is
-  the native size — portty's texture upload then reads out of bounds
-  (ASan-confirmed at scale 2.0). The plan fixes the data model
-  (explicit kind, a handle beside the public id, a creation order for
-  the eviction), the lifetimes, the damage, the buffer dimensions, and
-  the lottie reconciliation.
-
 - **Script engine leftovers** (see `docs/script-engine-design.md`):
   portty's `-S` process exit code does not reflect a failed script run
   (the engine reports CFR_SCRIPT_FAILED and the app quits, but exit 0);
@@ -179,7 +160,11 @@ Not yet implemented:
 - **Delete subtypes** — `d=c` (cursor cell/region), `d=n` (image
   number `I=`), `d=x`/`d=y` (intersecting ranges). The `x=`/`y=` keys
   are parsed into `delete_x`/`delete_y` but unused by the delete
-  handler.
+  handler. `d=a` is scoped to kitty's own id space: it deletes the
+  kitty images, not the sixels or the Lottie animations. That is the
+  correct reading of the protocol (each source owns its id space),
+  but a client that mixed protocols and expected one "delete all" to
+  clear everything will be surprised.
 - **Unicode placeholders (`q=1`)** — no placeholder-cell rendering or
   cursor-movement-via-placeholder-text.
 - **`I=` image number** — parsed but otherwise ignored; only unique
@@ -190,6 +175,10 @@ chafa, and tools driving kitty animations). Most consumers only need
 the transmit/place/delete paths, which already work.
 
 ### The image store — one image set, not one per screen
+
+The unified-store work itself is done (all eight phases; see
+`docs/image-store-design.md`). What follows here is what it
+deliberately left out.
 
 The store holds ONE set of images for the whole terminal
 (`src/image_store.c`), not one per screen buffer. Kitty's rule is that
@@ -207,16 +196,6 @@ after the switch back to the main screen. The client can delete it
 
 **Fix:** a per-screen image set (or a per-image screen tag), and the
 altscreen switch clearing the set of the screen being left.
-
-### The image store — the kitty `a=d` subtypes
-
-Kitty's delete subtypes (`d=c` cursor cell, `d=n` image number,
-`d=x`/`d=y` intersecting ranges) are still unimplemented, and the
-`d=a` ("delete all") is now scoped to kitty's own id space: it
-deletes the kitty images, not the sixels or the Lottie animations.
-That is the correct reading of the protocol (each protocol owns its
-id space), but a client that mixed protocols and expected one
-"delete all" to clear everything will be surprised.
 
 ### The image store — the byte-budget eviction
 

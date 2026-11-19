@@ -2,9 +2,10 @@
 
 Throwaway programs, one per finding in
 [`docs/image-store-design.md`](../../docs/image-store-design.md). They
-are NOT part of `make check` (they print, they do not assert); they are
-the evidence behind findings F1–F9 and the fastest way to see a
-regression while the fix is in flight.
+are NOT part of `make check` (they print, they do not assert); they
+are the evidence behind findings F1–F9, kept so a regression is a
+one-command check rather than a re-derivation. They ship in the dist
+tarball (`EXTRA_DIST`) but are never built by it.
 
 Build them against a built coffer tree:
 

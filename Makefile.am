@@ -14,6 +14,7 @@ EXTRA_DIST = \
     src/scripts/gen_unicode_tables.py \
     src/scripts/gen_zwj_sequences.py \
     docs \
+    tests/repro \
     third_party/stb/stb_image.h \
     README.md \
     COPYING \
