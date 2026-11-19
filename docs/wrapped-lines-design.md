@@ -299,6 +299,9 @@ are deleted.
    sb/grid split: a logical line that straddles the boundary has its
    scrollback fragment pulled back (`cfr_scrollback_pop_rows`) and the
    line re-emitted whole, so the ids match across that boundary.
+   A host mirroring history follows it through two callbacks:
+   `sb_pushline` (every row entering the ring, scroll or reflow) and
+   `sb_truncate` (the newest rows a reflow pulled back).
 
 ## 4. Policy knobs (spec + tests later; tmux is the reference)
 

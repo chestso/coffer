@@ -297,6 +297,125 @@ static void test_reflow_straddle_carries_cell_attributes(void)
     cfr_free(vt);
 }
 
+/* -------- host mirror: sb_pushline + sb_truncate track history ---------
+ *
+ * A host that appends on sb_pushline and drops the tail on sb_truncate
+ * must end up with exactly the rows the ring holds — through scrolls,
+ * a shrink that pushes, and a grow that pulls a straddling line back and
+ * re-pushes part of it. */
+typedef struct
+{
+    uint32_t cp0;
+    int cols;
+    uint32_t lineage;
+} MirrorRow;
+
+typedef struct
+{
+    CfrTerm *vt;
+    MirrorRow rows[256];
+    int count;
+    int pushes, truncated;
+    bool rich_resolved; /* a pushed 'e' cell resolved its bold style */
+} Mirror;
+
+static void mirror_push(const CfrCell *cells, int cols, uint32_t lineage,
+                        void *user)
+{
+    Mirror *m = user;
+    if (m->count < 256)
+        m->rows[m->count++] = (MirrorRow){ cells[0].cp, cols, lineage };
+    m->pushes++;
+    if (cells[0].cp == (uint32_t)'e') {
+        const CfrStyle *st = cfr_cell_style(m->vt, &cells[0]);
+        if (st && (st->attrs & CFR_ATTR_BOLD) != 0 && st->fg_rgb == 0x010203u)
+            m->rich_resolved = true;
+    }
+}
+
+static void mirror_truncate(int rows, void *user)
+{
+    Mirror *m = user;
+    m->count -= rows;
+    m->truncated += rows;
+}
+
+static void check_mirror(const Mirror *m)
+{
+    CfrTerm *vt = m->vt;
+    int n = cfr_get_scrollback_lines(vt);
+    ASSERT_EQ(m->count, n);
+    for (int s = 0; s < n; ++s) {
+        const MirrorRow *row = &m->rows[m->count - 1 - s];
+        int cols = 0;
+        const CfrCell *cells = cfr_get_scrollback_row(vt, s, &cols);
+        ASSERT_NOT_NULL(cells);
+        ASSERT_EQ(cols, row->cols);
+        ASSERT_EQ(cells[0].cp, row->cp0);
+        if (s >= 1) {
+            const MirrorRow *newer = &m->rows[m->count - s];
+            bool joined = newer->lineage != 0 && newer->lineage == row->lineage;
+            ASSERT_EQ(cfr_row_is_continuation(vt, -s), joined);
+        }
+    }
+}
+
+static void test_scrollback_host_mirror(void)
+{
+    Mirror m = { 0 };
+    CfrTerm *vt = make_term(4, 10, true);
+    m.vt = vt;
+    CfrCallbacks cb = { 0 };
+    cb.sb_pushline = mirror_push;
+    cb.sb_truncate = mirror_truncate;
+    cfr_set_callbacks(vt, &cb, &m);
+
+    feed(vt, "M\r\n\x1b[1;38;2;1;2;3me\xcc\x81");
+    feed(vt, "123456789012345678901234567"); /* rows 1..3, one line */
+    feed(vt, "\r\nZ");                       /* scrolls 'M' off */
+    ASSERT_EQ(m.pushes, 1);
+    check_mirror(&m);
+
+    cfr_resize(vt, 4, 5); /* shrink: rows go to history, nothing pulled */
+    ASSERT_EQ(m.truncated, 0);
+    ASSERT_TRUE(m.pushes > 1);
+    ASSERT_TRUE(m.rich_resolved);
+    check_mirror(&m);
+
+    cfr_resize(vt, 4, 8); /* straddling line pulled back, part re-pushed */
+    ASSERT_TRUE(m.truncated > 0);
+    check_mirror(&m);
+
+    cfr_resize(vt, 4, 30); /* whole line back on screen */
+    check_mirror(&m);
+    cfr_free(vt);
+}
+
+/* sb_pushline is a notification of every row that leaves the grid, so a
+ * host owning its own history works with scrollback off. */
+static void test_pushline_fires_with_scrollback_off(void)
+{
+    Mirror m = { 0 };
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 2;
+    cfg.cols = 10;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.scrollback = 0;
+    CfrTerm *vt = cfr_new(&cfg);
+    m.vt = vt;
+    CfrCallbacks cb = { 0 };
+    cb.sb_pushline = mirror_push;
+    cfr_set_callbacks(vt, &cb, &m);
+
+    feed(vt, "a\r\nb\r\nc\r\n");
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    ASSERT_EQ(m.pushes, 2);
+    ASSERT_EQ(m.rows[0].cp0, (uint32_t)'a');
+    ASSERT_EQ(m.rows[1].cp0, (uint32_t)'b');
+    cfr_free(vt);
+}
+
 /* Scrollback disabled: nothing can be pulled back, so the visible
  * remainder re-emits on its own (a row that would have gone to history is
  * dropped, as before). */
@@ -526,6 +645,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_reflow_joins_multirow_scrollback_fragment);
     RUN_TEST(test_reflow_join_repushes_scrollback);
     RUN_TEST(test_reflow_straddle_carries_cell_attributes);
+    RUN_TEST(test_scrollback_host_mirror);
+    RUN_TEST(test_pushline_fires_with_scrollback_off);
     RUN_TEST(test_reflow_without_scrollback);
     TEST_SUMMARY();
 }

@@ -76,30 +76,42 @@ static void evict_to_capacity(CfrTerm *vt)
 void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
                          const CfrCell *src_cells, int cols, uint32_t lineage)
 {
-    if (!vt || vt->sb_capacity <= 0 || cols <= 0 || !src || !src_cells)
-        return;
-    if (!ensure_head(vt, cols))
+    if (!vt || cols <= 0 || !src || !src_cells)
         return;
 
-    CfrPage *head = vt->sb_head;
-    /* Invariant: the push reads style/grapheme/hyperlink ids from `src`
-     * and writes them into head. If a caller ever passes the head AS the
-     * source, source and dest alias — the intern table grows mid-read and
-     * any held pointer dangles. Fail loud at the door. */
-    CFR_BUG_CHECK(head != src,
-                  "scrollback push target page is also the source (%p)",
-                  (void *)head);
-    int row = head->row_count;
-    CfrCell *dst = &head->cells[(size_t)row * head->cols];
-    head->lineage[row] = lineage;
+    /* Store the row, if the ring retains anything and can allocate. */
+    const CfrCell *stored = NULL;
+    if (vt->sb_capacity > 0 && ensure_head(vt, cols)) {
+        CfrPage *head = vt->sb_head;
+        /* Invariant: the push reads style/grapheme/hyperlink ids from
+         * `src` and writes them into head. If a caller ever passes the
+         * head AS the source, source and dest alias — the intern table
+         * grows mid-read and any held pointer dangles. Fail loud at the
+         * door. */
+        CFR_BUG_CHECK(head != src,
+                      "scrollback push target page is also the source (%p)",
+                      (void *)head);
+        int row = head->row_count;
+        CfrCell *dst = &head->cells[(size_t)row * head->cols];
+        head->lineage[row] = lineage;
 
-    /* Re-intern style, grapheme, and hyperlink references into the
-     * head page — page-scoped tables don't carry across pages. */
-    for (int c = 0; c < cols && c < head->cols; ++c) {
-        dst[c] = cfr_cell_reintern(vt, head, src, src_cells[c]);
+        /* Re-intern style, grapheme, and hyperlink references into the
+         * head page — page-scoped tables don't carry across pages. */
+        for (int c = 0; c < cols && c < head->cols; ++c)
+            dst[c] = cfr_cell_reintern(vt, head, src, src_cells[c]);
+        head->row_count++;
+        vt->sb_lines++;
+        stored = dst;
     }
-    head->row_count++;
-    vt->sb_lines++;
+
+    /* The one place a row enters history, hence the one place the host is
+     * told. Hand out the retained copy when there is one: its ids resolve
+     * through the cfr_cell_* accessors. With scrollback off (or on an
+     * allocation failure) the caller's cells go out as they are. */
+    if (vt->callbacks.sb_pushline)
+        vt->callbacks.sb_pushline(stored ? stored : src_cells, cols, lineage,
+                                  vt->callback_user);
+
     evict_to_capacity(vt);
 }
 
@@ -109,6 +121,7 @@ void cfr_scrollback_pop_rows(CfrTerm *vt, int n)
         return;
     if (n > vt->sb_lines)
         n = vt->sb_lines;
+    const int popped = n;
     while (n > 0) {
         CfrPage *head = vt->sb_head;
         CFR_BUG_CHECK(head != NULL, "scrollback pop: %d rows left, no head",
@@ -130,6 +143,8 @@ void cfr_scrollback_pop_rows(CfrTerm *vt, int n)
     }
     CFR_BUG_CHECK(vt->sb_lines >= 0, "scrollback pop: sb_lines=%d",
                   vt->sb_lines);
+    if (popped > 0 && vt->callbacks.sb_truncate)
+        vt->callbacks.sb_truncate(popped, vt->callback_user);
 }
 
 void cfr_scrollback_clear(CfrTerm *vt)
