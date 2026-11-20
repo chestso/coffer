@@ -45,7 +45,8 @@ typedef struct CfrTerm CfrTerm;
  * can carry different ids. They are meaningful only through the
  * cfr_cell_* accessors, with the (row, col) the cell was read from — never
  * compare them across rows, and never use one as a cache key. Testing
- * for zero ("no style / no cluster / no link") is always safe.
+ * for zero ("no style / no cluster / no link") is always safe. To ask
+ * whether two cells carry the same link, compare cfr_cell_hyperlink_key().
  *
  * Continuation cells (the second cell of a width-2 cluster) have
  * width == 0 and are skipped by callers.
@@ -144,6 +145,16 @@ size_t cfr_cell_get_grapheme(const CfrTerm *vt, int row, int col,
  * to `out_cap` indicates truncation. */
 size_t cfr_cell_get_hyperlink(const CfrTerm *vt, int row, int col,
                               uint8_t *out_uri, size_t out_cap);
+
+/* A stable identity for the hyperlink of the cell at (row, col): 0 if the
+ * cell has no link or does not exist, otherwise a 64-bit key derived from
+ * the URI bytes. Unlike CfrCell.hyperlink_id it means the same thing on
+ * every row, page and screen, so it is the value to compare ("did the
+ * hovered link change?", "does this underline run continue?") or to use as
+ * a map key. Equal URIs always give equal keys; different URIs differ with
+ * probability 1 - 2^-64. The key is deterministic but not a stable format:
+ * do not persist it across coffer versions. */
+uint64_t cfr_cell_hyperlink_key(const CfrTerm *vt, int row, int col);
 
 /* ------------------------------------------------------------------ */
 /* Geometry                                                            */

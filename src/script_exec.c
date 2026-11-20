@@ -229,14 +229,14 @@ static void dump_cells(CfrTerm *vt, FILE *out, int row, int col_start,
         if (st)
             fprintf(out,
                     "  col %3d: %s w=%d attrs=0x%04X "
-                    "fg=%06X%s bg=%06X%s ul=%d ul_rgb=%06X%s link=%u\n",
+                    "fg=%06X%s bg=%06X%s ul=%d ul_rgb=%06X%s link=%llx\n",
                     c, cp_str, cell->width, st->attrs, st->fg_rgb,
                     (st->color_flags & CFR_COLOR_DEFAULT_FG) ? "(def)" : "",
                     st->bg_rgb,
                     (st->color_flags & CFR_COLOR_DEFAULT_BG) ? "(def)" : "",
                     st->underline, st->ul_rgb,
                     (st->color_flags & CFR_COLOR_DEFAULT_UL) ? "(def)" : "",
-                    cell->hyperlink_id);
+                    (unsigned long long)cfr_cell_hyperlink_key(vt, row, c));
         else
             fprintf(out, "  col %3d: %s w=%d (no style)\n", c, cp_str,
                     cell->width);

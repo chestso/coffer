@@ -346,3 +346,12 @@ size_t cfr_cell_get_hyperlink(const CfrTerm *vt, int row, int col,
         return 0;
     return cfr_hyperlink_read(page, cell->hyperlink_id, out_uri, out_cap);
 }
+
+uint64_t cfr_cell_hyperlink_key(const CfrTerm *vt, int row, int col)
+{
+    const CfrPage *page = NULL;
+    const CfrCell *cell = locate_cell(vt, row, col, &page);
+    if (!cell)
+        return 0;
+    return cfr_hyperlink_key(page, cell->hyperlink_id);
+}

@@ -89,7 +89,7 @@ with no child has nothing to drain, so the wait is skipped there.
 `--show-row` without `--quiet` still prints the full screen: it only
 restricts the `--cell-data` / `--style-data` detail to the selected
 rows. `--quiet` has no effect without `--show-row`. `--cell-data`
-prints what `render cells` does (codepoint, width, style, hyperlink id)
+prints what `render cells` does (codepoint, width, style, hyperlink key)
 and `--style-data` what `render styles` does, for every row or the
 selected ones.
 
