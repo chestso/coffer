@@ -7,6 +7,12 @@
  * run-continuity for free, covering the OSC 8 spec's primary use case
  * for the optional `id=` parameter.
  *
+ * Ids are page-scoped, but every entry also carries a 64-bit content key
+ * (FNV-1a of the URI, never 0) that is the same on every page. The key is
+ * hashed once, when a URI first reaches the engine, and is what dedup,
+ * table growth and cross-page transfer reuse; hosts get it through
+ * cfr_cell_hyperlink_key().
+ *
  * Spec: https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
  *
  * id 0 is reserved for "no link" (matches the cell's zero-init). Slot
@@ -27,19 +33,20 @@
 #define CFR_HYPERLINK_DEDUP_INIT 16u
 #define CFR_HYPERLINK_ID_MAX     UINT16_MAX
 
-static uint32_t fnv1a(const uint8_t *data, uint32_t len)
+/* 64-bit FNV-1a, remapped so that 0 stays free for "no link". */
+static uint64_t link_key(const uint8_t *data, uint32_t len)
 {
-    uint32_t h = 2166136261u;
+    uint64_t h = 14695981039346656037ull;
     for (uint32_t i = 0; i < len; ++i) {
         h ^= data[i];
-        h *= 16777619u;
+        h *= 1099511628211ull;
     }
-    return h;
+    return h ? h : 1u;
 }
 
 static bool ensure_init(CfrTerm *vt, CfrHyperlinkTable *t)
 {
-    if (t->data && t->offsets && t->lengths && t->dedup_index)
+    if (t->data && t->offsets && t->lengths && t->keys && t->dedup_index)
         return true;
     if (!t->data) {
         t->data = cfr_alloc(vt, CFR_HYPERLINK_DATA_INIT);
@@ -57,6 +64,11 @@ static bool ensure_init(CfrTerm *vt, CfrHyperlinkTable *t)
     if (!t->lengths) {
         t->lengths = cfr_alloc(vt, CFR_HYPERLINK_IDS_INIT * sizeof(uint32_t));
         if (!t->lengths)
+            return false;
+    }
+    if (!t->keys) {
+        t->keys = cfr_alloc(vt, CFR_HYPERLINK_IDS_INIT * sizeof(uint64_t));
+        if (!t->keys)
             return false;
     }
     if (!t->dedup_index) {
@@ -105,6 +117,10 @@ static bool grow_ids(CfrTerm *vt, CfrHyperlinkTable *t)
     if (!nl)
         return false;
     t->lengths = nl;
+    uint64_t *nk = cfr_realloc(vt, t->keys, new_cap * sizeof(uint64_t));
+    if (!nk)
+        return false;
+    t->keys = nk;
     t->capacity_ids = (uint16_t)new_cap;
     return true;
 }
@@ -118,8 +134,7 @@ static bool grow_dedup(CfrTerm *vt, CfrHyperlinkTable *t)
     memset(ni, 0, new_cap * sizeof(uint16_t));
     uint32_t mask = new_cap - 1;
     for (uint16_t id = 1; id <= t->count; ++id) {
-        uint32_t h = fnv1a(t->data + t->offsets[id], t->lengths[id]);
-        uint32_t slot = h & mask;
+        uint32_t slot = (uint32_t)t->keys[id] & mask;
         while (ni[slot] != 0)
             slot = (slot + 1) & mask;
         ni[slot] = id;
@@ -130,8 +145,8 @@ static bool grow_dedup(CfrTerm *vt, CfrHyperlinkTable *t)
     return true;
 }
 
-uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
-                              const uint8_t *uri, uint32_t uri_len)
+static uint16_t intern_keyed(CfrTerm *vt, CfrPage *page, const uint8_t *uri,
+                             uint32_t uri_len, uint64_t key)
 {
     if (!page || !uri || uri_len == 0)
         return 0;
@@ -139,14 +154,13 @@ uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
     if (!ensure_init(vt, t))
         return 0;
 
-    uint32_t hash = fnv1a(uri, uri_len);
     uint32_t mask = t->dedup_capacity - 1;
-    uint32_t slot = hash & mask;
+    uint32_t slot = (uint32_t)key & mask;
     for (;;) {
         uint16_t id = t->dedup_index[slot];
         if (id == 0)
             break; /* empty — insert here */
-        if (t->lengths[id] == uri_len &&
+        if (t->keys[id] == key && t->lengths[id] == uri_len &&
             memcmp(t->data + t->offsets[id], uri, uri_len) == 0)
             return id; /* hit */
         slot = (slot + 1) & mask;
@@ -166,6 +180,7 @@ uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
     uint16_t new_id = (uint16_t)(t->count + 1u);
     t->offsets[new_id] = t->used;
     t->lengths[new_id] = uri_len;
+    t->keys[new_id] = key;
     memcpy(t->data + t->used, uri, uri_len);
     t->used += uri_len;
     t->count = new_id;
@@ -176,6 +191,21 @@ uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
     if ((uint32_t)t->count * 10u > t->dedup_capacity * 7u)
         grow_dedup(vt, t);
     return new_id;
+}
+
+uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
+                              const uint8_t *uri, uint32_t uri_len)
+{
+    if (!uri || uri_len == 0)
+        return 0;
+    return intern_keyed(vt, page, uri, uri_len, link_key(uri, uri_len));
+}
+
+uint64_t cfr_hyperlink_key(const CfrPage *page, uint16_t id)
+{
+    if (!page || id == 0 || id > page->hyperlinks.count)
+        return 0;
+    return page->hyperlinks.keys[id];
 }
 
 size_t cfr_hyperlink_read(const CfrPage *page, uint16_t id,
@@ -200,9 +230,10 @@ uint16_t cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
     const CfrHyperlinkTable *t = &src->hyperlinks;
     /* Intern straight out of the source arena: reading through a fixed
      * stack buffer would truncate a URI longer than the buffer and
-     * re-intern the truncated prefix as a different link. */
-    return cfr_hyperlink_intern(vt, dst, t->data + t->offsets[id],
-                                t->lengths[id]);
+     * re-intern the truncated prefix as a different link. The stored key
+     * is the URI's hash already, so it is not computed again. */
+    return intern_keyed(vt, dst, t->data + t->offsets[id], t->lengths[id],
+                        t->keys[id]);
 }
 
 void cfr_hyperlink_free(CfrTerm *vt, CfrHyperlinkTable *t)
@@ -212,6 +243,7 @@ void cfr_hyperlink_free(CfrTerm *vt, CfrHyperlinkTable *t)
     cfr_dealloc(vt, t->data);
     cfr_dealloc(vt, t->offsets);
     cfr_dealloc(vt, t->lengths);
+    cfr_dealloc(vt, t->keys);
     cfr_dealloc(vt, t->dedup_index);
     memset(t, 0, sizeof(*t));
 }

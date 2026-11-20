@@ -116,9 +116,13 @@ typedef struct
 
 /* URIs are interned per page. Cells reference an entry by uint16_t id;
  * id 0 means "no link". `data` is a bump-allocated byte arena; offsets[id]
- * and lengths[id] locate each entry. dedup_index hashes URI bytes (FNV-1a)
- * to an id so identical URIs share a slot — this gives a renderer free
- * run-continuity (OSC 8 spec's primary use case for the `id=` parameter).
+ * and lengths[id] locate each entry. keys[id] is the entry's 64-bit
+ * content key (FNV-1a of the URI bytes, never 0): the one identity that
+ * means the same thing on every page, hashed once at intern time and
+ * reused for dedup, table growth and cross-page transfer. dedup_index maps
+ * a key to an id so identical URIs share a slot — this gives a renderer
+ * free run-continuity (OSC 8 spec's primary use case for the `id=`
+ * parameter).
  *
  * Slot value 0 in dedup_index means "empty"; non-zero values are ids.
  */
@@ -129,8 +133,9 @@ typedef struct
     uint32_t capacity;
     uint32_t *offsets;     /* [id] -> offset into data */
     uint32_t *lengths;     /* [id] -> URI byte length */
+    uint64_t *keys;        /* [id] -> content key, never 0 */
     uint16_t count;        /* number of interned URIs (id 1..count) */
-    uint16_t capacity_ids; /* offsets/lengths capacity */
+    uint16_t capacity_ids; /* offsets/lengths/keys capacity */
     uint16_t *dedup_index; /* open-addressed hash slot -> id, 0 = empty */
     uint32_t dedup_capacity;
 } CfrHyperlinkTable;
@@ -532,6 +537,9 @@ uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
                               const uint8_t *uri, uint32_t uri_len);
 size_t cfr_hyperlink_read(const CfrPage *page, uint16_t id,
                           uint8_t *out, size_t out_cap);
+/* The content key of `id` (see CfrHyperlinkTable), or 0 for id 0 or an id
+ * the page does not know. Equal URIs have equal keys on every page. */
+uint64_t cfr_hyperlink_key(const CfrPage *page, uint16_t id);
 /* Re-intern `id` from `src` into `dst`. Returns the dst-local id, or 0
  * when there is no link / the source id is unknown / on allocation
  * failure. Lossless: the URI is interned from the source arena. */
