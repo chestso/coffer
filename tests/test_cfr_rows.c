@@ -128,9 +128,49 @@ static void test_page_scoped_ids_resolve_per_row(void)
             const CfrCell *b = cfr_get_cell(vt, row + (int)CFR_SB_PAGE_ROWS, 0);
             if (a->hyperlink_id == b->hyperlink_id)
                 id_collision = true;
+            /* ...but the key tells the two links apart. */
+            ASSERT_TRUE(cfr_cell_hyperlink_key(vt, row, 0) != 0);
+            ASSERT_TRUE(cfr_cell_hyperlink_key(vt, row, 0) !=
+                        cfr_cell_hyperlink_key(vt, row + (int)CFR_SB_PAGE_ROWS, 0));
+        }
+        /* The key depends on the URI alone: a fresh terminal that only
+         * ever saw this link agrees, whichever page the row lives on. */
+        if (s % 23 == 0) {
+            CfrTerm *ref = make_term(2, 40, 0);
+            char osc[96];
+            snprintf(osc, sizeof(osc), "\x1b]8;;%s\x1b\\L", want);
+            feed(ref, osc);
+            ASSERT_TRUE(cfr_cell_hyperlink_key(ref, 0, 0) ==
+                        cfr_cell_hyperlink_key(vt, row, 0));
+            cfr_free(ref);
         }
     }
     ASSERT_TRUE(id_collision);
+    cfr_free(vt);
+}
+
+/* One link left open across many pages of scrollback: every row of it
+ * reads back the same key, however many tables it is spread over, and the
+ * unlinked rows around it read 0. */
+static void test_link_key_spans_pages(void)
+{
+    enum
+    {
+        LINES = 200
+    };
+    CfrTerm *vt = make_term(4, 40, 1000);
+    feed(vt, "plain\r\n\x1b]8;;https://example.com/long\x1b\\");
+    for (int i = 0; i < LINES; ++i)
+        feed(vt, "link\r\n");
+    feed(vt, "\x1b]8;;\x1b\\tail\r\n");
+
+    int sb = cfr_get_scrollback_lines(vt);
+    ASSERT_TRUE(sb > 3 * (int)CFR_SB_PAGE_ROWS);
+    uint64_t key = cfr_cell_hyperlink_key(vt, -sb + 1, 0);
+    ASSERT_TRUE(key != 0);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, -sb, 0), 0u); /* "plain" */
+    for (int i = 1; i <= LINES; ++i)
+        ASSERT_TRUE(cfr_cell_hyperlink_key(vt, -sb + i, 0) == key);
     cfr_free(vt);
 }
 
@@ -471,6 +511,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_unified_rows_bounds);
     RUN_TEST(test_row_width_is_per_row);
     RUN_TEST(test_page_scoped_ids_resolve_per_row);
+    RUN_TEST(test_link_key_spans_pages);
     RUN_TEST(test_selection_text_reads_rows_at_their_width);
     RUN_TEST(test_row_text_and_search_use_row_width);
     RUN_TEST(test_selection_extend_across_long_history);

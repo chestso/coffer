@@ -256,7 +256,7 @@ static void test_reflow_join_repushes_scrollback(void)
  * a straddling line makes: ring page -> old grid -> ring page (re-push)
  * and ring page -> old grid -> new grid (visible). The first cell of the
  * line carries all three and lives in history for the shrunken widths. */
-static void check_rich_cell(CfrTerm *vt, int row, int col)
+static void check_rich_cell(CfrTerm *vt, int row, int col, uint64_t key)
 {
     const CfrCell *cell = cfr_get_cell(vt, row, col);
     ASSERT_NOT_NULL(cell);
@@ -275,6 +275,7 @@ static void check_rich_cell(CfrTerm *vt, int row, int col)
     size_t n = cfr_cell_get_hyperlink(vt, row, col, uri, sizeof(uri) - 1);
     uri[n] = '\0';
     ASSERT_STR_EQ((const char *)uri, "https://example.com/r");
+    ASSERT_TRUE(cfr_cell_hyperlink_key(vt, row, col) == key);
 }
 
 static void test_reflow_straddle_carries_cell_attributes(void)
@@ -284,18 +285,20 @@ static void test_reflow_straddle_carries_cell_attributes(void)
              "\x1b[1;38;2;1;2;3me\xcc\x81"
              "123456789012345678901234567890123456789"); /* 40 cells */
     ASSERT_TRUE(cfr_row_is_continuation(vt, 3));
+    uint64_t key = cfr_cell_hyperlink_key(vt, 0, 0);
+    ASSERT_TRUE(key != 0);
 
     cfr_resize(vt, 4, 5); /* 8 rows of 5: the first four go to history */
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 4);
-    check_rich_cell(vt, -4, 0);
+    check_rich_cell(vt, -4, 0, key);
 
     cfr_resize(vt, 4, 8); /* 5 rows of 8: pop four, re-push one */
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 1);
-    check_rich_cell(vt, -1, 0);
+    check_rich_cell(vt, -1, 0, key);
 
     cfr_resize(vt, 4, 20); /* the whole line is visible again */
     ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
-    check_rich_cell(vt, 0, 0);
+    check_rich_cell(vt, 0, 0, key);
     cfr_free(vt);
 }
 
@@ -616,6 +619,8 @@ static void test_resize_carries_hyperlink(void)
     CfrTerm *vt = make_term(6, 10, true);
     feed(vt, "\x1b]8;;https://example.com/a\x1b\\0123456789012345\x1b]8;;\x1b\\");
     ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    uint64_t key = cfr_cell_hyperlink_key(vt, 0, 0);
+    ASSERT_TRUE(key != 0);
 
     /* Reflow: shrink, then grow back. */
     cfr_resize(vt, 6, 5);
@@ -628,6 +633,7 @@ static void test_resize_carries_hyperlink(void)
     n = cfr_cell_get_hyperlink(vt, 0, 0, buf, sizeof(buf) - 1);
     buf[n] = '\0';
     ASSERT_STR_EQ((const char *)buf, uri);
+    ASSERT_TRUE(cfr_cell_hyperlink_key(vt, 0, 0) == key);
     /* A cell outside the link run still has no link. */
     ASSERT_EQ(cfr_cell_get_hyperlink(vt, 0, 30, buf, sizeof(buf)),
               0u);
@@ -638,6 +644,7 @@ static void test_resize_carries_hyperlink(void)
     n = cfr_cell_get_hyperlink(vt, 0, 0, buf, sizeof(buf) - 1);
     buf[n] = '\0';
     ASSERT_STR_EQ((const char *)buf, uri);
+    ASSERT_TRUE(cfr_cell_hyperlink_key(vt, 0, 0) == key);
 
     /* And the scrollback push path, which used to read the URI through a
      * fixed 2 KiB stack buffer. */
@@ -649,6 +656,7 @@ static void test_resize_carries_hyperlink(void)
     n = cfr_cell_get_hyperlink(vt, -2, 0, buf, sizeof(buf) - 1);
     buf[n] = '\0';
     ASSERT_STR_EQ((const char *)buf, uri);
+    ASSERT_TRUE(cfr_cell_hyperlink_key(vt, -2, 0) == key);
     cfr_free(vt);
 }
 

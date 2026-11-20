@@ -555,6 +555,48 @@ static void test_osc8_distinct_uris(void)
     cfr_free(vt);
 }
 
+/* The key is the cross-cell link identity: 0 without a link or a cell,
+ * equal for equal URIs, different for different ones, and the same on a
+ * wide glyph's continuation cell. */
+static void test_osc8_hyperlink_key(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "N\x1b]8;;http://a\x07"
+             "A\x1b]8;;\x07"
+             "\x1b]8;;http://a\x07"
+             "B\x1b]8;;http://b\x07"
+             "C\x1b]8;;\x07"
+             "\xe4\xbd\xa0"); /* unlinked 你 */
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 0), 0u);
+    uint64_t ka = cfr_cell_hyperlink_key(vt, 0, 1);
+    uint64_t kb = cfr_cell_hyperlink_key(vt, 0, 2);
+    uint64_t kc = cfr_cell_hyperlink_key(vt, 0, 3);
+    ASSERT_TRUE(ka != 0);
+    ASSERT_TRUE(kc != 0);
+    ASSERT_TRUE(ka == kb);
+    ASSERT_TRUE(ka != kc);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 4), 0u); /* wide, unlinked */
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 70), 0u);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 80), 0u); /* off the row */
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 99, 0), 0u); /* off the grid */
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, -1, 0), 0u); /* no scrollback */
+    cfr_free(vt);
+
+    vt = make_term(24, 80);
+    feed(vt, "\x1b]8;;http://example.com\x07\xe4\xbd\xa0");
+    uint64_t kl = cfr_cell_hyperlink_key(vt, 0, 0);
+    ASSERT_TRUE(kl != 0);
+    ASSERT_TRUE(kl == cfr_cell_hyperlink_key(vt, 0, 1)); /* continuation */
+    cfr_free(vt);
+
+    /* Two terminals: the key depends on the URI alone. */
+    CfrTerm *other = make_term(5, 20);
+    feed(other, "\x1b]8;;http://zzz\x07z\x1b]8;;http://example.com\x07y");
+    ASSERT_TRUE(cfr_cell_hyperlink_key(other, 0, 1) == kl);
+    ASSERT_TRUE(cfr_cell_hyperlink_key(other, 0, 0) != kl);
+    cfr_free(other);
+}
+
 static void test_utf8_basic(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -1934,6 +1976,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_osc8_cjk_continuation);
     RUN_TEST(test_osc8_with_id_param);
     RUN_TEST(test_osc8_id_cap);
+    RUN_TEST(test_osc8_hyperlink_key);
     RUN_TEST(test_csi_sgr_reset);
     RUN_TEST(test_bel);
     RUN_TEST(test_style_intern_dedup);
