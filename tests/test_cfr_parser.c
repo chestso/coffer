@@ -597,6 +597,73 @@ static void test_osc8_hyperlink_key(void)
     cfr_free(other);
 }
 
+/* An open link must survive the active page changing under it. The pen's
+ * link is only an id into the page it was interned on, so a resize (new
+ * grid) or an altscreen switch (other grid) must not leave it dangling:
+ * the next print still carries the URI that was opened. The first link is
+ * printed so the page's table has a different entry at the id the open
+ * link would otherwise reuse. */
+static void expect_cell_uri(CfrTerm *vt, int row, int col, const char *want)
+{
+    uint8_t uri[64];
+    size_t n = cfr_cell_get_hyperlink(vt, row, col, uri, sizeof(uri) - 1);
+    uri[n] = '\0';
+    ASSERT_STR_EQ((const char *)uri, want);
+}
+
+static void test_osc8_open_link_survives_resize(void)
+{
+    CfrTerm *vt = make_term(6, 20);
+    feed(vt, "\x1b]8;;http://first\x07"
+             "F\x1b]8;;http://second\x07");
+    cfr_resize(vt, 6, 10);
+    feed(vt, "S");
+    expect_cell_uri(vt, 0, 1, "http://second");
+    cfr_free(vt);
+}
+
+static void test_osc8_open_link_survives_altscreen(void)
+{
+    CfrTerm *vt = make_term(6, 20);
+    feed(vt, "\x1b]8;;http://first\x07"
+             "F\x1b]8;;http://second\x07");
+    feed(vt, "\x1b[?1049hZ"); /* the alt page has its own table */
+    expect_cell_uri(vt, 0, 0, "http://second");
+    feed(vt, "\x1b[?1049l");
+    feed(vt, "M"); /* and back on the main page */
+    expect_cell_uri(vt, 0, 1, "http://second");
+    cfr_free(vt);
+}
+
+static void test_osc8_saved_cursor_link_survives_resize(void)
+{
+    CfrTerm *vt = make_term(6, 20);
+    feed(vt, "\x1b]8;;http://first\x07"
+             "F\x1b]8;;http://second\x07\x1b"
+             "7\x1b]8;;\x07");
+    cfr_resize(vt, 6, 10);
+    feed(vt, "\x1b"
+             "8S"); /* DECRC brings the second link back */
+    expect_cell_uri(vt, 0, 1, "http://second");
+    cfr_free(vt);
+}
+
+/* RIS drops the open link and both saved registers (ASan would flag a
+ * leaked reference), and a print after it carries no link. */
+static void test_osc8_reset_drops_open_link(void)
+{
+    CfrTerm *vt = make_term(6, 20);
+    feed(vt, "\x1b]8;;http://a\x07\x1b"
+             "7\x1b[?1049h\x1b]8;;http://b\x07\x1b"
+             "7");
+    cfr_reset(vt);
+    feed(vt, "X\x1b"
+             "8Y");
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 0), 0u);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 1), 0u);
+    cfr_free(vt);
+}
+
 static void test_utf8_basic(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -1977,6 +2044,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_osc8_with_id_param);
     RUN_TEST(test_osc8_id_cap);
     RUN_TEST(test_osc8_hyperlink_key);
+    RUN_TEST(test_osc8_open_link_survives_resize);
+    RUN_TEST(test_osc8_open_link_survives_altscreen);
+    RUN_TEST(test_osc8_saved_cursor_link_survives_resize);
+    RUN_TEST(test_osc8_reset_drops_open_link);
     RUN_TEST(test_csi_sgr_reset);
     RUN_TEST(test_bel);
     RUN_TEST(test_style_intern_dedup);

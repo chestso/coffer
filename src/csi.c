@@ -604,7 +604,7 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
                * and `CSI < s` / `CSI > s` are vendor extensions we
                * do not implement. */
         if (p->intermediate_count == 0)
-            *cfr_active_saved_cursor(vt) = vt->cursor;
+            cfr_cursor_assign(vt, cfr_active_saved_cursor(vt), &vt->cursor);
         break;
     case 'u':
         if (p->intermediate_count == 0) {

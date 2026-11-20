@@ -439,7 +439,7 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
     cell->style_id = cfr_style_intern(vt, vt->grid, &vt->cursor.pen);
     cell->width = (uint8_t)width;
     cell->flags = 0;
-    cell->hyperlink_id = vt->cursor.hyperlink_id;
+    cell->hyperlink_id = cfr_link_page_id(vt, vt->grid, vt->cursor.link);
 
     /* Track last printed codepoint for REP (CSI Ps b). */
     vt->last_char = cps[0];
@@ -612,7 +612,7 @@ size_t cfr_print_ascii_run(CfrTerm *vt, const uint8_t *bytes, size_t len)
     /* The pen is constant inside GROUND, so the run interns the style
      * once instead of per cell. */
     uint32_t style_id = cfr_style_intern(vt, vt->grid, &vt->cursor.pen);
-    uint16_t link_id = vt->cursor.hyperlink_id;
+    uint16_t link_id = cfr_link_page_id(vt, vt->grid, vt->cursor.link);
 
     int row = vt->cursor.row;
     int col = vt->cursor.col;

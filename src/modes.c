@@ -58,6 +58,17 @@ void cfr_cursor_set_style(CfrTerm *vt, CfrCursorShape shape, bool blink)
  * DECSC/DECRC, the mode-ish attributes come back too: apps like ncdu
  * turn off blink (?12l) and switch cursor shape in the alt screen and
  * never restore them, and 1049 is a screen-level save/restore. */
+void cfr_cursor_assign(CfrTerm *vt, CfrCursorState *dst,
+                       const CfrCursorState *src)
+{
+    if (dst == src)
+        return;
+    if (src->link)
+        src->link->refs++;
+    cfr_link_release(vt, dst->link);
+    *dst = *src;
+}
+
 void cfr_cursor_restore_full(CfrTerm *vt, const CfrCursorState *src)
 {
     cfr_cursor_restore(vt, src);
@@ -92,7 +103,7 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
 
     if (on) {
         if (save_restore_cursor)
-            vt->saved_cursor[0] = vt->cursor; /* normal-screen register */
+            cfr_cursor_assign(vt, &vt->saved_cursor[0], &vt->cursor); /* normal-screen register */
 
         /* Lazily allocate or resize the alt grid to current geometry. */
         if (!vt->altgrid ||
@@ -266,6 +277,9 @@ void cfr_reset(CfrTerm *vt)
     }
 
     /* Cursor + saved cursor: default pen, configured style. */
+    cfr_link_release(vt, vt->cursor.link);
+    cfr_link_release(vt, vt->saved_cursor[0].link);
+    cfr_link_release(vt, vt->saved_cursor[1].link);
     memset(&vt->cursor, 0, sizeof(vt->cursor));
     vt->cursor.visible = true;
     vt->cursor.blink = vt->default_blink;

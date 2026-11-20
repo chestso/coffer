@@ -236,6 +236,44 @@ uint16_t cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
                         t->keys[id]);
 }
 
+CfrLink *cfr_link_new(CfrTerm *vt, const uint8_t *uri, uint32_t uri_len)
+{
+    if (!uri || uri_len == 0)
+        return NULL;
+    CfrLink *l = cfr_alloc(vt, sizeof(*l) + uri_len);
+    if (!l)
+        return NULL;
+    memset(l, 0, sizeof(*l));
+    l->refs = 1;
+    l->len = uri_len;
+    l->key = link_key(uri, uri_len);
+    memcpy(l->uri, uri, uri_len);
+    return l;
+}
+
+void cfr_link_release(CfrTerm *vt, CfrLink *link)
+{
+    if (!link)
+        return;
+    CFR_BUG_CHECK(link->refs > 0, "link release: refcount underflow");
+    if (--link->refs == 0)
+        cfr_dealloc(vt, link);
+}
+
+uint16_t cfr_link_page_id(CfrTerm *vt, CfrPage *page, CfrLink *link)
+{
+    if (!link || !page)
+        return 0;
+    if (link->cache_serial == page->serial && page->serial != 0)
+        return link->cache_id;
+    uint16_t id = intern_keyed(vt, page, link->uri, link->len, link->key);
+    if (id != 0) {
+        link->cache_serial = page->serial;
+        link->cache_id = id;
+    }
+    return id;
+}
+
 void cfr_hyperlink_free(CfrTerm *vt, CfrHyperlinkTable *t)
 {
     if (!t)

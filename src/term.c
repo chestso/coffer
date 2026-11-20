@@ -135,6 +135,9 @@ void cfr_free(CfrTerm *vt)
         cfr_img_store_free(vt, vt->images);
 
     cfr_dealloc(vt, vt->tabstops);
+    cfr_link_release(vt, vt->cursor.link);
+    cfr_link_release(vt, vt->saved_cursor[0].link);
+    cfr_link_release(vt, vt->saved_cursor[1].link);
     cfr_dealloc(vt, vt->title);
     cfr_dealloc(vt, vt->parser.osc_buf);
     cfr_dealloc(vt, vt->parser.apc_buf);

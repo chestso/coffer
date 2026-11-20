@@ -150,6 +150,7 @@ typedef struct CfrPage
     uint16_t row_count;
     uint16_t row_capacity;
     uint16_t _pad;
+    uint64_t serial; /* unique per page for the term's lifetime; 0 = none */
 
     CfrCell *cells;    /* row_capacity * cols */
     uint32_t *lineage; /* per-row logical-line id; 0 = blank/unwritten */
@@ -237,14 +238,33 @@ typedef struct
 
 #define CFR_CLUSTER_MAX 16 /* max codepoints in a single grapheme cluster */
 
+/* The OSC 8 link the pen is inside. A page-scoped hyperlink id is useless
+ * here: the pen outlives the page it was opened on (reflow replaces the
+ * grid, altscreen swaps it, DECSC saves it for later), so the pen holds
+ * the URI itself — an immutable, reference-counted block shared by the
+ * cursor and its saved registers — and interns it into whichever page it
+ * is printing on. `cache_*` remembers the id on the last page it was
+ * interned into, so a print run costs one compare per cell, not a URI
+ * lookup. Ids are append-only within a page and `serial` is never reused,
+ * so a cache hit is always right. */
+typedef struct CfrLink
+{
+    uint32_t refs;
+    uint32_t len;
+    uint64_t key;          /* content key, as in CfrHyperlinkTable */
+    uint64_t cache_serial; /* CfrPage.serial of the cached page, 0 = none */
+    uint16_t cache_id;
+    uint8_t uri[]; /* len bytes, not NUL-terminated */
+} CfrLink;
+
 typedef struct
 {
     int row, col; /* col ∈ [0..cols]; == cols is the deferred-wrap phantom */
     bool visible;
     bool blink;
-    CfrCursorShape shape;  /* DECSCUSR cursor style */
-    CfrStyle pen;          /* current SGR pen */
-    uint16_t hyperlink_id; /* OSC 8 active link, 0 = none */
+    CfrCursorShape shape; /* DECSCUSR cursor style */
+    CfrStyle pen;         /* current SGR pen */
+    CfrLink *link;        /* OSC 8 active link, NULL = none */
     /* Pending grapheme cluster — codepoints accumulated since the last
      * boundary. Committed as a single cell on the next break or on any
      * forced flush (CSI dispatch, C0 control, etc.). */
@@ -293,6 +313,7 @@ struct CfrTerm
      * register, matching xterm — so a TUI's DECSC inside the alt screen can't
      * clobber the cursor that altscreen 1049 stashed for the normal screen. */
     CfrCursorState saved_cursor[2];
+    uint64_t page_serial; /* last CfrPage.serial handed out */
 
     /* Initial cursor style — DECSCUSR `CSI 7 SP q` and RIS restore it
      * (xterm: the cursorBlink / cursorUnderLine / cursorBar resources). */
@@ -419,6 +440,11 @@ struct CfrTerm
     const char *terminal_name;
 };
 
+/* Copy a cursor state (DECSC, DECRC, altscreen save): a plain struct copy
+ * plus the link's reference count. Never assign a CfrCursorState directly. */
+void cfr_cursor_assign(CfrTerm *vt, CfrCursorState *dst,
+                       const CfrCursorState *src);
+
 /* The saved-cursor register for the currently active screen. DECSC/DECRC and
  * CSI s/u operate on this; altscreen 1049 always uses saved_cursor[0]. */
 static inline CfrCursorState *cfr_active_saved_cursor(CfrTerm *vt)
@@ -439,7 +465,7 @@ static inline void cfr_cursor_restore(CfrTerm *vt, const CfrCursorState *src)
     bool visible = vt->cursor.visible;
     bool blink = vt->cursor.blink;
     CfrCursorShape shape = vt->cursor.shape;
-    vt->cursor = *src;
+    cfr_cursor_assign(vt, &vt->cursor, src);
     vt->cursor.visible = visible;
     vt->cursor.blink = blink;
     vt->cursor.shape = shape;
@@ -546,6 +572,14 @@ uint64_t cfr_hyperlink_key(const CfrPage *page, uint16_t id);
 uint16_t cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
                                 const CfrPage *src, uint16_t id);
 void cfr_hyperlink_free(CfrTerm *vt, CfrHyperlinkTable *t);
+
+/* The pen's link (see CfrLink). new returns NULL for an empty URI or on
+ * allocation failure, which reads as "no link". release accepts NULL. */
+CfrLink *cfr_link_new(CfrTerm *vt, const uint8_t *uri, uint32_t uri_len);
+void cfr_link_release(CfrTerm *vt, CfrLink *link);
+/* The id of `link` in `page`'s table, interning it on first use. 0 for no
+ * link, no page, or a failed intern (not cached, so it is retried). */
+uint16_t cfr_link_page_id(CfrTerm *vt, CfrPage *page, CfrLink *link);
 
 /* Parser entry. */
 void cfr_parser_init(CfrParser *p);

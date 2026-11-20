@@ -38,6 +38,7 @@ CfrPage *cfr_page_new(CfrTerm *vt, int rows, int cols)
     p->cols = (uint16_t)cols;
     p->row_capacity = (uint16_t)rows;
     p->row_count = (uint16_t)rows;
+    p->serial = ++vt->page_serial;
 
     /* `storage` is the trailing flexible array. */
     uint8_t *base = (uint8_t *)p + header_bytes;

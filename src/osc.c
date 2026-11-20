@@ -51,20 +51,17 @@ static void osc8_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
         sep++;
     if (sep >= body_len) {
         /* Malformed — no second ';'. Treat as unlink (defensive). */
-        vt->cursor.hyperlink_id = 0;
+        cfr_link_release(vt, vt->cursor.link);
+        vt->cursor.link = NULL;
         return;
     }
     const uint8_t *uri = body + sep + 1;
     size_t uri_len = body_len - sep - 1;
 
-    if (uri_len == 0) {
-        vt->cursor.hyperlink_id = 0;
-        return;
-    }
-    /* Lazy grid alloc — interning lives on the active grid page. */
-    cfr_grid_ensure(vt);
-    vt->cursor.hyperlink_id =
-        cfr_hyperlink_intern(vt, vt->grid, uri, (uint32_t)uri_len);
+    /* The pen holds the URI itself; it is interned into whichever page
+     * the next print lands on (see CfrLink). */
+    cfr_link_release(vt, vt->cursor.link);
+    vt->cursor.link = cfr_link_new(vt, uri, (uint32_t)uri_len);
 }
 
 static void set_title(CfrTerm *vt, const uint8_t *data, size_t len)

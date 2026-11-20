@@ -28,7 +28,7 @@ void cfr_esc_dispatch(CfrTerm *vt, uint8_t final)
 
     switch (final) {
     case '7':
-        *cfr_active_saved_cursor(vt) = vt->cursor;
+        cfr_cursor_assign(vt, cfr_active_saved_cursor(vt), &vt->cursor);
         break; /* DECSC */
     case '8':  /* DECRC */
         cfr_cursor_restore(vt, cfr_active_saved_cursor(vt));
