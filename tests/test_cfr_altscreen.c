@@ -510,6 +510,53 @@ static void test_altscreen_restores_cursor_shape(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Page-scoped tables restart with every alt-screen session            */
+/* ------------------------------------------------------------------ */
+
+/* The intern tables of a page only ever grow, so the alt page of the last
+ * session must not be reused: each entry starts on a page whose tables are
+ * empty. One link and one style per session, 300 sessions, and the live
+ * (alt) page never holds more than that session's entries. */
+static void test_altscreen_tables_restart_each_session(void)
+{
+    CfrTerm *vt = make_term(5, 20);
+    for (int i = 0; i < 300; ++i) {
+        char buf[96];
+        snprintf(buf, sizeof(buf),
+                 "\x1b[?1049h\x1b]8;;http://s/%d\x07"
+                 "\x1b[38;2;%d;1;2mX\x1b]8;;\x07\x1b[0m",
+                 i, i % 256);
+        feed(vt, buf);
+        ASSERT_TRUE(cfr_is_altscreen(vt));
+        ASSERT_EQ(vt->grid->hyperlinks.count, (uint16_t)1);
+        ASSERT_EQ(vt->grid->styles.count, 2u); /* default + the one pen */
+
+        uint8_t uri[32];
+        size_t n = cfr_cell_get_hyperlink(vt, 0, 0, uri, sizeof(uri) - 1);
+        uri[n] = '\0';
+        snprintf(buf, sizeof(buf), "http://s/%d", i);
+        ASSERT_STR_EQ((const char *)uri, buf);
+        feed(vt, "\x1b[?1049l");
+        ASSERT_FALSE(cfr_is_altscreen(vt));
+    }
+    cfr_free(vt);
+}
+
+/* A link left open across the switch lands in the new page's table. */
+static void test_altscreen_open_link_in_fresh_page(void)
+{
+    CfrTerm *vt = make_term(5, 20);
+    feed(vt, "\x1b[?1049h\x1b]8;;http://old\x07q\x1b[?1049l");
+    feed(vt, "\x1b]8;;http://carried\x07\x1b[?1049hZ");
+    uint8_t uri[32];
+    size_t n = cfr_cell_get_hyperlink(vt, 0, 0, uri, sizeof(uri) - 1);
+    uri[n] = '\0';
+    ASSERT_STR_EQ((const char *)uri, "http://carried");
+    ASSERT_EQ(vt->grid->hyperlinks.count, (uint16_t)1);
+    cfr_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -530,6 +577,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_altscreen_restores_modes_array);
     RUN_TEST(test_altscreen_no_mode_restore_on_47);
     RUN_TEST(test_altscreen_restores_cursor_shape);
+    RUN_TEST(test_altscreen_tables_restart_each_session);
+    RUN_TEST(test_altscreen_open_link_in_fresh_page);
 
     TEST_SUMMARY();
 }

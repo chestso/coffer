@@ -105,36 +105,25 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
         if (save_restore_cursor)
             cfr_cursor_assign(vt, &vt->saved_cursor[0], &vt->cursor); /* normal-screen register */
 
-        /* Lazily allocate or resize the alt grid to current geometry. */
-        if (!vt->altgrid ||
-            vt->altgrid->cols != vt->cols ||
-            vt->altgrid->row_capacity != vt->rows) {
-            if (vt->altgrid) {
-                cfr_page_free(vt, vt->altgrid);
-                vt->altgrid = NULL;
-            }
-            vt->altgrid = cfr_page_new(vt, vt->rows, vt->cols);
-            if (!vt->altgrid)
-                return; /* OOM — leave altscreen flag off */
+        /* Every entry starts on a brand-new alt page. Clearing the cells
+         * of the page left over from the last session would keep its
+         * style, grapheme and hyperlink tables, which only ever grow, so
+         * a program that is entered and left again and again (an editor,
+         * a pager) would fill them for good. A fresh page also carries a
+         * fresh serial, which retires every cached link id. */
+        if (vt->altgrid) {
+            cfr_page_free(vt, vt->altgrid);
+            vt->altgrid = NULL;
         }
+        vt->altgrid = cfr_page_new(vt, vt->rows, vt->cols);
+        if (!vt->altgrid)
+            return; /* OOM — leave altscreen flag off */
 
         /* Swap. The current grid is preserved in vt->altgrid; the
          * alt grid becomes active. */
         CfrPage *tmp = vt->grid;
         vt->grid = vt->altgrid;
         vt->altgrid = tmp;
-
-        /* Clear the newly-active alt grid so each altscreen entry
-         * starts with a blank slate.  When the altgrid was just
-         * allocated by cfr_page_new it is already zeroed; this handles
-         * the reuse case where the altgrid still holds data from a
-         * previous altscreen session. */
-        if (vt->grid) {
-            memset(vt->grid->cells, 0,
-                   (size_t)vt->grid->row_capacity * vt->grid->cols * sizeof(CfrCell));
-            memset(vt->grid->lineage, 0,
-                   (size_t)vt->grid->row_capacity * sizeof(uint32_t));
-        }
 
         vt->in_altscreen = true;
         vt->modes[CFR_MODE_ALTSCREEN] = true;
