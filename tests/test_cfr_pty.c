@@ -43,40 +43,43 @@ static void drain_pty(CfrTerm *vt, PtyContext *pty, int timeout_ms)
     long long deadline = now_ms() + timeout_ms;
     char buf[4096];
 #ifdef _WIN32
-    /* On Windows, use WaitForMultipleObjects on the output handle and
-     * the child process handle. No fd-based poll available. */
+    /* The shared Windows PTY owns a reader thread; wait on its data event
+     * and the child process handle, then drain the accumulated buffer. */
     HANDLE handles[2];
-    handles[0] = (HANDLE)pty_get_output_handle(pty);
+    handles[0] = (HANDLE)pty_get_data_event(pty);
     handles[1] = (HANDLE)pty_get_process_handle(pty);
+
+    /* Drain everything currently buffered. */
+#define DRAIN_ALL()                                        \
+    do {                                                   \
+        ssize_t n_;                                        \
+        while ((n_ = pty_read(pty, buf, sizeof(buf))) > 0) \
+            cfr_input_write(vt, (const uint8_t *)buf,      \
+                            (size_t)n_);                   \
+    } while (0)
+
     while (now_ms() < deadline) {
         int wait = (int)(deadline - now_ms());
         if (wait <= 0)
             break;
-        DWORD r = WaitForMultipleObjects(2, handles, FALSE,
-                                         (DWORD)wait);
+        DWORD r = WaitForMultipleObjects(2, handles, FALSE, (DWORD)wait);
         if (r == WAIT_TIMEOUT) {
             if (!pty_is_running(pty)) {
-                ssize_t n = pty_read(pty, buf, sizeof(buf));
-                if (n > 0)
-                    cfr_input_write(vt, (const uint8_t *)buf, (size_t)n);
+                DRAIN_ALL();
                 break;
             }
             continue;
         }
         if (r == WAIT_OBJECT_0) {
-            /* Output handle is readable */
-            ssize_t n = pty_read(pty, buf, sizeof(buf));
-            if (n <= 0)
+            DRAIN_ALL();
+            if (pty_is_eof(pty))
                 break;
-            cfr_input_write(vt, (const uint8_t *)buf, (size_t)n);
         } else {
-            /* Process exited or error — drain final bytes */
-            ssize_t n = pty_read(pty, buf, sizeof(buf));
-            if (n > 0)
-                cfr_input_write(vt, (const uint8_t *)buf, (size_t)n);
+            DRAIN_ALL();
             break;
         }
     }
+#undef DRAIN_ALL
 #else
     int fd = pty_get_master_fd(pty);
     while (now_ms() < deadline) {
@@ -106,6 +109,77 @@ static void drain_pty(CfrTerm *vt, PtyContext *pty, int timeout_ms)
     }
 #endif
 }
+
+#ifdef _WIN32
+/* Read raw PTY bytes into `out` until the child exits or the timeout
+ * elapses.  Used by the passthrough probe; drain_pty() feeds the engine
+ * instead. */
+static size_t capture_pty(PtyContext *pty, char *out, size_t cap,
+                          int timeout_ms)
+{
+    size_t total = 0;
+    long long deadline = now_ms() + timeout_ms;
+    char buf[4096];
+    HANDLE handles[2];
+    handles[0] = (HANDLE)pty_get_data_event(pty);
+    handles[1] = (HANDLE)pty_get_process_handle(pty);
+
+#define APPEND_ALL()                                             \
+    do {                                                         \
+        ssize_t n_;                                              \
+        while ((n_ = pty_read(pty, buf, sizeof(buf))) > 0) {     \
+            size_t room = cap - 1 - total;                       \
+            size_t copy = (size_t)n_ < room ? (size_t)n_ : room; \
+            memcpy(out + total, buf, copy);                      \
+            total += copy;                                       \
+        }                                                        \
+    } while (0)
+
+    while (now_ms() < deadline) {
+        int wait = (int)(deadline - now_ms());
+        if (wait <= 0)
+            break;
+        DWORD r = WaitForMultipleObjects(2, handles, FALSE, (DWORD)wait);
+        if (r == WAIT_TIMEOUT) {
+            if (!pty_is_running(pty)) {
+                APPEND_ALL();
+                break;
+            }
+            continue;
+        }
+        APPEND_ALL();
+        if (r == WAIT_OBJECT_0 + 1 || pty_is_eof(pty))
+            break;
+    }
+#undef APPEND_ALL
+    out[total] = '\0';
+    return total;
+}
+
+static int contains_bytes(const char *hay, size_t n, const char *needle,
+                          size_t nlen)
+{
+    if (nlen == 0 || n < nlen)
+        return 0;
+    for (size_t i = 0; i + nlen <= n; i++)
+        if (memcmp(hay + i, needle, nlen) == 0)
+            return 1;
+    return 0;
+}
+
+/* Child mode for the passthrough probe. */
+static int emit_sequences(void)
+{
+    static const char seq[] =
+        "\x1bP1;2;3qHELLO\x1b\\" /* DCS (sixel) */
+        "\x1b_Gi=1;AAAA\x1b\\"   /* APC (kitty graphics) */
+        "\x1b]5555;GHELLO\x07";  /* OSC fallback carrier */
+    DWORD written = 0;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    WriteFile(out, seq, (DWORD)(sizeof(seq) - 1), &written, NULL);
+    return 0;
+}
+#endif
 
 /* Search the visible grid for a UTF-8 substring (ASCII-only callers).
  * Returns row index of first occurrence, or -1. */
@@ -440,12 +514,50 @@ static void test_scrollback_push(void)
 #endif
 }
 
+static void test_conpty_passthrough(void)
+{
+#ifdef _WIN32
+    /* Re-exec this test binary in child mode so the probe needs no
+     * external shell or printf. */
+    char self[MAX_PATH * 2];
+    DWORD n = GetModuleFileNameA(NULL, self, sizeof(self));
+    ASSERT_TRUE(n > 0 && n < sizeof(self));
+
+    char *const argv[] = { self, "--emit-sequences", NULL };
+    PtyContext *pty = pty_create(24, 80, argv);
+    ASSERT_NOT_NULL(pty);
+    ASSERT_TRUE(pty_conpty_backend() != NULL);
+
+    char raw[8192];
+    size_t len = capture_pty(pty, raw, sizeof(raw), 2000);
+    const char *backend = pty_conpty_backend();
+    int bundled = strcmp(backend, "bundled") == 0;
+    pty_destroy(pty);
+
+    ASSERT_TRUE(len > 0);
+    ASSERT_TRUE(contains_bytes(raw, len, "\x1b]5555;", 7));
+    if (bundled) {
+        ASSERT_TRUE(contains_bytes(raw, len, "\x1bP", 2));
+        ASSERT_TRUE(contains_bytes(raw, len, "\x1b_", 2));
+    } else {
+        ASSERT_FALSE(contains_bytes(raw, len, "\x1bP", 2));
+        ASSERT_FALSE(contains_bytes(raw, len, "\x1b_", 2));
+    }
+#else
+    printf("    (skipping on POSIX: ConPTY-specific)\n");
+#endif
+}
+
 /* ------------------------------------------------------------------ */
 /* Entry point                                                         */
 /* ------------------------------------------------------------------ */
 
 int main(int argc, char *argv[])
 {
+#ifdef _WIN32
+    if (argc > 1 && strcmp(argv[1], "--emit-sequences") == 0)
+        return emit_sequences();
+#endif
     test_parse_args(argc, argv);
 
     /* Required before pty_create — pty.c installs a SIGCHLD handler
@@ -456,6 +568,7 @@ int main(int argc, char *argv[])
     }
 
     printf("Running test_cfr_pty\n");
+    RUN_TEST(test_conpty_passthrough);
     RUN_TEST(test_echo_hello);
     RUN_TEST(test_sgr_red);
     RUN_TEST(test_tput_cursor);

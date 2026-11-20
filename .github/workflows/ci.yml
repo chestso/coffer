@@ -103,6 +103,7 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-autotools
             mingw-w64-ucrt-x86_64-pkgconf
+            unzip
             git
 
       - name: Build
@@ -112,11 +113,26 @@ jobs:
           # Compile terminfo so PTY tests can resolve coffer-vty-256color
           tic -x -o "${PWD}/build/terminfo" data/coffer.ti
 
+      - name: Verify bundled ConPTY
+        shell: msys2 {0}
+        run: |
+          ./build/src/coffer.exe --conpty-info | tee conpty-info.txt
+          grep -q '^backend=bundled$' conpty-info.txt
+          grep -q '^passthrough=yes$' conpty-info.txt
+          grep -q '^version=1\.' conpty-info.txt
+
       - name: Run tests
         shell: msys2 {0}
         run: |
           export TERMINFO_DIRS="${PWD}/build/terminfo"
           make -C build check
+
+      - name: Run tests with system conhost fallback
+        shell: msys2 {0}
+        run: |
+          export TERMINFO_DIRS="${PWD}/build/terminfo"
+          export COFFER_CONPTY=system
+          ./build/tests/test_cfr_pty.exe -v
 
       - name: Upload test logs on failure
         if: failure()
@@ -142,7 +158,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            autoconf automake libtool make pkg-config
+            autoconf automake libtool make pkg-config unzip
 
       - name: Build dist tarball
         run: |

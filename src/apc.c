@@ -6,7 +6,9 @@
  *   'G' → kitty graphics protocol (graphics.c)
  *   *   → Lottie animation protocol (lottie.c)
  *
- * On Windows, OSC 5555 routes to the same dispatcher (ConPTY strips APC).
+ * On Windows, OSC 5555 routes to the same dispatcher.  The bundled
+ * OpenConsole passes APC through, but the system conhost fallback strips
+ * it, so OSC 5555 remains the portable carrier.
  */
 
 #include "coffer_internal.h"

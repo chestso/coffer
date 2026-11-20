@@ -5,13 +5,12 @@
 #include <stddef.h>
 
 #ifdef _WIN32
-#include <basetsd.h>
-typedef SSIZE_T ssize_t;
+/* The Windows PTY layer is shared with the coffer CLI. */
+#include "pty.h"
 #else
 #include <sys/types.h>
-#endif
 
-/* Opaque — defined in platform-specific pty.c / pty_w32.c */
+/* Opaque — defined in pty.c */
 typedef struct PtyContext PtyContext;
 
 /**
@@ -110,30 +109,6 @@ void pty_signal_drain(void);
  */
 int pty_get_child_pid(PtyContext *ctx);
 
-#ifdef _WIN32
-/**
- * Get the child process handle for WaitForMultipleObjects.
- *
- * @param ctx PTY context
- * @return Process HANDLE cast to void*, or NULL
- */
-void *pty_get_process_handle(PtyContext *ctx);
-
-/**
- * Get the output read handle for ReadFile / WaitForMultipleObjects.
- *
- * @param ctx PTY context
- * @return Read handle cast to void*, or NULL
- */
-void *pty_get_output_handle(PtyContext *ctx);
-
-/**
- * Close the pseudo-console to unblock any pending ReadFile.
- *
- * Call this before waiting for the reader thread to exit on shutdown.
- * Safe to call multiple times.
- */
-void pty_close_console(PtyContext *ctx);
-#endif
+#endif /* !_WIN32 */
 
 #endif /* COFFER_PTY_H */

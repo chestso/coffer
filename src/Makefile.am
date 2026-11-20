@@ -47,7 +47,7 @@ libcoffer_a_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src -I$(top_srcdi
 # The CLI: a headless PTY inspector that drives the library. It links the
 # static library next door, so `make` in src/ builds both.
 coffer_SOURCES = coffer.c
-coffer_CPPFLAGS = -I$(top_srcdir)/include
+coffer_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src
 coffer_LDADD = libcoffer.a -lm
 
 # automake does not ship man_MANS on its own.
@@ -59,7 +59,10 @@ coffer_CPPFLAGS += $(THORVG_CFLAGS)
 coffer_LDADD += $(THORVG_LIBS)
 endif
 
-# The PTY layer uses the Win32 ConPTY API directly.
+# Windows PTY + bundled ConPTY loader, shared with test_cfr_pty.
 if HOST_WINDOWS
-coffer_LDADD += -lkernel32
+noinst_LIBRARIES = libcofferpty.a
+libcofferpty_a_SOURCES = pty_w32.c conpty.c pty.h conpty.h
+libcofferpty_a_CPPFLAGS = -I$(top_srcdir)/src
+coffer_LDADD += libcofferpty.a -lkernel32 -lversion
 endif

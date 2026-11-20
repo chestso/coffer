@@ -141,6 +141,24 @@ embedded within other control string contexts.
 experimental terminals. Not a real corpus case — no known applications
 emit this pattern. Purely defensive.
 
+### Bundled ConPTY
+
+The CLI now loads the pinned `Microsoft.Windows.Console.ConPTY`
+`conpty.dll` + `OpenConsole.exe` bundle when available; system conhost is
+the fallback. Remaining work:
+
+- Portty now bundles 1.25.261109001, prefers the `Conpty*` exports, uses
+  flags 0 (the old `0x8` passthrough constant is
+  `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` in 1.25), and only reports the
+  bundled backend when `OpenConsole.exe` is present. Remaining: adopt
+  coffer's `conpty.lock` + fetch/update scripts instead of tracking the
+  binaries directly, and expose the package version in diagnostics.
+- Evaluate `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` and
+  `PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE` against coffer's width rules; add a
+  CLI switch only after a width-alignment test.
+- Consider dropping the OSC 5556 response carrier when the bundled backend
+  is active. It is harmless and still required for the system fallback.
+
 ### Kitty graphics protocol — remaining gaps
 
 The core protocol is implemented (`src/graphics.c`, tests in

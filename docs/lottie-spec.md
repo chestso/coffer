@@ -25,8 +25,9 @@ ESC _ <base64-json> ESC \
 
 Bytes: `\x1b` `_` `<base64-string>` `\x1b` `\`
 
-**Windows ConPTY fallback** — ConPTY strips APC sequences even in passthrough
-mode on some builds. On Windows, use OSC 5555 instead:
+**Windows ConPTY fallback** — The bundled OpenConsole passes APC through,
+but the system `conhost.exe` fallback strips it. On Windows, use OSC 5555
+when the bundle is unavailable:
 
 ```
 ESC ] 5 5 5 5 ; <base64-json> BEL

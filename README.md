@@ -114,21 +114,23 @@ compositing. See the portty README for renderer-side details.
 - **Window-size queries (XTWINOPS)** — `CSI 14 t`, `CSI 16 t`, and
   `CSI 18 t` report the text area in pixels, cell size in pixels, and text
   area in character cells respectively, matching xterm responses.
-- **Windows ConPTY note:** Windows ConPTY intercepts and re-serialises VT output
-  through conhost's VtEngine, which recognises CSI, OSC, and DCS but _not_ APC
-  (`ESC _`). APC sequences are silently dropped — the same limitation that
-  prevents the kitty image protocol from working on Windows (Windows Terminal
-  issue #8389, open since 2020). `PSEUDOCONSOLE_PASSTHROUGH_MODE` (flag 0x8,
-  Windows 11 22H2+) is intended to relay the raw VT stream unmodified, but on
-  some builds the flag is accepted by `CreatePseudoConsole` yet unknown
-  sequences are still stripped. As a workaround, the Lottie and kitty
-  graphics clients on Windows carry the same payload inside **OSC 5555**
-  (`ESC ] 5555 ; \<payload\> BEL`), which ConPTY does pass through because OSC
-  is a recognised VT family. coffer routes OSC code 5555 to
-  `cfr_apc_dispatch()`, which dispatches by first byte (`G` → kitty graphics,
-  else → Lottie), so the payload is processed identically regardless of
-  carrier. This mirrors how iTerm2's image protocol works on Windows
-  (OSC 1337) — encode image data in OSC instead of APC.
+- **Windows ConPTY note:** The system `conhost.exe` VtEngine recognises
+  CSI, OSC, and DCS but _not_ APC (`ESC _`), so APC sequences are silently
+  dropped and sixel/DCS may be re-serialised (Windows Terminal issue #8389).
+  The `coffer` CLI therefore loads the pinned
+  `Microsoft.Windows.Console.ConPTY` bundle (`conpty.dll` +
+  `OpenConsole.exe`) when it is available. OpenConsole's VtEngine passes
+  DCS, APC and unknown OSC through unmodified. `PSEUDOCONSOLE_PASSTHROUGH_MODE`
+  (`0x8`) is no longer the mechanism: in the 1.25 package that bit means
+  `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES`; passthrough is the default with
+  OpenConsole. When the bundle is absent the CLI falls back to system
+  conhost and **OSC 5555** (`ESC ] 5555 ; \<payload\> BEL`) remains the
+  portable carrier. coffer routes OSC code 5555 to `cfr_apc_dispatch()`,
+  which dispatches by first byte (`G` → kitty graphics, else → Lottie), so
+  the payload is processed identically regardless of carrier. This mirrors
+  how iTerm2's image protocol works on Windows (OSC 1337) — encode image
+  data in OSC instead of APC. See `data/conpty/README.md` for the pinned
+  version and update procedure.
 - **Ambiguous-width rendering** — `CfrConfig.ambiguous_wide` (or
   `cfr_set_ambiguous_wide()` at runtime) treats UAX #11 East Asian
   Ambiguous codepoints as 2 cells wide. The full Ambiguous range table
@@ -291,6 +293,10 @@ Install [MSYS2](https://www.msys2.org/), then in a UCRT64 shell (`msys2_shell.cm
 ```sh
 pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-autotools
 
+# One of these is needed to unpack the pinned Microsoft.Windows.Console.ConPTY
+# bundle; configure also accepts python3 if none of the archivers are present.
+pacman -S unzip        # or: libarchive (bsdtar)
+
 # Optional: ThorVG enables Lottie rasterization (auto-detected by configure)
 pacman -S mingw-w64-ucrt-x86_64-thorvg
 ```
@@ -323,9 +329,14 @@ To build manually inside an MSYS2 UCRT64 shell:
 mkdir build && cd build
 ../configure --prefix="$MINGW_PREFIX"       # ThorVG auto-detected; --disable-thorvg to skip
 make -j$(nproc)
-make check                                  # POSIX-only PTY tests are skipped automatically
+make check                                  # PTY tests use the bundled ConPTY
 make install
 ```
+
+Configure fetches `data/conpty/<arch>/` automatically when the pinned
+`conpty.dll` + `OpenConsole.exe` bundle is missing; `make fetch-conpty`
+does the same explicitly. `--with-conpty=system` builds without the bundle,
+and `--with-conpty=bundled` makes a missing bundle a hard error.
 
 > Note: building from outside an MSYS2 UCRT64 shell (e.g. plain git-bash) with
 > `--prefix="$MINGW_PREFIX"` fails because `/ucrt64` is not mounted and

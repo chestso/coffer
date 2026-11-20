@@ -1,0 +1,9 @@
+# Pinned Microsoft.Windows.Console.ConPTY bundle.
+#
+# This file is the single source of truth for the ConPTY version used by
+# coffer (and, later, portty). Update it with scripts/update_conpty.py;
+# do not edit the version by hand without updating the hash.
+CONPTY_PACKAGE=Microsoft.Windows.Console.ConPTY
+CONPTY_VERSION=1.25.261109001
+CONPTY_NUPKG_SHA256=3d77f535df848e44225c2a8912ac844fecb23f3057732b639f3034b587496f09
+CONPTY_URL=https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/1.25.261109001/microsoft.windows.console.conpty.1.25.261109001.nupkg

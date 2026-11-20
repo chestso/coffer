@@ -161,6 +161,38 @@ an empty
 .I VALUE
 unsets the variable, including a built-in.
 .TP
+\fB\-\-conpty\fR \fIMODE\fR
+Windows ConPTY backend:
+.BR auto " (default),"
+.BR bundled ,
+or
+.BR system .
+.B auto
+uses the pinned Microsoft.Windows.Console.ConPTY bundle when present and
+falls back to system
+.BR conhost.exe .
+.B bundled
+makes a missing bundle a hard error.
+.B system
+forces the fallback.
+Accepted but ignored on POSIX.
+.TP
+\fB\-\-conpty\-dir\fR \fIDIR\fR
+Look for
+.B conpty.dll
+and
+.B OpenConsole.exe
+in
+.IR DIR .
+.TP
+\fB\-\-conpty\-info\fR
+Print the selected ConPTY backend, package version, DLL/OpenConsole paths
+and whether passthrough is available, then exit.
+.TP
+\fB\-\-verbose\fR, \fB\-v\fR
+Log the PTY backend, child command line and other diagnostics to
+standard error.
+.TP
 \fB\-\-help\fR, \fB\-h\fR
 Show help (options and script commands) and exit.
 .TP
@@ -562,6 +594,22 @@ The child process sees
 .TP
 .B SHELL
 The program started when no command is given (POSIX).
+.TP
+.B COFFER_CONPTY
+Windows backend override:
+.BR system
+or
+.BR bundled .
+Equivalent to
+.BR \-\-conpty .
+.TP
+.B COFFER_CONPTY_DIR
+Directory containing
+.B conpty.dll
+and
+.BR OpenConsole.exe .
+Equivalent to
+.BR \-\-conpty\-dir .
 .PP
 The first three can be overridden with
 .BR \-\-env .
@@ -569,7 +617,17 @@ The first three can be overridden with
 POSIX systems use
 .BR forkpty (3).
 Windows (MSYS2 UCRT64) uses ConPTY, with a background thread reading
-the pseudo-console output pipe.
+the pseudo-console output pipe. The CLI prefers the pinned
+Microsoft.Windows.Console.ConPTY
+.B conpty.dll
++
+.B OpenConsole.exe
+bundle, which passes DCS, APC and unknown OSC through, and falls back to
+system
+.B conhost.exe
+when the bundle is absent. See
+.B data/conpty/README.md
+for the pinned version and update procedure.
 .SH BUGS
 On Windows, a
 .B \-\-env

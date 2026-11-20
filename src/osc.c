@@ -261,18 +261,16 @@ void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
             cfr_log(vt, CFR_LOG_WARN, "palette reset (OSC 104) not implemented yet");
         break;
     case 5555:
-        /* OSC 5555 — Lottie APC carrier for ConPTY on Windows.
+        /* OSC 5555 — APC carrier for the system ConPTY fallback.
          *
-         * Windows ConPTY strips APC (ESC _) sequences even with
-         * PSEUDOCONSOLE_PASSTHROUGH_MODE on some builds.  To get
-         * Lottie commands through, the client encodes the APC
-         * payload (base64 of the JSON command) inside OSC 5555,
-         * which ConPTY does pass through.  The body after the
-         * semicolon is the raw APC payload — NOT base64-encoded for
-         * the kitty graphics path (starts with G). For the Lottie
-         * path, the body IS base64-encoded JSON, and the Lottie
-         * handler decodes it internally. The APC router checks the
-         * first byte: G → graphics, else → lottie. */
+         * The bundled OpenConsole passes APC (ESC _) through, but the
+         * system conhost.exe fallback strips it.  Clients encode the APC
+         * payload inside OSC 5555, which conhost does pass through.  The
+         * body after the semicolon is the raw APC payload — NOT
+         * base64-encoded for the kitty graphics path (starts with G).
+         * For the Lottie path, the body IS base64-encoded JSON, and the
+         * Lottie handler decodes it internally. The APC router checks
+         * the first byte: G → graphics, else → lottie. */
         cfr_apc_dispatch(vt, body, body_len);
         break;
     default:

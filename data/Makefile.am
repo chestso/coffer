@@ -1,6 +1,22 @@
 terminfodir = $(datadir)/terminfo
 
-EXTRA_DIST = coffer.ti
+EXTRA_DIST = coffer.ti \
+    conpty/conpty.lock \
+    conpty/LICENSE \
+    conpty/NOTICE.md \
+    conpty/README.md
+
+# The pinned ConPTY DLL and OpenConsole live in libexec, not bin, so they
+# cannot collide with other MSYS2 packages.  The build-tree fallback and
+# the exe-directory search in conpty.c cover portable layouts.
+if HAVE_CONPTY_BUNDLE
+conptydir = $(libexecdir)/coffer
+conpty_DATA = conpty/$(CONPTY_ARCH)/conpty.dll \
+              conpty/$(CONPTY_ARCH)/OpenConsole.exe
+
+docconptydir = $(docdir)
+docconpty_DATA = conpty/LICENSE conpty/NOTICE.md conpty/README.md
+endif
 
 if !HOST_WINDOWS
 # tic creates the per-letter subdirectory (c/) but not the -o directory

@@ -43,6 +43,16 @@ all-local: version
 # correct version without .git.
 dist-hook:
 	printf '%s' '$(COFFER_VERSION)' > "$(distdir)/version"
+	"$(top_srcdir)/scripts/fetch_conpty.sh" --arch all
+	mkdir -p "$(distdir)/data/conpty"
+	for a in x64 arm64 x86; do \
+	    mkdir -p "$(distdir)/data/conpty/$$a"; \
+	    cp "$(top_srcdir)/data/conpty/$$a/conpty.dll" \
+	       "$(top_srcdir)/data/conpty/$$a/OpenConsole.exe" \
+	       "$(top_srcdir)/data/conpty/$$a/SHA256SUMS" \
+	       "$(distdir)/data/conpty/$$a/"; \
+	done
+	-cp "$(top_srcdir)/data/conpty/VERSION" "$(distdir)/data/conpty/"
 
 # The C sources the format targets own, as a NUL-separated find command.
 # third_party/ is deliberately excluded; it is vendored verbatim.
@@ -116,6 +126,27 @@ format-check:
 	if [ $$status -eq 0 ]; then echo "Format check passed."; \
 	else echo "Format check failed - run \`make -C build format\`." >&2; fi; \
 	exit $$status
+
+# --- ConPTY bundle -------------------------------------------------------
+# The pinned Microsoft.Windows.Console.ConPTY package is fetched on demand;
+# see data/conpty/README.md.  configure runs fetch-conpty automatically on
+# Windows when the bundle is missing.
+.PHONY: fetch-conpty fetch-conpty-all update-conpty check-conpty-update
+fetch-conpty:
+	@if test -n "$(CONPTY_ARCH)"; then \
+	    "$(top_srcdir)/scripts/fetch_conpty.sh" --arch "$(CONPTY_ARCH)"; \
+	else \
+	    "$(top_srcdir)/scripts/fetch_conpty.sh"; \
+	fi
+
+fetch-conpty-all:
+	"$(top_srcdir)/scripts/fetch_conpty.sh" --arch all
+
+update-conpty:
+	"$(top_srcdir)/scripts/update_conpty.py"
+
+check-conpty-update:
+	"$(top_srcdir)/scripts/update_conpty.py" --check
 
 # Bear target — produce compile_commands.json for clangd by intercepting
 # the build. Cleans first so bear sees every compile invocation.

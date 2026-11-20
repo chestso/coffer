@@ -7,6 +7,8 @@ TESTS = $(check_PROGRAMS)
 # It needs a POSIX pty and a shell, so ConPTY builds skip it.
 if !HOST_WINDOWS
 TESTS += test-coffer.sh
+else
+TESTS += test-coffer-w32.sh
 endif
 
 AM_TESTS_ENVIRONMENT = srcdir='$(srcdir)'; export srcdir;
@@ -21,8 +23,9 @@ endif
 
 # Platform-specific PTY implementation
 if HOST_WINDOWS
-PTY_SOURCE = pty_w32.c
-PTY_LDADD = -lkernel32
+# The Windows PTY and bundled-ConPTY loader are shared with the CLI.
+PTY_SOURCE =
+PTY_LDADD = $(top_builddir)/src/libcofferpty.a -lkernel32 -lversion
 else
 PTY_SOURCE = pty.c
 PTY_LDADD =
@@ -58,5 +61,5 @@ test_script_SOURCES = test_script.c test_common.c
 test_cfr_sync_output_SOURCES = test_cfr_sync_output.c test_common.c
 test_cfr_grid_gc_SOURCES = test_cfr_grid_gc.c test_common.c
 
-EXTRA_DIST = test_helpers.h common.h coffer_pty.h pty_w32.c zwj_sequences.h \
-    test-coffer.sh
+EXTRA_DIST = test_helpers.h common.h coffer_pty.h zwj_sequences.h \
+    test-coffer.sh test-coffer-w32.sh

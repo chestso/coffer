@@ -81,3 +81,10 @@ crush.json
 
 # --- Auto-fetched third-party headers ---
 /third_party/stb/stb_image.h
+
+# --- Pinned ConPTY bundle (fetched by scripts/fetch_conpty.sh) ---
+/data/conpty/.cache/
+/data/conpty/VERSION
+/data/conpty/*/conpty.dll
+/data/conpty/*/OpenConsole.exe
+/data/conpty/*/SHA256SUMS

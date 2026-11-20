@@ -29,10 +29,14 @@ From a coffer build tree:
 ```
 
 On Windows (MSYS2 UCRT64), use `scripts/build-ucrt64.sh`. The tool
-uses ConPTY on Windows and `forkpty` on POSIX. On Windows, a
-background reader thread does blocking `ReadFile` on the ConPTY
-output pipe and signals an event when data arrives, because
-anonymous pipes cannot be waited on with `WaitForMultipleObjects`.
+uses ConPTY on Windows and `forkpty` on POSIX. Configure fetches the
+pinned `Microsoft.Windows.Console.ConPTY` `conpty.dll` +
+`OpenConsole.exe` bundle into `data/conpty/<arch>/` when it is missing
+(`make fetch-conpty` does it explicitly); `--with-conpty=system` builds
+without it. On Windows, a background reader thread does blocking
+`ReadFile` on the ConPTY output pipe and signals an event when data
+arrives, because anonymous pipes cannot be waited on with
+`WaitForMultipleObjects`.
 
 The binary is built from `src/coffer.c` and linked against
 `libcoffer.a`; `make` builds both, and `make install` installs the
@@ -79,8 +83,20 @@ output.
 | `-k`, `--kbd-data`     | With the final dump, print the kitty keyboard protocol state    |
 | `-q`, `--quiet`        | With `-s`, print only the selected rows                         |
 | `--env KEY=VALUE`      | Set a child env var (repeatable, up to 64)                      |
+| `--conpty MODE`        | Windows backend: `auto` (default), `bundled`, or `system`       |
+| `--conpty-dir DIR`     | Directory containing `conpty.dll` + `OpenConsole.exe`           |
+| `--conpty-info`        | Print the selected ConPTY backend/version and exit              |
+| `-v`, `--verbose`      | Log the PTY backend, command line and diagnostics               |
 | `-h`, `--help`         | Show help (options and script commands) and exit                |
 | `--help-spec`          | Emit machine-readable flag + command listing and exit           |
+
+On Windows, `auto` uses the pinned `Microsoft.Windows.Console.ConPTY`
+bundle when it is installed (or found beside `coffer.exe` / via
+`COFFER_CONPTY_DIR`), and falls back to system `conhost.exe` otherwise.
+`bundled` makes a missing bundle a hard error; `system` forces the
+fallback. The bundle is fetched by `scripts/fetch_conpty.sh` and is
+installed under `$(libexecdir)/coffer`. On POSIX these options are
+accepted but have no effect.
 
 The initial wait always happens, with or without a script; a script that
 synchronizes with `wait-for` can pass a small value (`-w 0.5`). A replay
@@ -452,7 +468,9 @@ tooling.
    `cfr_input_write()` in 64 KiB chunks. Otherwise creates a PTY with
    the requested terminal size:
    - POSIX: `forkpty`
-   - Windows: `CreatePseudoConsole` (ConPTY)
+   - Windows: `CreatePseudoConsole` (ConPTY), normally through the pinned
+     `Microsoft.Windows.Console.ConPTY` `conpty.dll` + `OpenConsole.exe`
+     bundle; system `conhost.exe` is the fallback
 2. Forks and execs the child process (status 127 if the exec fails),
    unless the run is a feed-only replay
 3. Sets `TERM=xterm-256color`, `COLORTERM=truecolor`,

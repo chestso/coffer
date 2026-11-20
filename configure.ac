@@ -42,6 +42,105 @@ case "$host_os" in
 esac
 AM_CONDITIONAL([HOST_WINDOWS], [test "x$host_windows" = "xyes"])
 
+dnl ConPTY bundle (Windows only).  The pinned NuGet package is fetched by
+dnl scripts/fetch_conpty.sh; --with-conpty can force a backend or point at
+dnl an existing directory.
+AC_ARG_WITH([conpty],
+  [AS_HELP_STRING([--with-conpty=MODE|DIR],
+    [ConPTY backend: auto (default), bundled, system, or a directory
+     containing conpty.dll + OpenConsole.exe])],
+  [with_conpty=$withval],
+  [with_conpty=auto])
+
+CONPTY_ARCH=
+CONPTY_VERSION=
+conpty_build_dir=
+conpty_install_dir=
+have_conpty_bundle=no
+if test "x$host_windows" = "xyes"; then
+  case "$host_cpu" in
+    x86_64|amd64)          CONPTY_ARCH=x64 ;;
+    aarch64|arm64)         CONPTY_ARCH=arm64 ;;
+    i?86)                  CONPTY_ARCH=x86 ;;
+    *) AC_MSG_ERROR([unsupported Windows host CPU for ConPTY: $host_cpu]) ;;
+  esac
+
+  if test -f "$srcdir/data/conpty/conpty.lock"; then
+    . "$srcdir/data/conpty/conpty.lock"
+  fi
+
+  case "$with_conpty" in
+    yes|auto)
+      with_conpty=auto
+      conpty_build_dir=`cd "$srcdir" && pwd`/data/conpty/$CONPTY_ARCH
+      ;;
+    bundled)
+      conpty_build_dir=`cd "$srcdir" && pwd`/data/conpty/$CONPTY_ARCH
+      ;;
+    no|system)
+      with_conpty=system
+      ;;
+    *)
+      conpty_build_dir=$with_conpty
+      with_conpty=bundled
+      ;;
+  esac
+
+  if test "x$with_conpty" != "xsystem"; then
+    if test ! -f "$conpty_build_dir/conpty.dll" || \
+       test ! -f "$conpty_build_dir/OpenConsole.exe"; then
+      AC_MSG_NOTICE([ConPTY bundle missing for $CONPTY_ARCH; running scripts/fetch_conpty.sh])
+      if sh "$srcdir/scripts/fetch_conpty.sh" --arch "$CONPTY_ARCH"; then
+        :
+      else
+        if test "x$with_conpty" = "xbundled"; then
+          AC_MSG_ERROR([failed to fetch the ConPTY bundle; install unzip/bsdtar/7z/python or point --with-conpty at an existing directory])
+        fi
+        AC_MSG_WARN([ConPTY bundle unavailable; falling back to system conhost (DCS/APC stripped)])
+        with_conpty=system
+      fi
+    fi
+  fi
+
+  if test "x$with_conpty" != "xsystem" && \
+     test -f "$conpty_build_dir/conpty.dll" && \
+     test -f "$conpty_build_dir/OpenConsole.exe"; then
+    have_conpty_bundle=yes
+  fi
+
+  if test "x$with_conpty" != "xsystem"; then
+    # exec_prefix is still NONE at this point, so expand the default
+    # libexecdir against $prefix directly.  (A custom --libexecdir is
+    # honored when it does not contain ${exec_prefix}.)
+    if test "x$prefix" = xNONE; then
+      conpty_prefix=$ac_default_prefix
+    else
+      conpty_prefix=$prefix
+    fi
+    case "$libexecdir" in
+      '${exec_prefix}/libexec') conpty_install_dir="$conpty_prefix/libexec/coffer" ;;
+      *) conpty_install_dir="$libexecdir/coffer" ;;
+    esac
+    # Convert MSYS paths to Windows mixed paths for GetFileAttributesW /
+    # LoadLibraryExW.  cygpath is part of MSYS2; a no-op elsewhere.
+    if command -v cygpath >/dev/null 2>&1; then
+      conpty_build_dir=`cygpath -m "$conpty_build_dir"`
+      conpty_install_dir=`cygpath -m "$conpty_install_dir"`
+    fi
+    AC_DEFINE_UNQUOTED([COFFER_CONPTY_DIR], ["$conpty_install_dir"],
+      [Installed directory containing conpty.dll + OpenConsole.exe])
+    AC_DEFINE_UNQUOTED([COFFER_CONPTY_BUILDDIR], ["$conpty_build_dir"],
+      [Build-tree directory containing conpty.dll + OpenConsole.exe])
+  fi
+  if test "n$CONPTY_VERSION" != "n"; then
+    AC_DEFINE_UNQUOTED([COFFER_CONPTY_VERSION], ["$CONPTY_VERSION"],
+      [Pinned Microsoft.Windows.Console.ConPTY version])
+  fi
+fi
+AM_CONDITIONAL([HAVE_CONPTY_BUNDLE], [test "x$have_conpty_bundle" = "xyes"])
+AC_SUBST([CONPTY_ARCH])
+AC_SUBST([CONPTY_VERSION])
+
 dnl Programs
 dnl Whether the caller supplied CFLAGS, asked of the environment rather than
 dnl read off $CFLAGS: AC_USE_SYSTEM_EXTENSIONS above AC_REQUIREs AC_PROG_CC,

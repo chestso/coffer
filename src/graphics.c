@@ -227,10 +227,12 @@ static void k_emit_response(CfrTerm *vt, const char *msg)
     /* On POSIX: ESC _ G msg ESC \
      * On Windows: ESC ] 5556 ; G msg BEL
      *
-     * ConPTY strips APC (ESC _) in both directions, so kitty graphics
-     * responses must leave via the OSC 5556 carrier. The payload after
-     * the semicolon is the raw "G" + msg (NOT base64 — kitty's OSC
-     * carrier is raw, unlike Lottie's base64-encoded carrier). */
+     * The system conhost fallback strips APC (ESC _) in both directions,
+     * so kitty graphics responses leave via the OSC 5556 carrier.  The
+     * bundled OpenConsole accepts APC, but OSC 5556 remains compatible
+     * with both backends. The payload after the semicolon is the raw
+     * "G" + msg (NOT base64 — kitty's OSC carrier is raw, unlike
+     * Lottie's base64-encoded carrier). */
     char buf[288];
 #ifdef _WIN32
     int n = snprintf(buf, sizeof(buf), "\x1b]5556;G%s\x07", msg);
