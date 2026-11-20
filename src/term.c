@@ -39,11 +39,17 @@ static const CfrAllocator CFR_STDLIB_ALLOCATOR = {
 
 void *cfr_alloc(CfrTerm *vt, size_t size)
 {
-    return vt->alloc.alloc(size, vt->alloc.user);
+    void *p = vt->alloc.alloc(size, vt->alloc.user);
+    if (!p)
+        vt->alloc_failures++;
+    return p;
 }
 void *cfr_realloc(CfrTerm *vt, void *ptr, size_t size)
 {
-    return vt->alloc.realloc(ptr, size, vt->alloc.user);
+    void *p = vt->alloc.realloc(ptr, size, vt->alloc.user);
+    if (!p)
+        vt->alloc_failures++;
+    return p;
 }
 void cfr_dealloc(CfrTerm *vt, void *ptr)
 {
@@ -201,12 +207,25 @@ size_t cfr_input_write(CfrTerm *vt, const uint8_t *bytes, size_t len)
 {
     if (!vt || !bytes || len == 0)
         return 0;
-    cfr_parser_feed(vt, bytes, len);
+    /* Feed in slices, collecting the live grid's intern tables between
+     * them: one big write could otherwise intern past the hyperlink id
+     * cap before the first check. The parser keeps its state across
+     * calls, so slicing is invisible to it. */
+    for (size_t off = 0; off < len;) {
+        size_t n = len - off;
+        if (n > CFR_GRID_GC_SLICE_BYTES)
+            n = CFR_GRID_GC_SLICE_BYTES;
+        cfr_parser_feed(vt, bytes + off, n);
+        off += n;
+        if (off < len)
+            cfr_grid_gc(vt);
+    }
     /* Commit any in-flight grapheme cluster so the grid is consistent
      * at every write boundary. A write can still split a base from its
      * modifiers (VS16, combining marks); print.c re-attaches those to
      * the previously printed cell, so chunked writes lose nothing. */
     cfr_flush_cluster(vt);
+    cfr_grid_gc(vt);
     return len;
 }
 

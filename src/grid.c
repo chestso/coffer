@@ -66,6 +66,47 @@ void cfr_page_free(CfrTerm *vt, CfrPage *page)
     cfr_dealloc(vt, page);
 }
 
+static bool grid_tables_oversized(const CfrPage *g)
+{
+    uint32_t cells = (uint32_t)g->row_capacity * g->cols;
+    uint32_t limit = 2u * cells;
+    if (limit < CFR_GRID_GC_MIN_ENTRIES)
+        limit = CFR_GRID_GC_MIN_ENTRIES;
+    uint32_t link_limit =
+        limit < CFR_GRID_GC_LINKS_MAX ? limit : CFR_GRID_GC_LINKS_MAX;
+    return g->styles.count > limit || g->graphemes.dedup_count > limit ||
+           g->hyperlinks.count > link_limit;
+}
+
+void cfr_grid_gc(CfrTerm *vt)
+{
+    CfrPage *old = vt->grid;
+    if (!old || !grid_tables_oversized(old))
+        return;
+
+    CfrPage *fresh = cfr_page_new(vt, old->row_capacity, old->cols);
+    if (!fresh)
+        return;
+    fresh->row_count = old->row_count;
+    memcpy(fresh->lineage, old->lineage,
+           (size_t)old->row_capacity * sizeof(uint32_t));
+
+    /* cfr_cell_reintern degrades an attribute when an allocation fails.
+     * Rebuilding with attributes lost would be worse than not rebuilding,
+     * so a failure anywhere keeps the old page. */
+    uint64_t failures = vt->alloc_failures;
+    size_t n = (size_t)old->row_capacity * old->cols;
+    for (size_t i = 0; i < n; ++i)
+        fresh->cells[i] = cfr_cell_reintern(vt, fresh, old, old->cells[i]);
+    if (vt->alloc_failures != failures) {
+        cfr_page_free(vt, fresh);
+        return;
+    }
+
+    vt->grid = fresh;
+    cfr_page_free(vt, old);
+}
+
 CfrCell cfr_cell_reintern(CfrTerm *vt, CfrPage *dst, const CfrPage *src,
                           CfrCell cell)
 {

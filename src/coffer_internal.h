@@ -73,6 +73,19 @@
  * not depend on how long the line under it is. */
 #define CFR_WORD_SCAN_CELLS 4096
 
+/* Live-grid table collection (grid.c, cfr_grid_gc). The style, grapheme and
+ * hyperlink tables of the live grid page only grow, so once one holds more
+ * than max(CFR_GRID_GC_MIN_ENTRIES, 2 * cells) entries the page is rebuilt
+ * with just the entries its cells still use. A screen has at most `cells`
+ * live entries, so a rebuild costs one screen and is paid for by at least
+ * as many new entries; the link limit is also held under
+ * CFR_GRID_GC_LINKS_MAX so the 65535-id cap is never reached between two
+ * checks (a check runs every CFR_GRID_GC_SLICE_BYTES of input, which can
+ * intern at most that many links). */
+#define CFR_GRID_GC_MIN_ENTRIES 4096u
+#define CFR_GRID_GC_LINKS_MAX   32768u
+#define CFR_GRID_GC_SLICE_BYTES 16384u
+
 /* Grapheme arena: codepoints / dedup table initial sizes (bytes). */
 #define CFR_ARENA_CP_INIT    1024u
 #define CFR_ARENA_DEDUP_INIT 64u
@@ -337,6 +350,7 @@ struct CfrTerm
     CfrCallbacks callbacks;
     void *callback_user;
     CfrAllocator alloc;
+    uint64_t alloc_failures; /* allocations that returned NULL, ever */
 
     /* Modes. Indexed by CfrMode enum value. */
     bool modes[32];
@@ -534,6 +548,13 @@ void cfr_dealloc(CfrTerm *vt, void *ptr);
 /* Page lifecycle. */
 CfrPage *cfr_page_new(CfrTerm *vt, int rows, int cols);
 void cfr_page_free(CfrTerm *vt, CfrPage *page);
+/* Rebuild the live grid page when its intern tables have outgrown the
+ * screen (see CFR_GRID_GC_*). A no-op when they have not, and when memory
+ * runs out mid-rebuild: the old page is kept and a later call retries.
+ * Safe at any byte boundary of the input — between bytes nothing but the
+ * grid's own cells holds a page-scoped id — and unsafe anywhere a caller
+ * holds a CfrCell pointer or a page id across the call. */
+void cfr_grid_gc(CfrTerm *vt);
 /* Re-intern one cell into `dst` from `src`. style_id, grapheme_id and
  * hyperlink_id are page-scoped, so every cross-page cell move (reflow,
  * clamp resize, scrollback push) must route through this: a raw id copy
