@@ -55,16 +55,6 @@ on. Order is roughly priority, not strict dependency.
   therefore lose an attribute rather than abort. Fixing it means giving
   the intern functions a distinct failure return.
 
-- **Page-scoped ids leak through `CfrCell`.** `style_id`, `grapheme_id`
-  and `hyperlink_id` are numbered per page, so the same hyperlink id on two
-  rows can mean different links (each page's first link is id 1), and one
-  link split across a page boundary carries two ids. `coffer.h` documents
-  them as page-scoped and routes resolution through `(row, col)`, but a host
-  that compares `hyperlink_id` across cells — e.g. to detect that the hovered
-  link changed — can confuse two links. A stable key accessor would close
-  it: hash the URI once per hyperlink-table entry (the table already hashes
-  for dedup), and return it from `cfr_cell_hyperlink_key(vt, row, col)`.
-
 - **Scrollback capacity is in rows, not bytes.** 100000 rows is about
   130 MB at 80 columns and four times that at 300; an unbounded ring fed a
   480 MB file is gigabytes. Eviction is one function (`evict_to_capacity`

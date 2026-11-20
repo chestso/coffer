@@ -147,7 +147,8 @@ compositing. See the portty README for renderer-side details.
 - **Hyperlinks (OSC 8)** — the host retrieves the URI via
   `cfr_cell_get_hyperlink(vt, row, col, …)` and compares links across
   cells with `cfr_cell_hyperlink_key(vt, row, col)`, a stable 64-bit
-  identity (the cell's own `hyperlink_id` is page-scoped).
+  identity (the cell's own `hyperlink_id` is page-scoped and only
+  meaningful through the accessors).
 - **Zero external dependencies** — libc only (ThorVG is optional and
   auto-detected; stb_image is a single-file header auto-fetched at
   configure time).
