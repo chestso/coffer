@@ -17,7 +17,8 @@ compositing. See the portty README for renderer-side details.
 
 - **VT100 / VT220 / xterm parser** — CSI / OSC / DCS / ESC dispatch, DEC
   modes, scrolling regions, charsets (incl. DEC special graphics line
-  drawing), origin mode, tab-stop manipulation (TBC).
+  drawing), origin mode, tab-stop manipulation (TBC) and tab navigation
+  (HT, CHT, CBT).
 - **UAX-aware grid** — Unicode #11 East Asian Width and #29 grapheme
   cluster widths computed at insertion time and stored on each cell.
   ZWJ sequences, regional indicators, skin-tone modifiers, and VS16

@@ -1771,6 +1771,76 @@ static void test_tbc_clear_at_cursor(void)
     cfr_free(vt);
 }
 
+/* CBT (CSI Z): cursor backward tabulation, one stop per repetition, and
+ * never left of column 0. mutt erases a character with `CBT SP CBT`
+ * instead of `BS SP BS` at some columns, so a dropped CBT leaves the
+ * character on screen. */
+static void test_cbt_backward_tab(void)
+{
+    CfrTerm *vt = make_term(3, 30);
+    /* Column 29 is not a stop; the first stop behind it is 24. */
+    feed(vt, "\x1b[1;30H\x1b[ZX");
+    ASSERT_EQ(cfr_get_cell(vt, 0, 24)->cp, (uint32_t)'X');
+    /* Two stops back from 29: 16. */
+    feed(vt, "\x1b[2;30H\x1b[2ZX");
+    ASSERT_EQ(cfr_get_cell(vt, 1, 16)->cp, (uint32_t)'X');
+    /* A bare CBT (and a 0 param) means one stop: 24. */
+    feed(vt, "\x1b[3;30H\x1b[0ZX");
+    ASSERT_EQ(cfr_get_cell(vt, 2, 24)->cp, (uint32_t)'X');
+    /* No stop to the left stops on the left margin, as does an absurd
+     * repeat count. */
+    feed(vt, "\x1b[1;3H\x1b[ZX");
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'X');
+    feed(vt, "\x1b[2;30H\x1b[1000ZX");
+    ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, (uint32_t)'X');
+    cfr_free(vt);
+}
+
+/* CBT honors cleared tab stops: with every stop gone it goes to column 0
+ * from anywhere, which is what the erase sequence relies on. */
+static void test_cbt_without_stops(void)
+{
+    CfrTerm *vt = make_term(2, 30);
+    feed(vt, "\x1b[3g");
+    feed(vt, "\x1b[1;30H\x1b[ZX");
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'X');
+    cfr_free(vt);
+}
+
+/* CHT (CSI Pn I): cursor forward tabulation, the mirror of CBT, and what
+ * HT is a one-stop special case of. */
+static void test_cht_forward_tab(void)
+{
+    CfrTerm *vt = make_term(3, 30);
+    feed(vt, "\x1b[1;1H\x1b[2IX");
+    ASSERT_EQ(cfr_get_cell(vt, 0, 16)->cp, (uint32_t)'X');
+    feed(vt, "\x1b[2;1H\x1b[0IX");
+    ASSERT_EQ(cfr_get_cell(vt, 1, 8)->cp, (uint32_t)'X');
+    /* Past the last stop the walk parks on the final column. */
+    feed(vt, "\x1b[3;25H\x1b[IX");
+    ASSERT_EQ(cfr_get_cell(vt, 2, 29)->cp, (uint32_t)'X');
+    cfr_free(vt);
+}
+
+/* The byte stream mutt 2.4.3 emits when four of the six characters of
+ * "foobar" are erased at a tabstop-aligned column: three `BS SP BS`
+ * groups, then `CBT SP CBT`, then two more BS groups. Captured from a
+ * real xterm-256color session; xterm and tmux both leave the prompt
+ * empty. coffer used to drop CSI Z, so the erase fell two columns short
+ * and left "fo" on screen. */
+static void test_mutt_erase_uses_cbt(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b[24;13H:\x1b[K foobar"
+             "\x08 \x08\x08 \x08\x08 \x08\x1b[Z \x1b[Z\x08 \x08\x08 \x08");
+    ASSERT_EQ(cfr_get_cell(vt, 23, 12)->cp, (uint32_t)':');
+    /* Every erased cell is a space (the erase writes one, and EL blanked
+     * the rest). The bug left 'f' at 14 and 'o' at 15. */
+    for (int col = 13; col <= 20; col++)
+        ASSERT_EQ(cfr_get_cell(vt, 23, col)->cp, (uint32_t)' ');
+    cfr_free(vt);
+}
+
 static void test_osc_title_utf8_with_9c_byte(void)
 {
     CfrTerm *vt = make_term(2, 10);
@@ -2075,6 +2145,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_decsc_across_lf);
     RUN_TEST(test_tbc_clear_all_then_ht);
     RUN_TEST(test_tbc_clear_at_cursor);
+    RUN_TEST(test_cbt_backward_tab);
+    RUN_TEST(test_cbt_without_stops);
+    RUN_TEST(test_cht_forward_tab);
+    RUN_TEST(test_mutt_erase_uses_cbt);
     RUN_TEST(test_osc_title_utf8_with_9c_byte);
     RUN_TEST(test_dec_graphics_g0);
     RUN_TEST(test_dec_graphics_si_so);

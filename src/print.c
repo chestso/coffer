@@ -234,20 +234,41 @@ static void backspace(CfrTerm *vt)
     cfr_cursor_set(vt, vt->cursor.row, vt->cursor.col - 1);
 }
 
-static void horizontal_tab(CfrTerm *vt)
+/* HT and CHT (CSI Pn I): advance `count` tab stops. A tab with no stop
+ * left before the margin parks on the last column (xterm), and running
+ * out of columns ends the walk instead of spinning on `count`. */
+void cfr_tab_forward(CfrTerm *vt, int count)
 {
-    if (vt->cursor.col >= vt->cols - 1) {
-        /* Already on (or past) the margin: HT resolves the phantom and
-         * parks on the last column. */
-        cfr_cursor_set(vt, vt->cursor.row, vt->cols - 1);
-        return;
+    int col = vt->cursor.col;
+    if (col > vt->cols - 1)
+        col = vt->cols - 1; /* resolve the deferred phantom */
+    while (count-- > 0 && col < vt->cols - 1) {
+        int c = col + 1;
+        while (c < vt->cols && (!vt->tabstops || !vt->tabstops[c]))
+            c++;
+        if (c >= vt->cols)
+            c = vt->cols - 1;
+        col = c;
     }
-    int c = vt->cursor.col + 1;
-    while (c < vt->cols && (!vt->tabstops || !vt->tabstops[c]))
-        c++;
-    if (c >= vt->cols)
-        c = vt->cols - 1;
-    cfr_cursor_set(vt, vt->cursor.row, c);
+    cfr_cursor_set(vt, vt->cursor.row, col);
+}
+
+/* CBT (CSI Pn Z): retreat `count` tab stops, stopping on the left margin
+ * when no tab stop lies in between. xterm's table erase sequences use
+ * this (mutt erases a character with `CBT SP CBT`), so treating it as a
+ * no-op leaves text on screen that the program believes it deleted. */
+void cfr_tab_backward(CfrTerm *vt, int count)
+{
+    int col = vt->cursor.col;
+    if (col > vt->cols - 1)
+        col = vt->cols - 1; /* resolve the deferred phantom */
+    while (count-- > 0 && col > 0) {
+        int c = col - 1;
+        while (c > 0 && (!vt->tabstops || !vt->tabstops[c]))
+            c--;
+        col = c;
+    }
+    cfr_cursor_set(vt, vt->cursor.row, col);
 }
 
 void cfr_execute_c0(CfrTerm *vt, uint8_t b)
@@ -263,7 +284,7 @@ void cfr_execute_c0(CfrTerm *vt, uint8_t b)
         backspace(vt);
         return;
     case 0x09:
-        horizontal_tab(vt);
+        cfr_tab_forward(vt, 1);
         return;
     case 0x0e:
         vt->charset_active = 1;

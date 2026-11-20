@@ -629,6 +629,10 @@ void cfr_scroll_up(CfrTerm *vt, int lines);
 void cfr_scroll_down(CfrTerm *vt, int lines);
 void cfr_erase_in_line(CfrTerm *vt, int mode);
 void cfr_erase_in_display(CfrTerm *vt, int mode);
+/* Tabs (print.c): HT/CHT forward, CBT backward. `count` is the number of
+ * tab stops to cross; 1 or less means one. */
+void cfr_tab_forward(CfrTerm *vt, int count);
+void cfr_tab_backward(CfrTerm *vt, int count);
 
 /* Cursor normalizer (print.c). cfr_cursor_set() clamps into the grid and
  * in doing so resolves the deferred phantom (col == cols). */

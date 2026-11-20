@@ -462,6 +462,12 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
     case 'G':
         cursor_to(vt, vt->cursor.row, p1 - 1);
         break; /* CHA */
+    case 'I':
+        cfr_tab_forward(vt, p1);
+        break; /* CHT */
+    case 'Z':
+        cfr_tab_backward(vt, p1);
+        break; /* CBT */
     case 'H':
     case 'f': /* CUP / HVP */
         cursor_to_origin(vt, p1 - 1, p2 - 1);
