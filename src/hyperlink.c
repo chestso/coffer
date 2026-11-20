@@ -19,9 +19,11 @@
  * value 0 in dedup_index means "empty"; non-zero values are ids.
  *
  * Cap: ids run up to UINT16_MAX (the cell's hyperlink_id field width).
- * On overflow the intern returns 0 ("no link") rather than fail loudly —
- * a workload that exhausts 65k unique URIs in one page is exotic and
- * "stops underlining new ones" is a benign degradation.
+ * On overflow the intern returns 0 ("no link") rather than fail loudly.
+ * The live grid page cannot reach the cap: cfr_grid_gc() (grid.c) rebuilds
+ * it, dropping the links no cell uses, well before 65535 ids (see
+ * CFR_GRID_GC_LINKS_MAX). Scrollback pages hold at most CFR_SB_PAGE_ROWS
+ * rows, so only a screen showing 65k distinct links at once could hit it.
  */
 
 #include "coffer_internal.h"
