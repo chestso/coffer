@@ -213,6 +213,19 @@ if ! "$COFFER" -c 40 -r 6 --feed "$tmp/feed.raw" -f "$tmp/feed.script" \
 	say_fail "a script could not assert on the replayed grid"
 fi
 
+# An OSC 4 override recolors already-written indexed text: the style dump
+# resolves the index through the live palette.
+printf '\033]4;1;#00ff00\033\\\033[31mX\033[0m' >"$tmp/palette.raw"
+cat >"$tmp/palette.script" <<'EOF'
+render styles 0
+EOF
+out=$("$COFFER" -c 20 -r 3 --feed "$tmp/palette.raw" \
+	-f "$tmp/palette.script" 2>/dev/null)
+case "$out" in
+*fg=00FF00*) ;;
+*) say_fail "OSC 4 palette override did not resolve in the style dump" ;;
+esac
+
 # A command after -- still spawns a child, and the file is fed first.
 out=$("$COFFER" -c 40 -r 6 -w 1 --feed "$tmp/feed.raw" \
 	-- sh -c 'echo child-marker' 2>/dev/null)

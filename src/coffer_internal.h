@@ -514,11 +514,9 @@ static inline void cfr_cursor_restore(CfrTerm *vt, const CfrCursorState *src)
 #define CFR_LOGGED_MEDIA_COPY (1u << 0)
 #define CFR_LOGGED_MEML       (1u << 1)
 #define CFR_LOGGED_MEMU       (1u << 2)
-#define CFR_LOGGED_OSC4       (1u << 3)
-#define CFR_LOGGED_OSC104     (1u << 4)
-#define CFR_LOGGED_LR_MARGIN  (1u << 5)
-#define CFR_LOGGED_META       (1u << 6)
-#define CFR_LOGGED_BAD_COLOR  (1u << 7)
+#define CFR_LOGGED_LR_MARGIN  (1u << 3)
+#define CFR_LOGGED_META       (1u << 4)
+#define CFR_LOGGED_BAD_COLOR  (1u << 5)
 
 /* Format a message and forward it to the log callback if registered.
  * No-op when the callback is NULL (the default). */

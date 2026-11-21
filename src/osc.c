@@ -258,6 +258,105 @@ static void osc_dyn_colors(CfrTerm *vt, int code, const uint8_t *body, size_t bo
     }
 }
 
+/* Strictly parse a decimal palette index in 0..255. */
+static bool parse_palette_index(const uint8_t *s, size_t len, uint8_t *out)
+{
+    if (len == 0)
+        return false;
+    uint32_t v = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] < '0' || s[i] > '9')
+            return false;
+        v = v * 10 + (uint32_t)(s[i] - '0');
+        if (v > 255)
+            return false;
+    }
+    *out = (uint8_t)v;
+    return true;
+}
+
+/* Palette query reply, xterm's form:
+ * OSC 4 ; index ; rgb:RRRR/GGGG/BBBB ST. */
+static void emit_palette_report(CfrTerm *vt, uint8_t idx, uint32_t rgb)
+{
+    unsigned r = (rgb >> 16) & 0xffu;
+    unsigned g = (rgb >> 8) & 0xffu;
+    unsigned b = rgb & 0xffu;
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "\x1b]4;%u;rgb:%04x/%04x/%04x\x1b\\",
+                     (unsigned)idx, r * 0x101u, g * 0x101u, b * 0x101u);
+    if (n > 0)
+        cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+}
+
+/* OSC 4 — indexed palette. Body: `index;spec` pairs separated by ';'.
+ * `spec` is an XParseColor RGB form, or '?' to query. Unknown indices
+ * and unparseable specs are ignored (the latter logged once). Damage the
+ * grid once if any entry actually changed: indexed styles resolve
+ * through the live palette, so already-written text repaints. */
+static void osc4_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
+{
+    bool changed = false;
+    size_t pos = 0;
+    while (pos < body_len) {
+        size_t sep = pos;
+        while (sep < body_len && body[sep] != ';')
+            sep++;
+        if (sep >= body_len)
+            break; /* an index with no spec */
+
+        size_t spec_start = sep + 1;
+        size_t end = spec_start;
+        while (end < body_len && body[end] != ';')
+            end++;
+
+        uint8_t idx;
+        if (parse_palette_index(body + pos, sep - pos, &idx)) {
+            const uint8_t *spec = body + spec_start;
+            size_t spec_len = end - spec_start;
+            if (spec_len == 1 && spec[0] == '?') {
+                emit_palette_report(vt, idx, cfr_palette_rgb(vt, idx));
+            } else {
+                uint32_t rgb;
+                if (parse_color_spec(spec, spec_len, &rgb)) {
+                    changed |= cfr_palette_set(vt, idx, rgb);
+                } else if (should_log_once(vt, CFR_LOGGED_BAD_COLOR)) {
+                    cfr_log(vt, CFR_LOG_WARN,
+                            "unparseable color specification in OSC 4");
+                }
+            }
+        }
+
+        pos = end + 1;
+    }
+    if (changed)
+        cfr_damage_all(vt);
+}
+
+/* OSC 104 — reset palette entries. Body: ';'-separated indices; an empty
+ * body resets the whole palette. Only entries that changed damage the
+ * grid. */
+static void osc104_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
+{
+    bool changed = false;
+    if (body_len == 0) {
+        changed = cfr_palette_reset_all(vt);
+    } else {
+        size_t pos = 0;
+        while (pos < body_len) {
+            size_t end = pos;
+            while (end < body_len && body[end] != ';')
+                end++;
+            uint8_t idx;
+            if (parse_palette_index(body + pos, end - pos, &idx))
+                changed |= cfr_palette_reset(vt, idx);
+            pos = end + 1;
+        }
+    }
+    if (changed)
+        cfr_damage_all(vt);
+}
+
 void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
 {
     /* Commit any pending cluster before the OSC is dispatched — the
@@ -298,15 +397,13 @@ void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
         cfr_dyn_color_reset(vt, code - 110);
         break;
     case 4:
-        if (should_log_once(vt, CFR_LOGGED_OSC4))
-            cfr_log(vt, CFR_LOG_WARN, "palette override (OSC 4) not implemented yet");
+        osc4_dispatch(vt, body, body_len);
         break;
     case 1337:
         cfr_osc_1337_dispatch(vt, body, body_len);
         break;
     case 104:
-        if (should_log_once(vt, CFR_LOGGED_OSC104))
-            cfr_log(vt, CFR_LOG_WARN, "palette reset (OSC 104) not implemented yet");
+        osc104_dispatch(vt, body, body_len);
         break;
     case 5555:
         /* OSC 5555 — APC carrier for the system ConPTY fallback.

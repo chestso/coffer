@@ -1,6 +1,6 @@
 # tests/Makefile.am - coffer unit and integration tests
 
-check_PROGRAMS = test_cfr_parser test_cfr_keys test_cfr_pty test_cfr_sixel test_cfr_lottie test_cfr_altscreen test_cfr_sgr test_cfr_log test_cfr_rep test_cfr_stubs test_cfr_width test_cfr_image_store test_cfr_osc_1337 test_cfr_graphics test_cfr_selection test_cfr_wrap_erase test_cfr_lines test_cfr_rows test_cfr_wrap_width test_cfr_zwj test_cfr_introspect test_cfr_ascii_run test_cfr_sync_output test_cfr_grid_gc test_cfr_wrap_fuzz test_script
+check_PROGRAMS = test_cfr_parser test_cfr_keys test_cfr_pty test_cfr_sixel test_cfr_lottie test_cfr_altscreen test_cfr_sgr test_cfr_log test_cfr_rep test_cfr_stubs test_cfr_width test_cfr_image_store test_cfr_osc_1337 test_cfr_graphics test_cfr_selection test_cfr_wrap_erase test_cfr_lines test_cfr_rows test_cfr_wrap_width test_cfr_zwj test_cfr_introspect test_cfr_ascii_run test_cfr_sync_output test_cfr_grid_gc test_cfr_wrap_fuzz test_cfr_palette test_script
 # Loader unit tests: temp directories, unloadable DLLs, search order. The
 # loader only exists on Windows.
 if HOST_WINDOWS
@@ -44,6 +44,7 @@ test_cfr_conpty_SOURCES = test_cfr_conpty.c test_common.c
 test_cfr_conpty_LDADD   = $(LDADD) $(PTY_LDADD)
 test_cfr_altscreen_SOURCES = test_cfr_altscreen.c test_common.c
 test_cfr_sgr_SOURCES      = test_cfr_sgr.c test_common.c
+test_cfr_palette_SOURCES  = test_cfr_palette.c test_common.c
 test_cfr_log_SOURCES      = test_cfr_log.c test_common.c
 test_cfr_rep_SOURCES      = test_cfr_rep.c test_common.c
 test_cfr_stubs_SOURCES    = test_cfr_stubs.c test_common.c

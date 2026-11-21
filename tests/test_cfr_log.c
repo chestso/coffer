@@ -146,17 +146,17 @@ static void test_should_log_once_independent_bits(void)
     LogCapture cap;
     CfrTerm *vt = make_term_with_log(&cap);
 
-    if (should_log_once(vt, CFR_LOGGED_OSC4))
-        cfr_vlog(vt, CFR_LOG_WARN, "osc4");
+    if (should_log_once(vt, CFR_LOGGED_MEML))
+        cfr_vlog(vt, CFR_LOG_WARN, "meml");
     ASSERT_EQ(cap.call_count, 1);
 
-    if (should_log_once(vt, CFR_LOGGED_OSC104))
-        cfr_vlog(vt, CFR_LOG_WARN, "osc104");
+    if (should_log_once(vt, CFR_LOGGED_MEMU))
+        cfr_vlog(vt, CFR_LOG_WARN, "memu");
     ASSERT_EQ(cap.call_count, 2);
 
     /* Repeating the first should not fire. */
-    if (should_log_once(vt, CFR_LOGGED_OSC4))
-        cfr_vlog(vt, CFR_LOG_WARN, "osc4 again");
+    if (should_log_once(vt, CFR_LOGGED_MEML))
+        cfr_vlog(vt, CFR_LOG_WARN, "meml again");
     ASSERT_EQ(cap.call_count, 2);
 
     cfr_free(vt);

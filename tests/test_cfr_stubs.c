@@ -5,7 +5,6 @@
  * - SGR 2 (dim) and SGR 8 (invisible): attr bits set/cleared
  * - DECSET ?5 (DECSCNM), ?1034 (meta), ?69 (margins): mode tracking
  * - CSI i (media copy), ESC l (meml), ESC m (memu): noop + log-once
- * - OSC 4 (initc), OSC 104 (oc): noop + log-once
  */
 
 #include "test_helpers.h"
@@ -253,32 +252,7 @@ static void test_memu_noop_log(void)
     cfr_free(vt);
 }
 
-/* ---- OSC 4 (initc) — noop + log-once ---- */
-
-static void test_osc4_noop_log(void)
-{
-    LogCapture cap;
-    CfrTerm *vt = make_term_with_log(&cap);
-    feed(vt, "\x1b]4;0;rgb:ff/00/00\x1b\\");
-    ASSERT_EQ(cap.call_count, 1);
-    /* Second palette set: rate-limited. */
-    feed(vt, "\x1b]4;1;rgb:00/ff/00\x1b\\");
-    ASSERT_EQ(cap.call_count, 1);
-    cfr_free(vt);
-}
-
-/* ---- OSC 104 (oc) — noop + log-once ---- */
-
-static void test_osc104_noop_log(void)
-{
-    LogCapture cap;
-    CfrTerm *vt = make_term_with_log(&cap);
-    feed(vt, "\x1b]104\x1b\\");
-    ASSERT_EQ(cap.call_count, 1);
-    feed(vt, "\x1b]104\x07");
-    ASSERT_EQ(cap.call_count, 1);
-    cfr_free(vt);
-}
+/* ---- OSC 4 (initc) and OSC 104 (oc) are covered by test_cfr_palette ---- */
 
 int main(int argc, char *argv[])
 {
@@ -298,8 +272,6 @@ int main(int argc, char *argv[])
     RUN_TEST(test_media_copy_no_callback);
     RUN_TEST(test_meml_noop_log);
     RUN_TEST(test_memu_noop_log);
-    RUN_TEST(test_osc4_noop_log);
-    RUN_TEST(test_osc104_noop_log);
 
     TEST_SUMMARY();
 }
