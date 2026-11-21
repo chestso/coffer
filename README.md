@@ -280,6 +280,7 @@ make check TESTS='test_cfr_parser test_cfr_keys test_cfr_sixel test_cfr_osc_1337
 | `test_cfr_altscreen`   | Altscreen enter/exit, cursor save/restore, content isolation                                                              |
 | `test_cfr_sgr`         | SGR styling: bold, italic, underline variants, SGR 21, overline, truecolor, indexed                                       |
 | `test_cfr_sync_output` | Synchronized output (2026): damage hold, coalesced frame, cursor fold, cancel/reset escapes                               |
+| `test_cfr_wrap_fuzz`   | Differential fuzz for soft wraps: random ops vs. a naive row model, joins + text after every op                           |
 
 `test_cfr_pty` is skipped on CI (GitHub runners lack a real PTY). All other
 tests run on every push via GitHub Actions. Tags matching `v*` trigger a

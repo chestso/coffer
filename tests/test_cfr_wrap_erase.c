@@ -202,6 +202,51 @@ static void test_ich_keeps_wrap_dch_to_margin_clears(void)
     cfr_free(vt);
 }
 
+/* DCH severs the row's wrap edge, and the row must stay severed. The
+ * left shift moves the old margin cell — with its WRAPLINE bit — into the
+ * row's interior; if the bit is allowed to ride there, repeated ICH can
+ * walk it back to the margin and resurrect a join DCH already severed.
+ * Only the margin cell may carry the bit (spec §5.6). */
+static void test_dch_then_ich_does_not_resurrect_wrap(void)
+{
+    CfrTerm *vt = make_term(8, 6);
+    feed(vt, "f46w95");
+    feed(vt, "n"); /* wrap: edge on row 0's margin, 'n' on row 1 */
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+
+    feed(vt, "\x1b[1;2H\x1b[3P"); /* DCH 3: severs row 0 */
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
+
+    /* Walk the row's interior right: nothing may bring the severed edge
+     * back onto the margin. */
+    for (int i = 0; i < 3; ++i) {
+        feed(vt, "\x1b[1;2H\x1b[@");
+        ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
+    }
+    cfr_free(vt);
+}
+
+/* DECSC/DECRC round-trip the deferred-wrap phantom: the saved column is
+ * the logical one (one past the margin), so restoring it and printing
+ * commits the wrap. Spec §5.5. */
+static void test_decsc_roundtrips_phantom(void)
+{
+    CfrTerm *vt = make_term(8, 6);
+    feed(vt, "abcdef"); /* row 0 exactly full: the phantom */
+    ASSERT_TRUE(PENDING_WRAP(vt));
+    feed(vt, "\x1b"
+             "7");         /* DECSC saves the phantom */
+    feed(vt, "\x1b[3;1H"); /* explicit move kills it */
+    ASSERT_FALSE(PENDING_WRAP(vt));
+    feed(vt, "\x1b"
+             "8"); /* DECRC restores it */
+    ASSERT_TRUE(PENDING_WRAP(vt));
+    feed(vt, "x"); /* the next print wraps */
+    ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, (uint32_t)'x');
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -219,5 +264,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_rewrite_after_erase_restores_wrap);
     RUN_TEST(test_overwrite_interior_keeps_wrap);
     RUN_TEST(test_ich_keeps_wrap_dch_to_margin_clears);
+    RUN_TEST(test_dch_then_ich_does_not_resurrect_wrap);
+    RUN_TEST(test_decsc_roundtrips_phantom);
     TEST_SUMMARY();
 }

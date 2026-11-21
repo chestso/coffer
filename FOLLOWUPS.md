@@ -12,27 +12,15 @@ on. Order is roughly priority, not strict dependency.
   (the child exiting quits the app before the script observes it).
   Neither affects the `coffer` CLI, where both work end to end.
 
-- **Wrapped-line behavioral spec + differential fuzz.** The internal
-  representation of soft wraps is now margin-cell `CFR_CELL_WRAPLINE`
-  plus per-row lineage ids, with a two-sided predicate
-  (`cfr_row_continues`, `src/lines.c`; see
-  `docs/wrapped-lines-design.md`). Open follow-ups from that work:
-  a written behavioral spec (LF column rule, phantom lifetime, the §4
-  policy knobs — ICH/IRM severance, wide-char at margin, DECAWM toggled
-  mid-phantom, DECSC/phantom), and a differential fuzzer that runs a
-  random op stream against a naive line model, asserting joins and text
-  extraction. The representation should be frozen while the spec is
-  written; a wrong policy choice can over- or under-join by one row,
-  never corrupt structure.
-
-  Two more policy points are now pinned by
-  `tests/test_cfr_wrap_width.c`: (1) a width-1 print over the lead cell
-  of a wide cluster at the margin blanks the stranded continuation cell
-  and severs the join — the §2.2 "print overwriting margin" rule
-  extended to the print's side effect; (2) a presentation selector or
-  combining mark whose base was committed by an earlier flush (a write
-  boundary split them) re-attaches to that cell in the same row and
-  re-commits the combined cluster — cross-row re-attach stays a drop.
+- **Wrapped-line behavioral spec + differential fuzz.** The spec is
+  `docs/wrapped-lines-spec.md` (policy knobs, edit/severance table, text
+  extraction) and the oracle is `tests/test_cfr_wrap_fuzz.c` (random op
+  stream vs. a naive row model, checked after every op). What the fuzzer
+  does not model: resize/reflow, altscreen, partial scroll regions, and
+  presentation-selector/ZWJ clusters — those stay covered by the targeted
+  tests. Extend the model when reflow gains one. The accepted
+  DL-inside-one-wrapped-line over-join (spec §7) remains: wrong text,
+  never wrong structure.
 
 - **Cell re-interning degrades silently on failure.** `cfr_cell_reintern()`
   maps an allocation failure, or a full hyperlink table (65535 ids), to

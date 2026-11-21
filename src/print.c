@@ -835,6 +835,13 @@ void cfr_delete_chars(CfrTerm *vt, int count)
     /* Erasing the tail blanks the margin cell too when `count` reaches
      * it, dropping the wrap edge automatically. */
     erase_cells(vt, &line[vt->cols - count], count);
+    /* The left shift moved the old margin cell (with its WRAPLINE bit)
+     * into the row's interior, where the bit is not an edge. The tail
+     * erase severs this row's edge; clear the bits that rode along, or a
+     * later ICH can shift one back onto the margin and restore a join
+     * DCH already severed. */
+    for (int i = 0; i < vt->cols; ++i)
+        line[i].flags &= (uint8_t)~CFR_CELL_WRAPLINE;
     cfr_damage_row(vt, row);
 }
 

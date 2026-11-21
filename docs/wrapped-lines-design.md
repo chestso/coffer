@@ -1,12 +1,12 @@
 # coffer — wrapped-line representation design
 
 Status: **implemented** (steps 1–5, including reflow's scrollback/grid
-join; see §7 for the FOLLOWUPS items the later behavior spec owns).
-Written down so work could resume. Reference
-for behavior questions during implementation: tmux only. Pre-alpha: no
-backwards compatibility, architecture over expedience. Scope is the
-_internal representation_ only — no behavior fixes ride along; behavior
-fixes are a separate later step with their own spec and tests.
+join). The behavioral choices this document deliberately left open are
+now normative in `docs/wrapped-lines-spec.md`, with a differential fuzzer
+in `tests/test_cfr_wrap_fuzz.c`. Reference for behavior questions during
+implementation: tmux only. Pre-alpha: no backwards compatibility,
+architecture over expedience. Scope is the _internal representation_ only —
+behavior fixes are a separate later step with their own spec and tests.
 
 Three terms recur throughout; their meaning in this document:
 
@@ -127,7 +127,8 @@ that travel with `memmove` and are rewritten by every erase/overwrite:
 | Print overwriting margin             | same, automatic                                    |
 | LF resolving a phantom               | no code at all — the phantom never committed a bit |
 | Scroll / DL / IL moving rows         | bit travels inside the cells                       |
-| ICH/IRM shifting the row             | severed by the shift — _policy knob_, see §4       |
+| ICH/IRM shifting the row             | **preserved** (xterm); see §4                      |
+| DCH shifting the row                 | severed, and shifted bits are cleared (§4)         |
 
 The `09674e2` `clear_wrapline()` helper and its five call sites
 become dead code and are deleted.
@@ -306,17 +307,27 @@ are deleted.
    scroll off as a result of output, and a resize is a synchronous call whose
    result the caller reads when it returns.
 
-## 4. Policy knobs (spec + tests later; tmux is the reference)
+## 4. Policy knobs (decided; see `docs/wrapped-lines-spec.md`)
 
-These are _data_ now, not architecture — a wrong choice can only over-
-or under-join by one row, never corrupt structure:
+These were _data_, not architecture — a wrong choice can only over-
+or under-join by one row, never corrupt structure. They are now pinned:
 
-- ICH/IRM: re-establish bit+lineage after a shift, or accept
-  severance (tmux default today: sever).
-- Wide-char at margin: bit lands on the wrapping row's margin cell
-  even when the wide cluster itself moved to the next row.
-- LF column rule; whether the phantom survives LF (tmux: no).
-- DECAWM toggled off mid-phantom; DECSC/phantom interaction.
+- ICH/IRM: **preserve** the bit and lineage after a shift (xterm's
+  `ScrnInsertChar`; tmux severs). IRM runs ICH before each written cell.
+- Wide-char at margin: **eager wrap** with DECAWM; the bit lands on the
+  wrapping row's margin cell even when the wide cluster itself moved to
+  the next row. With DECAWM off the lead overwrites the margin and no join
+  appears.
+- LF column rule: the phantom resolves to column 0 and does **not** commit
+  a wrap; an LF never touches a committed wrap. Otherwise the column is
+  unchanged.
+- DECAWM toggled off mid-phantom: the phantom dies (clamped to the
+  margin); DECAWM on creates none.
+- DECSC/phantom: the logical column, including `col == cols`, is saved
+  and restored natively.
+- DCH must clear any `WRAPLINE` bit its left shift carries into the row's
+  interior: only the margin cell may carry the bit, or a later ICH can
+  resurrect a join DCH already severed.
 
 ## 5. Rejected alternatives (do not relitigate)
 
@@ -365,6 +376,11 @@ or under-join by one row, never corrupt structure:
 - Close the FOLLOWUPS "Line feed at the bottom row …" entry when the
   logical cursor column lands (representation solves it; the LF clear
   goes away).
-- Open FOLLOWUPS items: wrapped-line behavioral spec + differential
-  fuzz (random op stream vs. a naive model; assert joins and text
-  extraction); the §4 policy knobs.
+- Done: `docs/wrapped-lines-spec.md` decides the §4 knobs, and
+  `tests/test_cfr_wrap_fuzz.c` is the differential fuzzer (joins + row
+  and selection text, after every op).
+- The fuzzer does not model resize/reflow, altscreen, partial scroll
+  regions, or presentation-selector/ZWJ clusters; those keep their
+  targeted tests. Extend the model when reflow gets one.
+- Accepted limitation (spec §7): DL inside one wrapped line still joins
+  two remaining fragments of that line.
