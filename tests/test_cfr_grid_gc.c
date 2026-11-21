@@ -138,7 +138,7 @@ static void test_styles_stay_bounded(void)
         int i = line_at(r);
         const CfrStyle *st = cfr_cell_style(vt, r, 0);
         ASSERT_NOT_NULL(st);
-        ASSERT_EQ(st->fg_rgb,
+        ASSERT_EQ(st->fg.rgb,
                   (uint32_t)((i & 255) << 16 | ((i >> 8) & 255) << 8 | 7));
     }
     ASSERT_TRUE(vt->grid->styles.count <= table_limit());
@@ -227,7 +227,7 @@ static void snapshot(CfrTerm *vt, Buf *out)
             char uri[32];
             size_t n = cfr_cell_get_hyperlink(vt, r, c, (uint8_t *)uri, 31);
             uri[n] = '\0';
-            put(out, "%u/%x/%s;", cell->cp, st ? st->fg_rgb : 0u, uri);
+            put(out, "%u/%x/%s;", cell->cp, st ? st->fg.rgb : 0u, uri);
         }
     }
 }
@@ -331,7 +331,7 @@ static void test_failed_rebuild_keeps_the_old_page(void)
         int i = 5000 - (ROWS - 1) + r;
         const CfrStyle *st = cfr_cell_style(vt, r, 0);
         ASSERT_NOT_NULL(st);
-        ASSERT_EQ(st->fg_rgb,
+        ASSERT_EQ(st->fg.rgb,
                   (uint32_t)((i & 255) << 16 | (i >> 8) << 8 | 9));
     }
 
@@ -342,7 +342,7 @@ static void test_failed_rebuild_keeps_the_old_page(void)
         int i = 5000 - (ROWS - 1) + r;
         const CfrStyle *st = cfr_cell_style(vt, r, 0);
         ASSERT_NOT_NULL(st);
-        ASSERT_EQ(st->fg_rgb,
+        ASSERT_EQ(st->fg.rgb,
                   (uint32_t)((i & 255) << 16 | (i >> 8) << 8 | 9));
     }
     cfr_free(vt);
@@ -372,7 +372,7 @@ static void check_failed_resize_keeps_terminal(bool reflow)
     ASSERT_EQ(cell->cp, (uint32_t)'A');
     const CfrStyle *st = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(st);
-    ASSERT_EQ(st->fg_rgb, 0xFF0000u);
+    ASSERT_EQ(st->fg.rgb, 0xFF0000u);
 
     f.armed = false; /* the retry succeeds */
     cfr_resize(vt, 5, 12);
@@ -381,7 +381,7 @@ static void check_failed_resize_keeps_terminal(bool reflow)
     ASSERT_EQ(cols, 12);
     st = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(st);
-    ASSERT_EQ(st->fg_rgb, 0xFF0000u);
+    ASSERT_EQ(st->fg.rgb, 0xFF0000u);
     cfr_free(vt);
 }
 
@@ -483,7 +483,7 @@ static void test_scrollback_push_drops_row_on_failed_reintern(void)
     ASSERT_EQ(top->cp, (uint32_t)'x');
     const CfrStyle *st = cfr_cell_style(vt, -1, 0);
     ASSERT_NOT_NULL(st);
-    ASSERT_EQ(st->fg_rgb, 0xFF0000u);
+    ASSERT_EQ(st->fg.rgb, 0xFF0000u);
     cfr_free(vt);
 }
 

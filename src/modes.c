@@ -277,12 +277,13 @@ void cfr_reset(CfrTerm *vt)
     vt->cursor.visible = true;
     vt->cursor.blink = vt->default_blink;
     vt->cursor.shape = vt->default_shape;
-    vt->cursor.pen.color_flags =
-        CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_BG | CFR_COLOR_DEFAULT_UL;
     vt->saved_cursor[0] = vt->saved_cursor[1] = vt->cursor;
 
     /* Dynamic colors (OSC 10/11/12) back to their configured values. */
     cfr_dyn_color_reset_all(vt);
+
+    /* Palette overrides (OSC 4) back to the built-in colors. */
+    (void)cfr_palette_reset_all(vt);
 
     /* Scroll region back to full screen. */
     vt->scroll_top = 0;

@@ -22,15 +22,16 @@
 
 #define STYLE_INDEX_EMPTY UINT32_MAX
 
-static const CfrStyle DEFAULT_STYLE = {
-    .fg_rgb = 0,
-    .bg_rgb = 0,
-    .ul_rgb = 0,
-    .attrs = 0,
-    .underline = 0,
-    .font = 0,
-    .color_flags = CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_BG | CFR_COLOR_DEFAULT_UL,
-};
+/* Style id 0 is reserved for the page's default style. Zeroed style
+ * colors are defaults (CFR_COLOR_KIND_DEFAULT == 0), so { 0 } is the
+ * whole default style. */
+static const CfrStyle DEFAULT_STYLE = { 0 };
+
+/* The intern table hashes and compares raw bytes, so these structs must
+ * have no implicit padding. If a member is added or reordered, update
+ * the expected sizes (and CfrStyleColor's explicit `reserved` field). */
+typedef char cfr_style_color_no_padding[sizeof(CfrStyleColor) == 8 ? 1 : -1];
+typedef char cfr_style_no_padding[sizeof(CfrStyle) == 28 ? 1 : -1];
 
 /* FNV-1a 32-bit. */
 static uint32_t fnv1a(const void *data, size_t len)

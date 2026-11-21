@@ -1688,8 +1688,8 @@ static void test_sgr_truecolor(void)
     feed(vt, "\x1b[38;2;255;128;0mX");
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
-    ASSERT_EQ(s->fg_rgb, 0xFF8000u);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
+    ASSERT_EQ(s->fg.rgb, 0xFF8000u);
+    ASSERT_EQ(s->fg.kind, CFR_COLOR_KIND_RGB);
     cfr_free(vt);
 }
 
@@ -1700,8 +1700,8 @@ static void test_sgr_truecolor_colon_form(void)
     feed(vt, "\x1b[38:2:255:128:0mX");
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
-    ASSERT_EQ(s->fg_rgb, 0xFF8000u);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
+    ASSERT_EQ(s->fg.rgb, 0xFF8000u);
+    ASSERT_EQ(s->fg.kind, CFR_COLOR_KIND_RGB);
     cfr_free(vt);
 }
 
@@ -1714,9 +1714,9 @@ static void test_sgr_truecolor_colon_form_empty_slot(void)
     feed(vt, "\x1b[38:2::255:128:0mX");
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
-    ASSERT_EQ(s->fg_rgb, 0xFF8000u);
+    ASSERT_EQ(s->fg.rgb, 0xFF8000u);
     /* Bg must remain default — no leak from the trailing param. */
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) != 0);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_DEFAULT);
     cfr_free(vt);
 }
 
@@ -1727,11 +1727,11 @@ static void test_sgr_underline_color_itu(void)
     feed(vt, "\x1b[4;58:2::255:100:100mR");
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
-    ASSERT_EQ(s->ul_rgb, 0xFF6464u);
+    ASSERT_EQ(s->ul.rgb, 0xFF6464u);
+    ASSERT_EQ(s->ul.kind, CFR_COLOR_KIND_RGB);
     ASSERT_EQ(s->underline, CFR_UL_SINGLE);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_UL) == 0);
     /* No bg leak. */
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) != 0);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_DEFAULT);
     cfr_free(vt);
 }
 
@@ -1743,8 +1743,8 @@ static void test_sgr_underline_color_curly_orange(void)
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
     ASSERT_EQ(s->underline, CFR_UL_CURLY);
-    ASSERT_EQ(s->ul_rgb, 0xFFC832u);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) != 0);
+    ASSERT_EQ(s->ul.rgb, 0xFFC832u);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_DEFAULT);
     cfr_free(vt);
 }
 
@@ -1800,8 +1800,11 @@ static void test_sgr_indexed(void)
     feed(vt, "\x1b[31mY"); /* red 30+1 */
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_NOT_NULL(s);
+    /* The style records the palette index; resolution is live. */
+    ASSERT_EQ(s->fg.kind, CFR_COLOR_KIND_INDEXED);
+    ASSERT_EQ(s->fg.index, 1u);
     /* Dracula red (SGR 31) is 0xFF5555 per palette.c. */
-    ASSERT_EQ(s->fg_rgb, 0xFF5555u);
+    ASSERT_EQ(cfr_style_fg_rgb(vt, s), 0xFF5555u);
     cfr_free(vt);
 }
 
@@ -1872,8 +1875,10 @@ static void test_reflow_preserves_styles(void)
     const CfrStyle *bs = cfr_cell_style(vt, 0, 5);
     ASSERT_NOT_NULL(as);
     ASSERT_NOT_NULL(bs);
-    ASSERT_EQ(as->fg_rgb, 0xFF5555u); /* red */
-    ASSERT_TRUE((bs->color_flags & CFR_COLOR_DEFAULT_FG) != 0);
+    ASSERT_EQ(as->fg.kind, CFR_COLOR_KIND_INDEXED);
+    ASSERT_EQ(as->fg.index, 1u);
+    ASSERT_EQ(cfr_style_fg_rgb(vt, as), 0xFF5555u); /* red */
+    ASSERT_EQ(bs->fg.kind, CFR_COLOR_KIND_DEFAULT);
     cfr_free(vt);
 }
 

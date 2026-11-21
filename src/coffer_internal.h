@@ -352,6 +352,12 @@ struct CfrTerm
     CfrColorValue dyn_color[CFR_DYN_COUNT];
     CfrColorValue dyn_color_seed[CFR_DYN_COUNT];
 
+    /* Live 256-color palette: the built-ins, with any OSC 4 overrides
+     * applied. cfr_palette_init() seeds it at cfr_new(); OSC 104 and RIS
+     * recompute the built-in values. Styles store palette indices, so a
+     * change here recolors already-written text on the next repaint. */
+    uint32_t palette[256];
+
     /* Scroll region (DECSTBM). Inclusive. */
     int scroll_top;
     int scroll_bottom;
@@ -736,10 +742,13 @@ int cfr_row_width(const CfrTerm *vt, int unified_row);
 /* Width / grapheme break (width.c). */
 bool cfr_grapheme_break_before(uint32_t prev, uint32_t cur, void *state);
 
-/* Palette (palette.c) — resolves 0..255 indexed colors to 0x00RRGGBB,
- * and owns the dynamic color state (xterm OSC 10/11/12 family).
- * `idx` is a CFR_DYN_* slot. */
-uint32_t cfr_palette_lookup(CfrTerm *vt, uint8_t idx);
+/* Palette (palette.c) — owns the live 256-color table (built-ins plus
+ * OSC 4 overrides) and the dynamic color state (xterm OSC 10/11/12
+ * family). `idx` is a CFR_DYN_* slot for the dynamic-color functions. */
+void cfr_palette_init(CfrTerm *vt);
+bool cfr_palette_set(CfrTerm *vt, uint8_t idx, uint32_t rgb);
+bool cfr_palette_reset(CfrTerm *vt, uint8_t idx);
+bool cfr_palette_reset_all(CfrTerm *vt);
 void cfr_dyn_color_init(CfrTerm *vt, const CfrConfig *cfg);
 uint32_t cfr_dyn_color_effective(const CfrTerm *vt, int idx);
 void cfr_dyn_color_set(CfrTerm *vt, int idx, bool set, uint32_t rgb);

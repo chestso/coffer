@@ -40,33 +40,97 @@ static void test_sgr_truecolor_bg(void)
     feed(vt, "\x1b[48;2;128;128;255mX");
 
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
-    ASSERT_EQ(s->bg_rgb, 0x008080FFu);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s->bg.rgb, 0x008080FFu);
+    ASSERT_EQ(cfr_style_bg_rgb(vt, s), 0x008080FFu);
 
     cfr_free(vt);
 }
 
-/* SGR 48;5;Nm should set a 256-color background. */
+/* SGR 48;5;Nm keeps the palette index so an OSC 4 override repaints it. */
 static void test_sgr_256_bg(void)
 {
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[48;5;196mX");
 
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_INDEXED);
+    ASSERT_EQ(s->bg.index, 196u);
+    ASSERT_EQ(cfr_style_bg_rgb(vt, s), cfr_palette_rgb(vt, 196));
 
     cfr_free(vt);
 }
 
-/* SGR 41m should set ANSI red background. */
+/* SGR 41m should set ANSI red background as palette entry 1. */
 static void test_sgr_ansi_bg(void)
 {
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b[41mX");
 
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_INDEXED);
+    ASSERT_EQ(s->bg.index, 1u);
+    ASSERT_EQ(cfr_style_bg_rgb(vt, s), cfr_palette_rgb(vt, 1));
 
+    cfr_free(vt);
+}
+
+/* The live palette starts identical to the built-in one. */
+static void test_palette_starts_builtin(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    for (int i = 0; i < 256; i++)
+        ASSERT_EQ(cfr_palette_rgb(vt, (uint8_t)i), cfr_default_palette_rgb((uint8_t)i));
+    ASSERT_EQ(cfr_palette_rgb(NULL, 1), cfr_default_palette_rgb(1));
+    cfr_free(vt);
+}
+
+/* Default style colors resolve through the live dynamic colors, never a
+ * snapshot: the default underline follows the default foreground. */
+static void test_style_color_resolution_defaults(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "X");
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(s->fg.kind, CFR_COLOR_KIND_DEFAULT);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_DEFAULT);
+    ASSERT_EQ(s->ul.kind, CFR_COLOR_KIND_DEFAULT);
+    ASSERT_EQ(cfr_style_fg_rgb(vt, s), cfr_default_fg_rgb());
+    ASSERT_EQ(cfr_style_bg_rgb(vt, s), cfr_default_bg_rgb());
+    ASSERT_EQ(cfr_style_ul_rgb(vt, s), cfr_default_fg_rgb());
+
+    feed(vt, "\x1b]10;rgb:12/34/56\x1b\\");
+    feed(vt, "\x1b]11;#abcdef\x1b\\");
+    ASSERT_EQ(cfr_style_fg_rgb(vt, s), 0x123456u);
+    ASSERT_EQ(cfr_style_bg_rgb(vt, s), 0xABCDEFu);
+    ASSERT_EQ(cfr_style_ul_rgb(vt, s), 0x123456u);
+
+    cfr_free(vt);
+}
+
+/* Indexed style colors resolve through the live palette. */
+static void test_style_color_resolution_indexed(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b[31;44mX");
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(cfr_style_fg_rgb(vt, s), cfr_palette_rgb(vt, 1));
+    ASSERT_EQ(cfr_style_bg_rgb(vt, s), cfr_palette_rgb(vt, 4));
+    cfr_free(vt);
+}
+
+/* Truecolor style colors bypass the palette. */
+static void test_style_color_resolution_rgb(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b[38;2;1;2;3;48;2;4;5;6;58;2;7;8;9mX");
+    const CfrStyle *s = cfr_cell_style(vt, 0, 0);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(cfr_style_fg_rgb(vt, s), 0x010203u);
+    ASSERT_EQ(cfr_style_bg_rgb(vt, s), 0x040506u);
+    ASSERT_EQ(cfr_style_ul_rgb(vt, s), 0x070809u);
     cfr_free(vt);
 }
 
@@ -77,10 +141,10 @@ static void test_sgr_combined_fg_bg(void)
     feed(vt, "\x1b[38;2;255;0;0;48;2;40;40;40mX");
 
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
-    ASSERT_EQ(s->bg_rgb, 0x00282828u);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
-    ASSERT_EQ(s->fg_rgb, 0x00FF0000u);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s->bg.rgb, 0x00282828u);
+    ASSERT_EQ(s->fg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s->fg.rgb, 0x00FF0000u);
 
     cfr_free(vt);
 }
@@ -99,8 +163,8 @@ static void test_sgr_trailing_semicolon_bg(void)
     feed(vt, "\x1b[48;2;128;128;255;mX");
 
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
-    ASSERT_EQ(s->bg_rgb, 0x008080FFu);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s->bg.rgb, 0x008080FFu);
 
     cfr_free(vt);
 }
@@ -112,8 +176,8 @@ static void test_sgr_trailing_semicolon_fg(void)
     feed(vt, "\x1b[38;2;255;0;0;mX");
 
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
-    ASSERT_EQ(s->fg_rgb, 0x00FF0000u);
+    ASSERT_EQ(s->fg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s->fg.rgb, 0x00FF0000u);
 
     cfr_free(vt);
 }
@@ -125,10 +189,10 @@ static void test_sgr_combined_trailing_semicolon(void)
     feed(vt, "\x1b[38;2;255;0;0;48;2;40;40;40;mX");
 
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
-    ASSERT_EQ(s->bg_rgb, 0x00282828u);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
-    ASSERT_EQ(s->fg_rgb, 0x00FF0000u);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s->bg.rgb, 0x00282828u);
+    ASSERT_EQ(s->fg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s->fg.rgb, 0x00FF0000u);
 
     cfr_free(vt);
 }
@@ -141,8 +205,8 @@ static void test_sgr_reset_bg(void)
 
     const CfrStyle *sa = cfr_cell_style(vt, 0, 0);
     const CfrStyle *sb = cfr_cell_style(vt, 0, 1);
-    ASSERT_TRUE((sa->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
-    ASSERT_TRUE((sb->color_flags & CFR_COLOR_DEFAULT_BG) != 0);
+    ASSERT_EQ(sa->bg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(sb->bg.kind, CFR_COLOR_KIND_DEFAULT);
 
     cfr_free(vt);
 }
@@ -156,10 +220,10 @@ static void test_sgr_multi_attr_trailing_semicolon(void)
 
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->attrs & CFR_ATTR_BOLD) != 0);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_FG) == 0);
-    ASSERT_EQ(s->fg_rgb, 0x00FF0000u);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
-    ASSERT_EQ(s->bg_rgb, 0x00282828u);
+    ASSERT_EQ(s->fg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s->fg.rgb, 0x00FF0000u);
+    ASSERT_EQ(s->bg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s->bg.rgb, 0x00282828u);
 
     cfr_free(vt);
 }
@@ -220,8 +284,8 @@ static void test_sgr_overline_combined(void)
     const CfrStyle *s = cfr_cell_style(vt, 0, 0);
     ASSERT_TRUE((s->attrs & CFR_ATTR_OVERLINE) != 0);
     ASSERT_EQ(s->underline, CFR_UL_CURLY);
-    ASSERT_TRUE((s->color_flags & CFR_COLOR_DEFAULT_UL) == 0);
-    ASSERT_EQ(s->ul_rgb, 0x00FF0000u);
+    ASSERT_EQ(s->ul.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s->ul.rgb, 0x00FF0000u);
 
     cfr_free(vt);
 }
@@ -236,12 +300,12 @@ static void test_bce_erase_in_line(void)
     feed(vt, "\x1b[48;2;128;128;255mHi\x1b[K");
 
     const CfrStyle *s3 = cfr_cell_style(vt, 0, 3);
-    ASSERT_TRUE((s3->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
-    ASSERT_EQ(s3->bg_rgb, 0x008080FFu);
+    ASSERT_EQ(s3->bg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s3->bg.rgb, 0x008080FFu);
 
     const CfrStyle *s79 = cfr_cell_style(vt, 0, 79);
-    ASSERT_TRUE((s79->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
-    ASSERT_EQ(s79->bg_rgb, 0x008080FFu);
+    ASSERT_EQ(s79->bg.kind, CFR_COLOR_KIND_RGB);
+    ASSERT_EQ(s79->bg.rgb, 0x008080FFu);
 
     cfr_free(vt);
 }
@@ -255,11 +319,13 @@ static void test_bce_erase_in_display(void)
 
     /* Row 0: cell 1..9 should have the 256-col background. */
     const CfrStyle *s1 = cfr_cell_style(vt, 0, 1);
-    ASSERT_TRUE((s1->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
+    ASSERT_EQ(s1->bg.kind, CFR_COLOR_KIND_INDEXED);
+    ASSERT_EQ(s1->bg.index, 196u);
 
     /* Row 1: cell 0 should have the 256-col background. */
     const CfrStyle *s10 = cfr_cell_style(vt, 1, 0);
-    ASSERT_TRUE((s10->color_flags & CFR_COLOR_DEFAULT_BG) == 0);
+    ASSERT_EQ(s10->bg.kind, CFR_COLOR_KIND_INDEXED);
+    ASSERT_EQ(s10->bg.index, 196u);
 
     cfr_free(vt);
 }
@@ -271,6 +337,10 @@ int main(int argc, char **argv)
     RUN_TEST(test_sgr_truecolor_bg);
     RUN_TEST(test_sgr_256_bg);
     RUN_TEST(test_sgr_ansi_bg);
+    RUN_TEST(test_palette_starts_builtin);
+    RUN_TEST(test_style_color_resolution_defaults);
+    RUN_TEST(test_style_color_resolution_indexed);
+    RUN_TEST(test_style_color_resolution_rgb);
     RUN_TEST(test_sgr_combined_fg_bg);
     RUN_TEST(test_sgr_trailing_semicolon_bg);
     RUN_TEST(test_sgr_trailing_semicolon_fg);

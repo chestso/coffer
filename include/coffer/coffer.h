@@ -98,25 +98,39 @@ typedef enum
     CFR_UL_DASHED = 5,
 } CfrUnderline;
 
-/* Color flags */
-enum
+/* How a style color was requested. DEFAULT is zero, so a zero-initialized
+ * CfrStyleColor (and a zero-initialized CfrStyle) is all defaults. */
+typedef enum
 {
-    CFR_COLOR_DEFAULT_FG = 1u << 0,
-    CFR_COLOR_DEFAULT_BG = 1u << 1,
-    CFR_COLOR_DEFAULT_UL = 1u << 2,
-    CFR_COLOR_INDEXED_FG = 1u << 3, /* fg_rgb low byte is a 0-255 palette index, not RGB */
-    CFR_COLOR_INDEXED_BG = 1u << 4,
-};
+    CFR_COLOR_KIND_DEFAULT = 0, /* dynamic color (OSC 10/11/12) */
+    CFR_COLOR_KIND_INDEXED = 1, /* 0–255 palette index; resolve through cfr_palette_rgb() */
+    CFR_COLOR_KIND_RGB = 2,     /* explicit 0x00RRGGBB */
+} CfrColorKind;
+
+/* One requested color of a style. A style records what the application
+ * asked for, not a resolved RGB value: an indexed color must survive an
+ * OSC 4 palette change and repaint with the new value. Renderers resolve
+ * through cfr_style_fg_rgb() / _bg_ / _ul_, or switch on `kind`.
+ *
+ * `reserved` is always 0. It exists so CfrStyleColor has no implicit
+ * padding, which keeps the style intern table's raw-byte hash and memcmp
+ * deterministic. */
+typedef struct
+{
+    uint32_t rgb;      /* valid when kind == CFR_COLOR_KIND_RGB */
+    uint8_t index;     /* valid when kind == CFR_COLOR_KIND_INDEXED */
+    uint8_t kind;      /* CfrColorKind */
+    uint16_t reserved; /* always 0 */
+} CfrStyleColor;
 
 typedef struct
 {
-    uint32_t fg_rgb; /* 0x00RRGGBB if RGB; low byte = index if indexed */
-    uint32_t bg_rgb;
-    uint32_t ul_rgb;
-    uint16_t attrs;       /* CFR_ATTR_* bitmask */
-    uint8_t underline;    /* CfrUnderline */
-    uint8_t font;         /* font select (0 = primary, 1-9 alt fonts via SGR 10-19) */
-    uint16_t color_flags; /* CFR_COLOR_* */
+    CfrStyleColor fg;
+    CfrStyleColor bg;
+    CfrStyleColor ul;
+    uint16_t attrs;    /* CFR_ATTR_* bitmask */
+    uint8_t underline; /* CfrUnderline */
+    uint8_t font;      /* font select (0 = primary, 1-9 alt fonts via SGR 10-19) */
 } CfrStyle;
 
 /* Row addressing. Every accessor that takes a `row` uses UNIFIED rows:
@@ -639,8 +653,26 @@ uint32_t cfr_default_bg_rgb(void);
 uint32_t cfr_default_fg_rgb(void);
 
 /* Lookup a color from the built-in 256-color palette (index 0–255).
- * Returns 0x00RRGGBB. The palette is not user-configurable (hardcoded). */
+ * Returns 0x00RRGGBB. This is the engine's immutable default palette; for
+ * the value a renderer should draw, use cfr_palette_rgb(), which includes
+ * OSC 4 overrides. */
 uint32_t cfr_default_palette_rgb(uint8_t index);
+
+/* Lookup a color from the terminal's live 256-color palette: the built-in
+ * value unless an application changed the entry with OSC 4. Returns
+ * 0x00RRGGBB. `vt == NULL` falls back to the built-in palette. */
+uint32_t cfr_palette_rgb(const CfrTerm *vt, uint8_t index);
+
+/* Resolve one color of a style to the value a renderer should draw:
+ *   RGB       -> the explicit color
+ *   INDEXED   -> cfr_palette_rgb() for its index (OSC 4 overrides included)
+ *   DEFAULT   -> the live dynamic color (the default underline resolves to
+ *                the default foreground, matching xterm)
+ * These helpers are the recommended way to read colors: they keep the
+ * palette/default rules in one place. */
+uint32_t cfr_style_fg_rgb(const CfrTerm *vt, const CfrStyle *style);
+uint32_t cfr_style_bg_rgb(const CfrTerm *vt, const CfrStyle *style);
+uint32_t cfr_style_ul_rgb(const CfrTerm *vt, const CfrStyle *style);
 
 /* Read one dynamic color (the xterm OSC 10/11/12 family): `code` is
  * 10 (default foreground), 11 (default background) or 12 (cursor).

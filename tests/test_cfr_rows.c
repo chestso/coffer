@@ -136,7 +136,7 @@ static void test_page_scoped_ids_resolve_per_row(void)
 
         const CfrStyle *st = cfr_cell_style(vt, row, 0);
         ASSERT_NOT_NULL(st);
-        ASSERT_EQ(st->fg_rgb, (uint32_t)(line % 256) << 16);
+        ASSERT_EQ(st->fg.rgb, (uint32_t)(line % 256) << 16);
 
         /* The page-scoped id repeats across pages for different links. */
         if (s >= (int)CFR_SB_PAGE_ROWS) {

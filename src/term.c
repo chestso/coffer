@@ -99,8 +99,6 @@ CfrTerm *cfr_new_with_allocator(const CfrConfig *cfg, const CfrAllocator *alloc)
     vt->cursor.shape = vt->default_shape;
     /* Mirror the initial cursor so the first flush doesn't spuriously damage. */
     vt->dmg_cursor_visible = true;
-    vt->cursor.pen.color_flags =
-        CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_BG | CFR_COLOR_DEFAULT_UL;
     vt->modes[CFR_MODE_CURSOR_VISIBLE] = true;
     vt->modes[CFR_MODE_CURSOR_BLINK] = vt->default_blink;
     vt->modes[CFR_MODE_DECAWM] = true;
@@ -108,6 +106,7 @@ CfrTerm *cfr_new_with_allocator(const CfrConfig *cfg, const CfrAllocator *alloc)
     vt->charset_active = 0;
 
     cfr_dyn_color_init(vt, cfg);
+    cfr_palette_init(vt);
     cfr_parser_init(&vt->parser);
 
     /* Tab stops every 8 columns by default. */

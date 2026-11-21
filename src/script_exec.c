@@ -230,12 +230,13 @@ static void dump_cells(CfrTerm *vt, FILE *out, int row, int col_start,
             fprintf(out,
                     "  col %3d: %s w=%d attrs=0x%04X "
                     "fg=%06X%s bg=%06X%s ul=%d ul_rgb=%06X%s link=%llx\n",
-                    c, cp_str, cell->width, st->attrs, st->fg_rgb,
-                    (st->color_flags & CFR_COLOR_DEFAULT_FG) ? "(def)" : "",
-                    st->bg_rgb,
-                    (st->color_flags & CFR_COLOR_DEFAULT_BG) ? "(def)" : "",
-                    st->underline, st->ul_rgb,
-                    (st->color_flags & CFR_COLOR_DEFAULT_UL) ? "(def)" : "",
+                    c, cp_str, cell->width, st->attrs,
+                    cfr_style_fg_rgb(vt, st),
+                    (st->fg.kind == CFR_COLOR_KIND_DEFAULT) ? "(def)" : "",
+                    cfr_style_bg_rgb(vt, st),
+                    (st->bg.kind == CFR_COLOR_KIND_DEFAULT) ? "(def)" : "",
+                    st->underline, cfr_style_ul_rgb(vt, st),
+                    (st->ul.kind == CFR_COLOR_KIND_DEFAULT) ? "(def)" : "",
                     (unsigned long long)cfr_cell_hyperlink_key(vt, row, c));
         else
             fprintf(out, "  col %3d: %s w=%d (no style)\n", c, cp_str,
@@ -256,19 +257,22 @@ static void dump_styles(CfrTerm *vt, FILE *out, int row)
         const CfrStyle *st = cfr_cell_style(vt, row, c);
         if (!st)
             continue;
-        if (st->underline || st->bg_rgb || st->fg_rgb || st->attrs ||
-            st->color_flags) {
+        /* Only cells that carry something beyond the default style. */
+        if (st->underline || st->attrs ||
+            st->fg.kind != CFR_COLOR_KIND_DEFAULT ||
+            st->bg.kind != CFR_COLOR_KIND_DEFAULT ||
+            st->ul.kind != CFR_COLOR_KIND_DEFAULT) {
             char cp_str[16];
             describe_cp(cell, cp_str, sizeof(cp_str));
             fprintf(out,
                     "  col %3d: %s ul=%d ul_rgb=%06X%s fg=%06X%s "
                     "bg=%06X%s attrs=%02X\n",
-                    c, cp_str, st->underline, st->ul_rgb,
-                    (st->color_flags & CFR_COLOR_DEFAULT_UL) ? "(def)" : "",
-                    st->fg_rgb,
-                    (st->color_flags & CFR_COLOR_DEFAULT_FG) ? "(def)" : "",
-                    st->bg_rgb,
-                    (st->color_flags & CFR_COLOR_DEFAULT_BG) ? "(def)" : "",
+                    c, cp_str, st->underline, cfr_style_ul_rgb(vt, st),
+                    (st->ul.kind == CFR_COLOR_KIND_DEFAULT) ? "(def)" : "",
+                    cfr_style_fg_rgb(vt, st),
+                    (st->fg.kind == CFR_COLOR_KIND_DEFAULT) ? "(def)" : "",
+                    cfr_style_bg_rgb(vt, st),
+                    (st->bg.kind == CFR_COLOR_KIND_DEFAULT) ? "(def)" : "",
                     st->attrs);
         }
         if (cell->width == 2)

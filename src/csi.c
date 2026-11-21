@@ -64,27 +64,43 @@ static void cursor_to_origin(CfrTerm *vt, int row, int col)
 
 static void reset_pen(CfrTerm *vt)
 {
+    /* Zeroed style colors are defaults (CFR_COLOR_KIND_DEFAULT == 0). */
     memset(&vt->cursor.pen, 0, sizeof(vt->cursor.pen));
-    vt->cursor.pen.color_flags =
-        CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_BG | CFR_COLOR_DEFAULT_UL;
 }
 
-/* Consume an SGR color sub-sequence starting at index `i`. Sets
- * *out_rgb / *out_default per the parsed mode. Returns the new index
- * after the sub-sequence. Both 38;5;N and 38:5:N and 38;2;R;G;B and
- * 38:2:R:G:B forms are accepted (xterm and ITU/ISO variants). */
-static int parse_color_arg(CfrTerm *vt, int i, uint32_t *out_rgb, bool *out_default)
+/* Set all four fields of a style color. Keeping `reserved` at 0 here (and
+ * everywhere a color is built) preserves the no-padding invariant the
+ * style intern table's raw-byte hash relies on. */
+static void color_set(CfrStyleColor *c, CfrColorKind kind, uint8_t index,
+                      uint32_t rgb)
+{
+    c->kind = (uint8_t)kind;
+    c->index = index;
+    c->rgb = rgb;
+    c->reserved = 0;
+}
+
+/* Consume an SGR color sub-sequence starting at index `i`. Fills `out`
+ * and sets *out_valid; an unknown mode or a missing 256-color index
+ * leaves the pen's color unchanged. Returns the new index after the
+ * sub-sequence. Both 38;5;N and 38:5:N and 38;2;R;G;B and 38:2:R:G:B
+ * forms are accepted (xterm and ITU/ISO variants). */
+static int parse_color_arg(CfrTerm *vt, int i, CfrStyleColor *out,
+                           bool *out_valid)
 {
     CfrParser *p = &vt->parser;
+    *out_valid = false;
     if (i >= p->param_count) {
-        *out_default = true;
+        /* Bare 38/48/58 with no mode: reset to the default color. */
+        color_set(out, CFR_COLOR_KIND_DEFAULT, 0, 0);
+        *out_valid = true;
         return i;
     }
     uint32_t mode = p->params[i++];
     if (mode == 5) {
         if (i < p->param_count) {
-            *out_rgb = cfr_palette_lookup(vt, (uint8_t)p->params[i++]);
-            *out_default = false;
+            color_set(out, CFR_COLOR_KIND_INDEXED, (uint8_t)p->params[i++], 0);
+            *out_valid = true;
         }
     } else if (mode == 2) {
         /* CSI 38;2;R;G;B  or  CSI 38:2:R:G:B  or  CSI 38:2::R:G:B —
@@ -97,8 +113,9 @@ static int parse_color_arg(CfrTerm *vt, int i, uint32_t *out_rgb, bool *out_defa
         uint32_t r = (i < p->param_count) ? p->params[i++] : 0;
         uint32_t g = (i < p->param_count) ? p->params[i++] : 0;
         uint32_t b = (i < p->param_count) ? p->params[i++] : 0;
-        *out_rgb = ((r & 0xFFu) << 16) | ((g & 0xFFu) << 8) | (b & 0xFFu);
-        *out_default = false;
+        color_set(out, CFR_COLOR_KIND_RGB, 0,
+                  ((r & 0xFFu) << 16) | ((g & 0xFFu) << 8) | (b & 0xFFu));
+        *out_valid = true;
     }
     return i;
 }
@@ -201,11 +218,9 @@ static void sgr_dispatch(CfrTerm *vt)
         case 35:
         case 36:
         case 37:
-        {
-            vt->cursor.pen.fg_rgb = cfr_palette_lookup(vt, (uint8_t)(s - 30));
-            vt->cursor.pen.color_flags &= (uint16_t)~CFR_COLOR_DEFAULT_FG;
+            color_set(&vt->cursor.pen.fg, CFR_COLOR_KIND_INDEXED,
+                      (uint8_t)(s - 30), 0);
             break;
-        }
         case 90:
         case 91:
         case 92:
@@ -214,26 +229,20 @@ static void sgr_dispatch(CfrTerm *vt)
         case 95:
         case 96:
         case 97:
-        {
-            vt->cursor.pen.fg_rgb = cfr_palette_lookup(vt, (uint8_t)(s - 90 + 8));
-            vt->cursor.pen.color_flags &= (uint16_t)~CFR_COLOR_DEFAULT_FG;
+            color_set(&vt->cursor.pen.fg, CFR_COLOR_KIND_INDEXED,
+                      (uint8_t)(s - 90 + 8), 0);
             break;
-        }
         case 38:
         {
-            bool def = false;
-            uint32_t rgb = 0;
-            i = parse_color_arg(vt, i, &rgb, &def);
-            if (def) {
-                vt->cursor.pen.color_flags |= CFR_COLOR_DEFAULT_FG;
-            } else {
-                vt->cursor.pen.fg_rgb = rgb;
-                vt->cursor.pen.color_flags &= (uint16_t)~CFR_COLOR_DEFAULT_FG;
-            }
+            CfrStyleColor c = { 0 };
+            bool valid = false;
+            i = parse_color_arg(vt, i, &c, &valid);
+            if (valid)
+                vt->cursor.pen.fg = c;
             break;
         }
         case 39:
-            vt->cursor.pen.color_flags |= CFR_COLOR_DEFAULT_FG;
+            color_set(&vt->cursor.pen.fg, CFR_COLOR_KIND_DEFAULT, 0, 0);
             break;
         /* Background 16-color (40-47, 100-107). */
         case 40:
@@ -244,11 +253,9 @@ static void sgr_dispatch(CfrTerm *vt)
         case 45:
         case 46:
         case 47:
-        {
-            vt->cursor.pen.bg_rgb = cfr_palette_lookup(vt, (uint8_t)(s - 40));
-            vt->cursor.pen.color_flags &= (uint16_t)~CFR_COLOR_DEFAULT_BG;
+            color_set(&vt->cursor.pen.bg, CFR_COLOR_KIND_INDEXED,
+                      (uint8_t)(s - 40), 0);
             break;
-        }
         case 100:
         case 101:
         case 102:
@@ -257,43 +264,33 @@ static void sgr_dispatch(CfrTerm *vt)
         case 105:
         case 106:
         case 107:
-        {
-            vt->cursor.pen.bg_rgb = cfr_palette_lookup(vt, (uint8_t)(s - 100 + 8));
-            vt->cursor.pen.color_flags &= (uint16_t)~CFR_COLOR_DEFAULT_BG;
+            color_set(&vt->cursor.pen.bg, CFR_COLOR_KIND_INDEXED,
+                      (uint8_t)(s - 100 + 8), 0);
             break;
-        }
         case 48:
         {
-            bool def = false;
-            uint32_t rgb = 0;
-            i = parse_color_arg(vt, i, &rgb, &def);
-            if (def) {
-                vt->cursor.pen.color_flags |= CFR_COLOR_DEFAULT_BG;
-            } else {
-                vt->cursor.pen.bg_rgb = rgb;
-                vt->cursor.pen.color_flags &= (uint16_t)~CFR_COLOR_DEFAULT_BG;
-            }
+            CfrStyleColor c = { 0 };
+            bool valid = false;
+            i = parse_color_arg(vt, i, &c, &valid);
+            if (valid)
+                vt->cursor.pen.bg = c;
             break;
         }
         case 49:
-            vt->cursor.pen.color_flags |= CFR_COLOR_DEFAULT_BG;
+            color_set(&vt->cursor.pen.bg, CFR_COLOR_KIND_DEFAULT, 0, 0);
             break;
         /* Underline color (58/59). */
         case 58:
         {
-            bool def = false;
-            uint32_t rgb = 0;
-            i = parse_color_arg(vt, i, &rgb, &def);
-            if (def) {
-                vt->cursor.pen.color_flags |= CFR_COLOR_DEFAULT_UL;
-            } else {
-                vt->cursor.pen.ul_rgb = rgb;
-                vt->cursor.pen.color_flags &= (uint16_t)~CFR_COLOR_DEFAULT_UL;
-            }
+            CfrStyleColor c = { 0 };
+            bool valid = false;
+            i = parse_color_arg(vt, i, &c, &valid);
+            if (valid)
+                vt->cursor.pen.ul = c;
             break;
         }
         case 59:
-            vt->cursor.pen.color_flags |= CFR_COLOR_DEFAULT_UL;
+            color_set(&vt->cursor.pen.ul, CFR_COLOR_KIND_DEFAULT, 0, 0);
             break;
         default:
             /* SGR 6 (rapid blink), 10-19 (alternate fonts), 26 (proportional

@@ -25,9 +25,7 @@
 static void erase_cells(CfrTerm *vt, CfrCell *dst, int count)
 {
     CfrStyle erase_style = { 0 };
-    erase_style.bg_rgb = vt->cursor.pen.bg_rgb;
-    erase_style.color_flags = (uint16_t)(CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_UL |
-                                         (vt->cursor.pen.color_flags & (uint16_t)CFR_COLOR_DEFAULT_BG));
+    erase_style.bg = vt->cursor.pen.bg;
     uint32_t style_id = 0;
     (void)cfr_style_intern(vt, vt->grid, &erase_style, &style_id);
     CfrCell blank = { 0 };

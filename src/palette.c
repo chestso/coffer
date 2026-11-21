@@ -38,9 +38,8 @@ static const uint8_t base16[16][3] = {
     { 0xff, 0xff, 0xff }, /* 15 bright white   */
 };
 
-uint32_t cfr_palette_lookup(CfrTerm *vt, uint8_t idx)
+static uint32_t builtin_palette_rgb(uint8_t idx)
 {
-    (void)vt; /* OSC 4 palette overrides will hook in here later. */
     if (idx < 16) {
         const uint8_t *c = base16[idx];
         return ((uint32_t)c[0] << 16) | ((uint32_t)c[1] << 8) | c[2];
@@ -59,6 +58,56 @@ uint32_t cfr_palette_lookup(CfrTerm *vt, uint8_t idx)
     return ((uint32_t)v << 16) | ((uint32_t)v << 8) | v;
 }
 
+/* Seed the live palette from the built-ins. Fixed-size, allocation-free. */
+void cfr_palette_init(CfrTerm *vt)
+{
+    for (int i = 0; i < 256; i++)
+        vt->palette[i] = builtin_palette_rgb((uint8_t)i);
+}
+
+/* Change one entry. Returns true when the effective value changed, so the
+ * caller can damage the grid once per OSC instead of per entry. */
+bool cfr_palette_set(CfrTerm *vt, uint8_t idx, uint32_t rgb)
+{
+    rgb &= 0x00FFFFFFu;
+    if (vt->palette[idx] == rgb)
+        return false;
+    vt->palette[idx] = rgb;
+    return true;
+}
+
+/* Restore one entry to its built-in value. Returns true on a change. */
+bool cfr_palette_reset(CfrTerm *vt, uint8_t idx)
+{
+    uint32_t builtin = builtin_palette_rgb(idx);
+    if (vt->palette[idx] == builtin)
+        return false;
+    vt->palette[idx] = builtin;
+    return true;
+}
+
+/* Restore every entry (OSC 104 with no parameters, RIS). Returns true if
+ * any entry changed. */
+bool cfr_palette_reset_all(CfrTerm *vt)
+{
+    bool changed = false;
+    for (int i = 0; i < 256; i++) {
+        uint32_t builtin = builtin_palette_rgb((uint8_t)i);
+        if (vt->palette[i] != builtin) {
+            vt->palette[i] = builtin;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+uint32_t cfr_palette_rgb(const CfrTerm *vt, uint8_t index)
+{
+    if (!vt)
+        return builtin_palette_rgb(index);
+    return vt->palette[index];
+}
+
 uint32_t cfr_default_bg_rgb(void)
 {
     return 0x000000u; /* pitch-black */
@@ -71,7 +120,41 @@ uint32_t cfr_default_fg_rgb(void)
 
 uint32_t cfr_default_palette_rgb(uint8_t index)
 {
-    return cfr_palette_lookup(NULL, index);
+    return builtin_palette_rgb(index);
+}
+
+/* Resolution rule for one style color. A NULL terminal has no dynamic
+ * colors or overrides, so it falls back to the configured defaults. */
+static uint32_t style_color_rgb(const CfrTerm *vt, const CfrStyleColor *c,
+                                int dyn_idx)
+{
+    switch (c->kind) {
+    case CFR_COLOR_KIND_RGB:
+        return c->rgb;
+    case CFR_COLOR_KIND_INDEXED:
+        return cfr_palette_rgb(vt, c->index);
+    default:
+        if (vt)
+            return cfr_dyn_color_effective(vt, dyn_idx);
+        return (dyn_idx == CFR_DYN_BG) ? cfr_default_bg_rgb()
+                                       : cfr_default_fg_rgb();
+    }
+}
+
+uint32_t cfr_style_fg_rgb(const CfrTerm *vt, const CfrStyle *style)
+{
+    return style_color_rgb(vt, &style->fg, CFR_DYN_FG);
+}
+
+uint32_t cfr_style_bg_rgb(const CfrTerm *vt, const CfrStyle *style)
+{
+    return style_color_rgb(vt, &style->bg, CFR_DYN_BG);
+}
+
+uint32_t cfr_style_ul_rgb(const CfrTerm *vt, const CfrStyle *style)
+{
+    /* xterm's default underline color is the default foreground. */
+    return style_color_rgb(vt, &style->ul, CFR_DYN_FG);
 }
 
 /* ------------------------------------------------------------------ */

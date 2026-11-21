@@ -269,7 +269,7 @@ static void check_rich_cell(CfrTerm *vt, int row, int col, uint64_t key)
     const CfrStyle *st = cfr_cell_style(vt, row, col);
     ASSERT_NOT_NULL(st);
     ASSERT_TRUE((st->attrs & CFR_ATTR_BOLD) != 0);
-    ASSERT_EQ(st->fg_rgb, 0x010203u);
+    ASSERT_EQ(st->fg.rgb, 0x010203u);
 
     uint8_t uri[64];
     size_t n = cfr_cell_get_hyperlink(vt, row, col, uri, sizeof(uri) - 1);
@@ -336,7 +336,7 @@ static void record_push(int row, uint32_t lineage, void *user)
 
     if (cell && cell->cp == (uint32_t)'e') {
         const CfrStyle *st = cfr_cell_style(p->vt, row, 0);
-        if (st && (st->attrs & CFR_ATTR_BOLD) != 0 && st->fg_rgb == 0x010203u)
+        if (st && (st->attrs & CFR_ATTR_BOLD) != 0 && st->fg.rgb == 0x010203u)
             p->rich_resolved = true;
     }
 }
