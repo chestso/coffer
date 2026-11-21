@@ -399,9 +399,10 @@ static void test_osc8_empty_uri_unlinks(void)
 {
     CfrTerm *vt = make_term(24, 80);
     /* Hex escapes greedily consume hex digits — break with adjacent
-     * string literals so \x07 stays a single byte. */
+     * string literals so \x07 stays a single byte. An id on the closing
+     * sequence must not keep the link open. */
     feed(vt, "\x1b]8;;http://example.com\x07"
-             "A\x1b]8;;\x07"
+             "A\x1b]8;id=foo;\x07"
              "B");
     const CfrCell *a = cfr_get_cell(vt, 0, 0);
     const CfrCell *b = cfr_get_cell(vt, 0, 1);
@@ -476,11 +477,10 @@ static void test_osc8_id_cap(void)
     cfr_free(vt);
 }
 
-static void test_osc8_with_id_param(void)
+static void test_osc8_id_param_uri_extraction(void)
 {
-    /* The OSC 8 `id=` parameter is the only spec-defined param. We
-     * parse-and-discard it for v1 — what matters is the URI extraction
-     * picks the bytes after the FIRST ';'. */
+    /* The OSC 8 `id=` parameter must not disturb URI extraction: the URI
+     * is still the bytes after the FIRST ';'. */
     CfrTerm *vt = make_term(24, 80);
     feed(vt, "\x1b]8;id=foo;http://x\x07Y");
     const CfrCell *c = cfr_get_cell(vt, 0, 0);
@@ -491,6 +491,198 @@ static void test_osc8_with_id_param(void)
     ASSERT_EQ(n, (size_t)8);
     uri[n] = '\0';
     ASSERT_STR_EQ((const char *)uri, "http://x");
+    cfr_free(vt);
+}
+
+static void test_osc8_id_identity(void)
+{
+    /* The id is part of link identity, but per the spec it only connects
+     * cells whose URIs also match. Same URI + different id and same id +
+     * different URI are both distinct links; an explicit id is also
+     * distinct from the same URI with no id. */
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b]8;id=one;http://a\x07"
+             "A\x1b]8;;\x07"
+             "\x1b]8;id=one;http://a\x07"
+             "B\x1b]8;;\x07"
+             "\x1b]8;id=two;http://a\x07"
+             "C\x1b]8;;\x07"
+             "\x1b]8;id=one;http://b\x07"
+             "D\x1b]8;;\x07"
+             "\x1b]8;;http://a\x07"
+             "E\x1b]8;;\x07"
+             "\x1b]8;;http://b\x07"
+             "F");
+    uint64_t ka = cfr_cell_hyperlink_key(vt, 0, 0);
+    uint64_t kb = cfr_cell_hyperlink_key(vt, 0, 1);
+    uint64_t kc = cfr_cell_hyperlink_key(vt, 0, 2);
+    uint64_t kd = cfr_cell_hyperlink_key(vt, 0, 3);
+    uint64_t ke = cfr_cell_hyperlink_key(vt, 0, 4);
+    uint64_t kf = cfr_cell_hyperlink_key(vt, 0, 5);
+    ASSERT_TRUE(ka != 0);
+    ASSERT_TRUE(ka == kb); /* same URI + id → one link */
+    ASSERT_TRUE(ka != kc); /* same URI, different id → distinct */
+    ASSERT_TRUE(ka != kd); /* same id, different URI → distinct */
+    ASSERT_TRUE(ke != ka); /* no id vs explicit id → distinct */
+    ASSERT_TRUE(kf != kd); /* no id vs explicit id, URI b */
+    ASSERT_TRUE(ke != kf);
+    /* Distinct identities must be distinct page entries, not just keys. */
+    const CfrCell *a = cfr_get_cell(vt, 0, 0);
+    const CfrCell *c = cfr_get_cell(vt, 0, 2);
+    ASSERT_NOT_NULL(a);
+    ASSERT_NOT_NULL(c);
+    ASSERT_NEQ(a->hyperlink_id, c->hyperlink_id);
+    cfr_free(vt);
+
+    /* Identity is deterministic across terminals. */
+    CfrTerm *other = make_term(5, 20);
+    feed(other, "\x1b]8;id=one;http://a\x07X");
+    ASSERT_EQ(cfr_cell_hyperlink_key(other, 0, 0), ka);
+    cfr_free(other);
+}
+
+static void test_osc8_id_param_rules(void)
+{
+    /* Params are ':'-separated tokens; the first whole `id=` token with a
+     * nonempty value wins (kitty's parse_osc_8). Unknown keys, `xid=`,
+     * and later ids must not affect identity; an id value may contain
+     * '='. */
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b]8;foo=bar:id=one:z=9;http://a\x07"
+             "A\x1b]8;;\x07"
+             "\x1b]8;id=one;http://a\x07"
+             "B\x1b]8;;\x07"
+             "\x1b]8;id=two:id=one;http://a\x07"
+             "C\x1b]8;;\x07"
+             "\x1b]8;id=two;http://a\x07"
+             "D\x1b]8;;\x07"
+             "\x1b]8;xid=one;http://a\x07"
+             "E\x1b]8;;\x07"
+             "\x1b]8;id=a=b;http://a\x07"
+             "F\x1b]8;;\x07"
+             "\x1b]8;id=a=b;http://a\x07"
+             "G\x1b]8;;\x07"
+             "\x1b]8;;http://a\x07"
+             "H");
+    uint64_t ka = cfr_cell_hyperlink_key(vt, 0, 0);
+    uint64_t kc = cfr_cell_hyperlink_key(vt, 0, 2);
+    uint64_t kf = cfr_cell_hyperlink_key(vt, 0, 5);
+    ASSERT_TRUE(ka != 0);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 1), ka);
+    ASSERT_TRUE(ka != kc);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 3), kc);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 4),
+              cfr_cell_hyperlink_key(vt, 0, 7)); /* xid= ignored → no id */
+    ASSERT_TRUE(kf != ka);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 6), kf);
+    cfr_free(vt);
+}
+
+static void test_osc8_id_empty_is_no_id(void)
+{
+    /* Per the spec an empty id and no id are interchangeable. */
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b]8;;http://a\x07"
+             "A\x1b]8;;\x07"
+             "\x1b]8;id=;http://a\x07"
+             "B\x1b]8;;\x07"
+             "\x1b]8;id=:;http://a\x07"
+             "C\x1b]8;;\x07"
+             "\x1b]8;:;http://a\x07"
+             "D");
+    uint64_t ka = cfr_cell_hyperlink_key(vt, 0, 0);
+    ASSERT_TRUE(ka != 0);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 1), ka);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 2), ka);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 3), ka);
+    cfr_free(vt);
+}
+
+static void test_osc8_id_truncated(void)
+{
+    /* kitty caps the id at CFR_OSC8_ID_MAX bytes for identity, so
+     * ids that differ only past the cap are the same link. */
+    enum
+    {
+        N = CFR_OSC8_ID_MAX + 8
+    };
+    char id1[N + 1], id2[N + 1];
+    char seq[2 * N + 64];
+    memset(id1, 'a', (size_t)N);
+    id1[N] = '\0';
+    memcpy(id2, id1, (size_t)N + 1);
+    id2[N - 1] = 'b';
+
+    int n = snprintf(seq, sizeof(seq),
+                     "\x1b]8;id=%s;http://x\x07"
+                     "1\x1b]8;;\x07"
+                     "\x1b]8;id=%s;http://x\x07"
+                     "2",
+                     id1, id2);
+    ASSERT_TRUE(n > 0 && (size_t)n < sizeof(seq));
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, seq);
+    ASSERT_TRUE(cfr_cell_hyperlink_key(vt, 0, 0) != 0);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 0),
+              cfr_cell_hyperlink_key(vt, 0, 1));
+    cfr_free(vt);
+}
+
+static void test_osc8_id_no_uri_alias(void)
+{
+    /* Identity is `[id]:URI`, so the id field is always a real field.
+     * Hashing the bare URI when there is no id would make a no-id link
+     * whose URI is `<id>:<uri>` alias the id-bearing link (`id`, `<uri>`)
+     * — and URIs routinely contain ':'. */
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b]8;id=http;x\x07"
+             "A\x1b]8;;\x07"
+             "\x1b]8;;http:x\x07"
+             "B");
+    uint64_t ka = cfr_cell_hyperlink_key(vt, 0, 0);
+    uint64_t kb = cfr_cell_hyperlink_key(vt, 0, 1);
+    ASSERT_TRUE(ka != 0);
+    ASSERT_TRUE(kb != 0);
+    ASSERT_TRUE(ka != kb);
+    cfr_free(vt);
+}
+
+static void test_osc8_malformed_ignored(void)
+{
+    /* A body with no params/URI separator is malformed; kitty ignores it
+     * rather than closing the active link. */
+    CfrTerm *vt = make_term(24, 80);
+    feed(vt, "\x1b]8;;http://a\x07"
+             "A\x1b]8\x07"
+             "B");
+    uint64_t ka = cfr_cell_hyperlink_key(vt, 0, 0);
+    ASSERT_TRUE(ka != 0);
+    ASSERT_EQ(cfr_cell_hyperlink_key(vt, 0, 1), ka);
+    cfr_free(vt);
+}
+
+static void test_osc8_id_survives_scrollback(void)
+{
+    /* Scrolling a linked row into scrollback re-interns it into another
+     * page; the id-bearing identity must survive the transfer. */
+    CfrTerm *vt = make_term(3, 80);
+    feed(vt, "\x1b]8;id=one;http://a\x07"
+             "Link\x1b]8;;\x07\n\n\n\n");
+    int sb = cfr_get_scrollback_lines(vt);
+    ASSERT_NEQ(sb, 0);
+    int l_row = 0;
+    for (int i = 0; i < sb && l_row == 0; ++i) {
+        const CfrCell *cell = cfr_get_cell(vt, -(i + 1), 0);
+        if (cell && cell->cp == (uint32_t)'L')
+            l_row = -(i + 1);
+    }
+    ASSERT_NEQ(l_row, 0);
+    uint64_t ksb = cfr_cell_hyperlink_key(vt, l_row, 0);
+    ASSERT_TRUE(ksb != 0);
+
+    CfrCursor before = cfr_get_cursor(vt);
+    feed(vt, "\x1b]8;id=one;http://a\x07N");
+    ASSERT_TRUE(cfr_cell_hyperlink_key(vt, before.row, before.col) == ksb);
     cfr_free(vt);
 }
 
@@ -601,7 +793,7 @@ static void test_osc8_hyperlink_key(void)
     ASSERT_TRUE(kl == cfr_cell_hyperlink_key(vt, 0, 1)); /* continuation */
     cfr_free(vt);
 
-    /* Two terminals: the key depends on the URI alone. */
+    /* Two terminals: without an id, the key depends on the URI alone. */
     CfrTerm *other = make_term(5, 20);
     feed(other, "\x1b]8;;http://zzz\x07z\x1b]8;;http://example.com\x07y");
     ASSERT_TRUE(cfr_cell_hyperlink_key(other, 0, 1) == kl);
@@ -2186,7 +2378,14 @@ int main(int argc, char *argv[])
     RUN_TEST(test_osc8_st_terminator);
     RUN_TEST(test_osc8_scrollback_reintern);
     RUN_TEST(test_osc8_cjk_continuation);
-    RUN_TEST(test_osc8_with_id_param);
+    RUN_TEST(test_osc8_id_param_uri_extraction);
+    RUN_TEST(test_osc8_id_identity);
+    RUN_TEST(test_osc8_id_param_rules);
+    RUN_TEST(test_osc8_id_empty_is_no_id);
+    RUN_TEST(test_osc8_id_truncated);
+    RUN_TEST(test_osc8_id_no_uri_alias);
+    RUN_TEST(test_osc8_malformed_ignored);
+    RUN_TEST(test_osc8_id_survives_scrollback);
     RUN_TEST(test_osc8_id_cap);
     RUN_TEST(test_osc8_hyperlink_key);
     RUN_TEST(test_osc8_open_link_survives_resize);

@@ -2,16 +2,27 @@
  * coffer — per-page OSC 8 hyperlink intern table.
  *
  * Layout mirrors style.c (FNV-1a + open-addressed probing) and
- * grapheme.c (bump-allocated byte arena). URIs are deduped, so two
- * cells with the same URL share an id — that gives a renderer
- * run-continuity for free, covering the OSC 8 spec's primary use case
- * for the optional `id=` parameter.
+ * grapheme.c (bump-allocated byte arena). Links are deduped, so two
+ * cells that point at the same link share an id — that gives a
+ * renderer run-continuity for free. A link's identity is its URI plus,
+ * when present, the OSC 8 `id=` parameter: per the spec the id connects
+ * cells only when the target URI is also the same, and an empty id is
+ * interchangeable with no id. Kitty builds the same key (`id ":" URI`,
+ * with an empty id when none was given); see kitty/hyperlink.c and
+ * kitty/vt-parser.c. Spec-legal fields are
+ * ASCII 32–126, so hashing the raw bytes matches kitty's sanitized
+ * UTF-8 key; coffer keeps the URI untruncated (kitty's 2048-byte key
+ * cap is an implementation limit, not protocol).
  *
  * Ids are page-scoped, but every entry also carries a 64-bit content key
- * (FNV-1a of the URI, never 0) that is the same on every page. The key is
- * hashed once, when a URI first reaches the engine, and is what dedup,
- * table growth and cross-page transfer reuse; hosts get it through
- * cfr_cell_hyperlink_key().
+ * (FNV-1a of the identity bytes, never 0) that is the same on every
+ * page. The key is hashed once, when a link first reaches the engine,
+ * and is what dedup, table growth and cross-page transfer reuse; hosts
+ * get it through cfr_cell_hyperlink_key(). Only the URI bytes are stored
+ * in the arena: the id has already been folded into the key, and two
+ * links with the same URI but different ids stay distinct because their
+ * keys differ. (A 2^-64 hash collision can merge their identities, the
+ * same accepted risk as for two different URIs.)
  *
  * Spec: https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
  *
@@ -36,14 +47,37 @@
 #define CFR_HYPERLINK_ID_MAX     UINT16_MAX
 
 /* 64-bit FNV-1a, remapped so that 0 stays free for "no link". */
-static uint64_t link_key(const uint8_t *data, uint32_t len)
+static uint64_t fnv1a(uint64_t h, const uint8_t *data, uint32_t len)
 {
-    uint64_t h = 14695981039346656037ull;
     for (uint32_t i = 0; i < len; ++i) {
         h ^= data[i];
         h *= 1099511628211ull;
     }
+    return h;
+}
+
+static uint64_t finish_key(uint64_t h)
+{
     return h ? h : 1u;
+}
+
+/* Link identity: the OSC 8 `id=` value (if any) plus the URI, always
+ * separated by ':'. The separator mirrors kitty's key composition
+ * (`id ":" URI`, empty id included). Emitting it even without an id is
+ * load-bearing: hashing the bare URI would let a no-id link whose URI is
+ * `<id>:<uri>` alias the id-bearing link (`id`, `<uri>`), and URIs
+ * routinely contain ':'. The spec forbids ':' in params, so the id
+ * itself cannot absorb the separator. An empty id hashes the same as no
+ * id, per the spec. */
+static uint64_t link_key_id(const uint8_t *id, uint32_t id_len,
+                            const uint8_t *uri, uint32_t uri_len)
+{
+    uint64_t h = 14695981039346656037ull;
+    if (id && id_len > 0)
+        h = fnv1a(h, id, id_len);
+    h ^= (uint8_t)':';
+    h *= 1099511628211ull;
+    return finish_key(fnv1a(h, uri, uri_len));
 }
 
 static bool ensure_init(CfrTerm *vt, CfrHyperlinkTable *t)
@@ -208,7 +242,8 @@ uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
     if (!uri || uri_len == 0)
         return 0;
     uint16_t id = 0;
-    (void)intern_keyed(vt, page, uri, uri_len, link_key(uri, uri_len), &id);
+    (void)intern_keyed(vt, page, uri, uri_len,
+                       link_key_id(NULL, 0, uri, uri_len), &id);
     return id;
 }
 
@@ -244,22 +279,26 @@ bool cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
     /* Intern straight out of the source arena: reading through a fixed
      * stack buffer would truncate a URI longer than the buffer and
      * re-intern the truncated prefix as a different link. The stored key
-     * is the URI's hash already, so it is not computed again. */
+     * is the link's content key already (id folded in), so it is not
+     * computed again. */
     return intern_keyed(vt, dst, t->data + t->offsets[id], t->lengths[id],
                         t->keys[id], out_id);
 }
 
-CfrLink *cfr_link_new(CfrTerm *vt, const uint8_t *uri, uint32_t uri_len)
+CfrLink *cfr_link_new(CfrTerm *vt, const uint8_t *uri, uint32_t uri_len,
+                      const uint8_t *id, uint32_t id_len)
 {
     if (!uri || uri_len == 0)
         return NULL;
+    if (!id)
+        id_len = 0;
     CfrLink *l = cfr_alloc(vt, sizeof(*l) + uri_len);
     if (!l)
         return NULL;
     memset(l, 0, sizeof(*l));
     l->refs = 1;
     l->len = uri_len;
-    l->key = link_key(uri, uri_len);
+    l->key = link_key_id(id, id_len, uri, uri_len);
     memcpy(l->uri, uri, uri_len);
     return l;
 }

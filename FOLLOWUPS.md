@@ -71,21 +71,6 @@ None of these are needed by Claude Code or the common TUIs. Implement
 when a concrete consumer asks for them or when building a full-featured
 terminal emulator frontend.
 
-### OSC 8 `id=` continuity parameter
-
-Currently parsed-and-discarded (line 48-50 in osc.c finds the params/URI
-separator but never extracts key=value pairs from params). Adjacent
-same-URI runs already share an interned id by construction (URI dedup),
-which covers the common case. Add support for explicit `id=` extraction
-and comparison to handle the spec's secondary case: same logical link
-with differing displayed text or target URIs should remain continuous
-when they share an explicit id.
-
-**Benefit:** Correctly handles links where the visible text changes mid-run
-(e.g., progressive loading showing "loading..." then the actual title) but
-should remain a single clickable region. Required for full OSC 8 spec
-compliance. Rare in practice — most applications just reuse the same URI.
-
 ### OSC 8 inside DCS / SOS-PM-APC strings
 
 Not implemented. Standard OSC parsing only; no support for OSC sequences

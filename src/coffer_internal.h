@@ -132,15 +132,15 @@ typedef struct
 /* Hyperlink intern table (OSC 8)                                       */
 /* ------------------------------------------------------------------ */
 
-/* URIs are interned per page. Cells reference an entry by uint16_t id;
+/* Links are interned per page. Cells reference an entry by uint16_t id;
  * id 0 means "no link". `data` is a bump-allocated byte arena; offsets[id]
- * and lengths[id] locate each entry. keys[id] is the entry's 64-bit
- * content key (FNV-1a of the URI bytes, never 0): the one identity that
- * means the same thing on every page, hashed once at intern time and
- * reused for dedup, table growth and cross-page transfer. dedup_index maps
- * a key to an id so identical URIs share a slot — this gives a renderer
- * free run-continuity (OSC 8 spec's primary use case for the `id=`
- * parameter).
+ * and lengths[id] locate each entry's URI bytes. keys[id] is the entry's
+ * 64-bit content key (FNV-1a of the URI and, when present, the OSC 8
+ * `id=` value; never 0): the one identity that means the same thing on
+ * every page, hashed once at intern time and reused for dedup, table
+ * growth and cross-page transfer. dedup_index maps a key to an id so
+ * identical links share a slot — this gives a renderer free
+ * run-continuity, while the same URI under different ids stays distinct.
  *
  * Slot value 0 in dedup_index means "empty"; non-zero values are ids.
  */
@@ -152,7 +152,7 @@ typedef struct
     uint32_t *offsets;     /* [id] -> offset into data */
     uint32_t *lengths;     /* [id] -> URI byte length */
     uint64_t *keys;        /* [id] -> content key, never 0 */
-    uint16_t count;        /* number of interned URIs (id 1..count) */
+    uint16_t count;        /* number of interned links (id 1..count) */
     uint16_t capacity_ids; /* offsets/lengths/keys capacity */
     uint16_t *dedup_index; /* open-addressed hash slot -> id, 0 = empty */
     uint32_t dedup_capacity;
@@ -261,10 +261,12 @@ typedef struct
  * grid, altscreen swaps it, DECSC saves it for later), so the pen holds
  * the URI itself — an immutable, reference-counted block shared by the
  * cursor and its saved registers — and interns it into whichever page it
- * is printing on. `cache_*` remembers the id on the last page it was
- * interned into, so a print run costs one compare per cell, not a URI
- * lookup. Ids are append-only within a page and `serial` is never reused,
- * so a cache hit is always right. */
+ * is printing on. `key` is the link's identity: the URI with the OSC 8
+ * `id=` parameter folded in when one was given (see hyperlink.c), so the
+ * id bytes do not need to stay alive. `cache_*` remembers the id on the
+ * last page it was interned into, so a print run costs one compare per
+ * cell, not a URI lookup. Ids are append-only within a page and `serial`
+ * is never reused, so a cache hit is always right. */
 typedef struct CfrLink
 {
     uint32_t refs;
@@ -599,14 +601,16 @@ bool cfr_grapheme_intern(CfrTerm *vt, CfrPage *page,
 size_t cfr_grapheme_read(const CfrPage *page, uint32_t id,
                          uint32_t *out, size_t out_cap);
 
-/* Hyperlink intern (OSC 8). Returns id (1..UINT16_MAX), or 0 on
- * allocation failure / overflow / empty URI. */
+/* Hyperlink intern (OSC 8) for a link with no `id=` parameter. Returns id
+ * (1..UINT16_MAX), or 0 on allocation failure / overflow / empty URI.
+ * Links that carry an id go through cfr_link_new + cfr_link_page_id. */
 uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
                               const uint8_t *uri, uint32_t uri_len);
 size_t cfr_hyperlink_read(const CfrPage *page, uint16_t id,
                           uint8_t *out, size_t out_cap);
 /* The content key of `id` (see CfrHyperlinkTable), or 0 for id 0 or an id
- * the page does not know. Equal URIs have equal keys on every page. */
+ * the page does not know. The key covers the URI and, when present, the
+ * OSC 8 `id=` parameter, so equal links have equal keys on every page. */
 uint64_t cfr_hyperlink_key(const CfrPage *page, uint16_t id);
 /* Re-intern `id` from `src` into `dst`. On success writes the dst-local
  * id to *out_id (0 for no link, or an id the source page does not know)
@@ -618,9 +622,17 @@ bool cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
                             uint16_t *out_id);
 void cfr_hyperlink_free(CfrTerm *vt, CfrHyperlinkTable *t);
 
-/* The pen's link (see CfrLink). new returns NULL for an empty URI or on
- * allocation failure, which reads as "no link". release accepts NULL. */
-CfrLink *cfr_link_new(CfrTerm *vt, const uint8_t *uri, uint32_t uri_len);
+/* Cap on the OSC 8 `id=` parameter's contribution to link identity.
+ * Mirrors kitty's MAX_ID_LEN; the spec makes the limit implementation-
+ * defined (VTE uses 250). Longer ids are truncated, as kitty does. */
+#define CFR_OSC8_ID_MAX 256u
+
+/* The pen's link (see CfrLink). `id` is the OSC 8 `id=` value (may be NULL
+ * with id_len 0); it is folded into the link's identity key but not stored.
+ * new returns NULL for an empty URI or on allocation failure, which reads
+ * as "no link". release accepts NULL. */
+CfrLink *cfr_link_new(CfrTerm *vt, const uint8_t *uri, uint32_t uri_len,
+                      const uint8_t *id, uint32_t id_len);
 void cfr_link_release(CfrTerm *vt, CfrLink *link);
 /* The id of `link` in `page`'s table, interning it on first use. 0 for no
  * link, no page, or a failed intern (not cached, so it is retried). */

@@ -10,8 +10,11 @@
  *   https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
  * Sequence: OSC 8 ; params ; URI ST  (BEL also accepted).
  * Empty URI closes the active link. params is ':'-separated key=value
- * pairs (only `id` is defined); for v1 we parse-and-discard params and
- * use the URI alone — same-URI dedup gives renderers free run-continuity.
+ * pairs; only `id` is defined. The id is part of the link's identity:
+ * per the spec it connects cells only when their URIs also match, and an
+ * empty id is the same as no id. Parsing mirrors kitty's parse_osc_8():
+ * the first whole `id=` token with a nonempty value wins, and the value
+ * is capped at CFR_OSC8_ID_MAX (kitty's MAX_ID_LEN).
  */
 
 #include "coffer_internal.h"
@@ -35,6 +38,35 @@ static int parse_code(const uint8_t *data, size_t len, size_t *out_offset)
     return code;
 }
 
+/* Find the `id=` parameter in the params field. Mirrors kitty's
+ * parse_osc_8(): params are ':'-separated tokens, empty tokens are
+ * skipped, and the first whole `id=` token with a nonempty value wins
+ * (so `xid=` is not `id=`, and a later `id=` cannot override it). Longer
+ * values are truncated to CFR_OSC8_ID_MAX bytes, as kitty does. */
+static bool osc8_parse_id(const uint8_t *params, size_t len,
+                          const uint8_t **out, size_t *out_len)
+{
+    size_t i = 0;
+    while (i < len) {
+        while (i < len && params[i] == ':')
+            i++; /* strtok_r skips leading and repeated delimiters */
+        size_t start = i;
+        while (i < len && params[i] != ':')
+            i++;
+        size_t tlen = i - start;
+        if (tlen > 3 && params[start] == 'i' && params[start + 1] == 'd' &&
+            params[start + 2] == '=' && params[start + 3]) {
+            size_t vlen = tlen - 3;
+            if (vlen > CFR_OSC8_ID_MAX)
+                vlen = CFR_OSC8_ID_MAX;
+            *out = params + start + 3;
+            *out_len = vlen;
+            return true;
+        }
+    }
+    return false;
+}
+
 /* OSC 8 dispatcher. Body shape: `params;URI`. The URI runs from the
  * first ';' to the end. An empty URI ('') closes the active hyperlink. */
 static void osc8_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
@@ -45,23 +77,29 @@ static void osc8_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
      * cluster_buf) would be stamped with the new id. */
 
     /* Find the first ';' separating params from URI. Per spec the
-     * params field cannot contain ';', so a literal scan is correct. */
+     * params field cannot contain ';', so a literal scan is correct. A
+     * body without one is malformed; kitty ignores it rather than
+     * closing the active link, and so do we. */
     size_t sep = 0;
     while (sep < body_len && body[sep] != ';')
         sep++;
-    if (sep >= body_len) {
-        /* Malformed — no second ';'. Treat as unlink (defensive). */
-        cfr_link_release(vt, vt->cursor.link);
-        vt->cursor.link = NULL;
+    if (sep >= body_len)
         return;
-    }
+
+    const uint8_t *id = NULL;
+    size_t id_len = 0;
+    (void)osc8_parse_id(body, sep, &id, &id_len);
+
     const uint8_t *uri = body + sep + 1;
     size_t uri_len = body_len - sep - 1;
 
-    /* The pen holds the URI itself; it is interned into whichever page
-     * the next print lands on (see CfrLink). */
+    /* An empty URI closes the active link whether or not params carry an
+     * id: the id only narrows identity, it is not a link of its own. */
     cfr_link_release(vt, vt->cursor.link);
-    vt->cursor.link = cfr_link_new(vt, uri, (uint32_t)uri_len);
+    vt->cursor.link =
+        uri_len == 0 ? NULL
+                     : cfr_link_new(vt, uri, (uint32_t)uri_len, id,
+                                    (uint32_t)id_len);
 }
 
 static void set_title(CfrTerm *vt, const uint8_t *data, size_t len)

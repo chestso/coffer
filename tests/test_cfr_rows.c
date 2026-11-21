@@ -149,7 +149,8 @@ static void test_page_scoped_ids_resolve_per_row(void)
             ASSERT_TRUE(cfr_cell_hyperlink_key(vt, row, 0) !=
                         cfr_cell_hyperlink_key(vt, row + (int)CFR_SB_PAGE_ROWS, 0));
         }
-        /* The key depends on the URI alone: a fresh terminal that only
+        /* The key of a no-id link depends on the URI alone: a fresh
+         * terminal that only
          * ever saw this link agrees, whichever page the row lives on. */
         if (s % 23 == 0) {
             CfrTerm *ref = make_term(2, 40, 0);

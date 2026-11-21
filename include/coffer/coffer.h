@@ -148,12 +148,16 @@ size_t cfr_cell_get_hyperlink(const CfrTerm *vt, int row, int col,
 
 /* A stable identity for the hyperlink of the cell at (row, col): 0 if the
  * cell has no link or does not exist, otherwise a 64-bit key derived from
- * the URI bytes. Unlike CfrCell.hyperlink_id it means the same thing on
- * every row, page and screen, so it is the value to compare ("did the
- * hovered link change?", "does this underline run continue?") or to use as
- * a map key. Equal URIs always give equal keys; different URIs differ with
- * probability 1 - 2^-64. The key is deterministic but not a stable format:
- * do not persist it across coffer versions. */
+ * the link's URI and its OSC 8 `id=` parameter. Unlike CfrCell.hyperlink_id
+ * it means the same thing on every row, page and screen, so it is the
+ * value to compare ("did the hovered link change?", "does this underline
+ * run continue?") or to use as a map key. Per the OSC 8 spec an id
+ * connects cells only when the URI also matches: equal (URI, id) pairs
+ * always give equal keys, links with the same URI but different ids are
+ * distinct, and an empty or absent id is the same as no id. Distinct links
+ * differ with probability 1 - 2^-64. The key is deterministic but not a
+ * stable format: do not persist it across coffer versions. The id itself
+ * is not exposed; cfr_cell_get_hyperlink() returns the URI. */
 uint64_t cfr_cell_hyperlink_key(const CfrTerm *vt, int row, int col);
 
 /* ------------------------------------------------------------------ */
