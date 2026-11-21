@@ -1879,6 +1879,105 @@ static void test_placement_reports_damage(void)
 }
 
 /* --------------------------------------------------------------- */
+/* Per-screen graphics sets                                       */
+/* --------------------------------------------------------------- */
+
+/* kitty keeps a graphics set per screen buffer: a main-screen image
+ * survives a visit to the alt screen (hidden while there) and an
+ * alt-screen image goes when the alt screen is left. */
+static void test_altscreen_images_are_per_screen(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t red[4] = { 255, 0, 0, 255 };
+    uint8_t green[4] = { 0, 255, 0, 255 };
+    char b64[64];
+    char seq[128];
+
+    /* Main screen: image i=1 (red), transmitted only. */
+    b64_encode(red, sizeof(red), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].rgba[0], 255);
+
+    /* Enter the alt screen: the main image is hidden, not destroyed. */
+    feed(vt, "\x1b[?1049h");
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 0);
+    ASSERT_NULL(imgs);
+
+    /* The alt screen's id space is its own: i=1 here is a different
+     * image, and it does not clobber the main one. */
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
+    feed(vt, seq);
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].rgba[0], 0);
+    ASSERT_EQ(imgs[0].rgba[1], 255);
+
+    /* Leave: the alt image goes, the main image is back. */
+    feed(vt, "\x1b[?1049l");
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].rgba[0], 255);
+    ASSERT_EQ(imgs[0].rgba[1], 0);
+
+    cfr_free(vt);
+}
+
+/* `d=a` and `d=i` are scoped to the screen they were sent on: an alt
+ * screen session cannot delete the main screen's graphics. */
+static void test_altscreen_delete_is_screen_scoped(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t red[4] = { 255, 0, 0, 255 };
+    uint8_t green[4] = { 0, 255, 0, 255 };
+    char b64[64];
+    char seq[128];
+
+    /* Main: i=5, placed so `d=a` has something to collect here too. */
+    b64_encode(red, sizeof(red), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=T,f=32,s=1,v=1,i=5;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    feed(vt, "\x1b[?1049h");
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=T,f=32,s=1,v=1,i=5;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Delete-all on the alt screen clears only the alt set. */
+    feed(vt, "\x1b_Ga=d,d=a\x1b\\");
+    int count = -1;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 0);
+
+    /* Still nothing in the alt set, and the main image is untouched. */
+    feed(vt, "\x1b_Ga=d,d=i,i=5\x1b\\");
+    feed(vt, "\x1b[?1049l");
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ((long long)imgs[0].id, 5);
+    ASSERT_EQ(imgs[0].rgba[0], 255);
+    ASSERT_EQ(imgs[0].rgba[1], 0);
+
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1); /* the main placement survived too */
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* main                                                           */
 /* --------------------------------------------------------------- */
 
@@ -1935,6 +2034,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_delete_all_is_kitty_only);
     RUN_TEST(test_delete_by_id_is_kitty_scoped);
     RUN_TEST(test_placement_reports_damage);
+    RUN_TEST(test_altscreen_images_are_per_screen);
+    RUN_TEST(test_altscreen_delete_is_screen_scoped);
 
     TEST_SUMMARY();
 }

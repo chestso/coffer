@@ -28,6 +28,22 @@
 /* Image source identifiers (IMG_SRC_*) are defined in coffer.h */
 
 /* ------------------------------------------------------------------ */
+/* Screens                                                            */
+/* ------------------------------------------------------------------ */
+
+/* The screen buffer an image was created on. kitty keeps a graphics
+ * set per screen: switching to the alternate screen clears the ALT
+ * screen's images (it starts blank) while the MAIN screen's images
+ * survive the visit and reappear on the way back. Visibility and the
+ * public id lookups are therefore scoped to the screen that is active
+ * (`vt->in_altscreen`). */
+enum
+{
+    IMG_SCREEN_MAIN = 0,
+    IMG_SCREEN_ALT = 1
+};
+
+/* ------------------------------------------------------------------ */
 /* Image kinds                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -67,6 +83,7 @@ typedef struct
     uint8_t layer;       /* 0 = foreground, 1 = background */
     uint8_t source;      /* IMG_SRC_* */
     uint8_t kind;        /* IMG_KIND_* */
+    uint8_t screen;      /* IMG_SCREEN_* the image was created on */
     uint8_t ever_placed; /* 1 once a placement referenced this image; an
                           * image that was transmitted but never placed
                           * is INVISIBLE, so a screen erase must not
@@ -99,6 +116,8 @@ typedef struct
                             * id cannot collide with an engine id */
     uint8_t source;        /* the owning image's IMG_SRC_* — the id space
                             * the public id belongs to */
+    uint8_t screen;        /* the owning image's IMG_SCREEN_* — a placement
+                            * never crosses screens */
     long abs_line;         /* absolute line anchor (scrolls with text) */
     int col;
     int rows, cols;
@@ -215,8 +234,11 @@ void cfr_img_mark_dirty(CfrImgStore *st, int idx);
 void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
                      const uint8_t *rgba, int w, int h);
 
-/* Find an image at a given anchor + layer. Returns index or -1. */
-int cfr_img_find_at(CfrImgStore *st, long abs_line, int col, uint8_t layer);
+/* Find an image at a given anchor + layer on ONE screen. Returns index
+ * or -1. Anchored ids are engine-assigned, but the anchor is a row of
+ * a particular screen buffer, so a screen-scoped lookup is required. */
+int cfr_img_find_at(CfrImgStore *st, long abs_line, int col, uint8_t layer,
+                    uint8_t screen);
 
 /* Find an image by id. Returns index or -1.
  *
@@ -227,9 +249,11 @@ int cfr_img_find_at(CfrImgStore *st, long abs_line, int col, uint8_t layer);
  * engine-id protocols (sixel, iTerm2) own their ids exclusively. */
 int cfr_img_find_by_id(CfrImgStore *st, uint64_t id);
 
-/* Find an image by its PUBLIC id within one protocol family. Returns
- * index or -1. */
-int cfr_img_find_by_source_id(CfrImgStore *st, uint8_t source, uint64_t id);
+/* Find an image by its PUBLIC id within one protocol family and one
+ * screen. Returns index or -1. A client cannot name an image that lives
+ * on the other screen: the two buffers' graphics sets are separate. */
+int cfr_img_find_by_source_id(CfrImgStore *st, uint8_t source, uint64_t id,
+                              uint8_t screen);
 
 /* Find an image by its store-internal handle. Unambiguous across
  * protocols — this is what the placements point at. */
@@ -274,9 +298,19 @@ void cfr_img_clear_all(void *vt, CfrImgStore *st);
 
 /* Remove the images that die WITH the screen: the anchored (1:1)
  * ones, whose anchors are the grid's own rows. A resize re-anchors
- * the grid and an altscreen switch swaps it, so those images cannot be
- * followed — the client-owned 1:N images (kitty) live on. */
+ * the grid, so those images cannot be followed — the client-owned 1:N
+ * images (kitty) live on. (The altscreen switch does not use this: it
+ * uses cfr_img_screen_switch(), which preserves main-screen images.) */
 void cfr_img_clear_anchored(void *vt, CfrImgStore *st);
+
+/* Prepare the store for a switch between the screen buffers. kitty's
+ * rule is that the alternate screen starts with a blank graphics set
+ * ("all images in the alternate screen must be cleared, just as all
+ * text is cleared") while the main screen's images are preserved and
+ * reappear on the way back. Removing the ALT-tagged records on every
+ * switch implements both directions; the MAIN-tagged records stay, and
+ * the public queries hide them while the alt screen is active. */
+void cfr_img_screen_switch(void *vt, CfrImgStore *st);
 
 /* Remove every image of ONE protocol. The protocols' id spaces are
  * their own, so "delete all images" (kitty) means the kitty images. */
@@ -293,14 +327,17 @@ void cfr_img_clear_source_rows(void *vt, CfrImgStore *st, uint8_t source,
 /* Public query                                                       */
 /* ------------------------------------------------------------------ */
 
-/* Return the live images as an array of CfrImage snapshots. The array
- * is owned by the engine and valid until the next mutation.
- * *out_count receives the count (0 if none). Returns NULL when empty. */
+/* Return the live images of the ACTIVE screen as an array of CfrImage
+ * snapshots. The array is owned by the engine and valid until the next
+ * mutation. *out_count receives the count (0 if none). Returns NULL when
+ * empty. Main-screen images are hidden (not removed) while the alt
+ * screen is active. */
 const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count);
 
-/* Return the live placements as an array of CfrImagePlacement snapshots.
- * The array is owned by the engine and valid until the next mutation.
- * *out_count receives the count (0 if none). Returns NULL when empty. */
+/* Return the live placements of the ACTIVE screen as an array of
+ * CfrImagePlacement snapshots. The array is owned by the engine and
+ * valid until the next mutation. *out_count receives the count (0 if
+ * none). Returns NULL if empty. */
 const CfrImagePlacement *cfr_img_get_placements(void *vt, CfrImgStore *st,
                                                 int *out_count);
 
@@ -312,7 +349,8 @@ const CfrImagePlacement *cfr_img_get_placements(void *vt, CfrImgStore *st,
  * `source` scopes the query to one protocol's id space (the public ids
  * of the 1:N protocols are chosen by their clients, so kitty's i=1 and
  * a Lottie id of 1 are the same number in different spaces). Pass
- * IMG_SRC_ANY to search every protocol. */
+ * IMG_SRC_ANY to search every protocol. The active screen is always
+ * implied: a placement of the other screen is never returned. */
 const CfrImagePlacement *cfr_img_get_placements_for(void *vt, CfrImgStore *st,
                                                     uint8_t source,
                                                     uint64_t image_id,

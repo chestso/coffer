@@ -747,10 +747,13 @@ void cfr_set_content_scale(CfrTerm *vt, float scale);
  * and foot behave the same); it is not a defect in the rounding. */
 int cfr_px_logical(int px, float content_scale);
 
-/* Return the live images (sixel, iTerm2, kitty, Lottie). The returned
- * array is owned by the engine and valid until the next mutation;
- * *out_count receives the number of images (0 if none). Returns NULL
- * when there are none. */
+/* Return the live images of the active screen (sixel, iTerm2, kitty,
+ * Lottie). The returned array is owned by the engine and valid until the
+ * next mutation; *out_count receives the number of images (0 if none).
+ * Returns NULL when there are none. The other screen buffer's images are
+ * not reported: kitty keeps a graphics set per screen, so a main-screen
+ * image is hidden while the alternate screen is active and comes back
+ * when the main screen does. */
 const CfrImage *cfr_get_images(CfrTerm *vt, int *out_count);
 
 /* A placement of an image on the terminal grid (1:N image-to-placement,
@@ -786,9 +789,10 @@ typedef struct
     int cell_off_y; /* Y= */
 } CfrImagePlacement;
 
-/* Return the live image placements (kitty graphics). The returned array
- * is owned by the engine and valid until the next mutation; *out_count
- * receives the number of placements (0 if none). Returns NULL if empty. */
+/* Return the live image placements of the active screen (kitty
+ * graphics). The returned array is owned by the engine and valid until
+ * the next mutation; *out_count receives the number of placements (0 if
+ * none). Returns NULL if empty. */
 const CfrImagePlacement *cfr_get_image_placements(CfrTerm *vt, int *out_count);
 
 /* Return placements for a single image id. Engine-owned, valid until the

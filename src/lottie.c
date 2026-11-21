@@ -51,6 +51,12 @@ typedef struct
     uint64_t id;      /* client-assigned, stable cache key */
     uint32_t version; /* bumps on any state/pixel change */
 
+    /* The screen buffer this animation was loaded on. kitty-style
+     * per-screen sets: an alt-screen animation is dropped when the alt
+     * screen is left, and its client id does not shadow a main-screen
+     * animation's. */
+    uint8_t screen;
+
     /* The store-internal handle of this animation's image record in the
      * shared store (vt->images). The pixel buffer lives there; 0 when
      * the animation has no image record yet (not yet rasterized).
@@ -230,10 +236,12 @@ static void lt_anchor_keep_position(LtRec *r)
     r->anchored = false;
 }
 
-static LtRec *lt_find_by_id(struct CfrLottieState *st, uint64_t id)
+static LtRec *lt_find_by_id(CfrTerm *vt, struct CfrLottieState *st,
+                            uint64_t id)
 {
+    uint8_t screen = (uint8_t)vt->in_altscreen;
     for (int i = 0; i < st->rec_count; i++) {
-        if (st->recs[i].id == id)
+        if (st->recs[i].id == id && st->recs[i].screen == screen)
             return &st->recs[i];
     }
     return NULL;
@@ -964,7 +972,7 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
             autostart = lt_json_bool(pv, pvlen);
     }
 
-    LtRec *rec = lt_find_by_id(st, id);
+    LtRec *rec = lt_find_by_id(vt, st, id);
     size_t need = (size_t)px_w * (size_t)px_h * 4;
     if (need == 0 || need > LT_LIVE_MAX)
         return; /* single animation larger than the whole budget → drop */
@@ -1007,6 +1015,7 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         rec = &st->recs[st->rec_count++];
         memset(rec, 0, sizeof(*rec));
         rec->id = id;
+        rec->screen = (uint8_t)vt->in_altscreen;
         rec->img_handle = 0;
         rec->version = 1;
 
@@ -1112,7 +1121,7 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
     if (val)
         want_report = lt_json_bool(val, vlen);
 
-    LtRec *rec = lt_find_by_id(st, id);
+    LtRec *rec = lt_find_by_id(vt, st, id);
     if (!rec)
         return;
 
@@ -1298,7 +1307,7 @@ static void lt_cmd_play(struct CfrLottieState *st, CfrTerm *vt,
         return;
     uint64_t id = (uint64_t)lt_json_int(val, vlen);
 
-    LtRec *rec = lt_find_by_id(st, id);
+    LtRec *rec = lt_find_by_id(vt, st, id);
     if (!rec)
         return;
 
@@ -1334,7 +1343,7 @@ static void lt_cmd_pause(struct CfrLottieState *st, CfrTerm *vt,
         return;
     uint64_t id = (uint64_t)lt_json_int(val, vlen);
 
-    LtRec *rec = lt_find_by_id(st, id);
+    LtRec *rec = lt_find_by_id(vt, st, id);
     if (!rec)
         return;
 
@@ -1355,7 +1364,7 @@ static void lt_cmd_stop(struct CfrLottieState *st, CfrTerm *vt,
         return;
     uint64_t id = (uint64_t)lt_json_int(val, vlen);
 
-    LtRec *rec = lt_find_by_id(st, id);
+    LtRec *rec = lt_find_by_id(vt, st, id);
     if (!rec)
         return;
 
@@ -1379,7 +1388,7 @@ static void lt_cmd_seek(struct CfrLottieState *st, CfrTerm *vt,
         return;
     uint64_t id = (uint64_t)lt_json_int(val, vlen);
 
-    LtRec *rec = lt_find_by_id(st, id);
+    LtRec *rec = lt_find_by_id(vt, st, id);
     if (!rec)
         return;
 
@@ -1413,7 +1422,7 @@ static void lt_cmd_delete(struct CfrLottieState *st, CfrTerm *vt,
         return;
     uint64_t id = (uint64_t)lt_json_int(val, vlen);
 
-    LtRec *rec = lt_find_by_id(st, id);
+    LtRec *rec = lt_find_by_id(vt, st, id);
     if (!rec)
         return;
 
@@ -1716,9 +1725,13 @@ const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count)
         st->scratch_cap = new_cap;
     }
 
+    uint8_t active = (uint8_t)vt->in_altscreen;
+    int n = 0;
     for (int i = 0; i < st->rec_count; i++) {
         LtRec *r = &st->recs[i];
-        CfrLottie *l = &((CfrLottie *)st->scratch)[i];
+        if (r->screen != active)
+            continue;
+        CfrLottie *l = &((CfrLottie *)st->scratch)[n++];
         l->id = r->id;
         l->version = r->version;
         l->canvas_w = r->px_w;
@@ -1733,7 +1746,12 @@ const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count)
         r->dirty = false;
     }
 
-    *out_count = st->rec_count;
+    if (n == 0) {
+        *out_count = 0;
+        return NULL;
+    }
+
+    *out_count = n;
     return (CfrLottie *)st->scratch;
 }
 
@@ -1746,7 +1764,7 @@ const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
         return NULL;
     }
 
-    LtRec *rec = lt_find_by_id(st, id);
+    LtRec *rec = lt_find_by_id(vt, st, id);
     if (!rec) {
         *out_count = 0;
         return NULL;
@@ -1816,6 +1834,25 @@ static int lt_placements_for_count(CfrTerm *vt, uint64_t id)
 /* ------------------------------------------------------------------ */
 /* Grid maintenance                                                   */
 /* ------------------------------------------------------------------ */
+
+/* Drop the ALT screen's animations on an altscreen switch. kitty's
+ * per-screen graphics rule: the alternate buffer starts blank, and its
+ * set goes with it; the main buffer's animations survive the visit and
+ * reappear on the way back. Called while vt->in_altscreen is still the
+ * screen being left, so the test is against the ALT tag (0/1), not the
+ * active screen. */
+void cfr_lottie_screen_switch(CfrTerm *vt)
+{
+    struct CfrLottieState *st = vt->lottie;
+    if (!st)
+        return;
+    for (int i = 0; i < st->rec_count;) {
+        if (st->recs[i].screen == IMG_SCREEN_ALT)
+            lt_rec_release(vt, st, i);
+        else
+            ++i;
+    }
+}
 
 void cfr_lottie_note_scroll(CfrTerm *vt, int lines)
 {

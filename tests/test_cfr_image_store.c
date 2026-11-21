@@ -247,11 +247,12 @@ static void test_img_find_at(void)
     int col = st->imgs[idx].col;
 
     /* Find the image we just added */
-    int found = cfr_img_find_at(st, abs_line, col, 0);
+    int found = cfr_img_find_at(st, abs_line, col, 0, IMG_SCREEN_MAIN);
     ASSERT_EQ(found, idx);
 
     /* Search for a non-existent anchor */
-    int not_found = cfr_img_find_at(st, abs_line + 100, col, 0);
+    int not_found = cfr_img_find_at(st, abs_line + 100, col, 0,
+                                    IMG_SCREEN_MAIN);
     ASSERT_EQ(not_found, -1);
 
     cfr_img_store_free(vt, st);
@@ -772,9 +773,15 @@ static void test_img_id_spaces_are_separate(void)
     ASSERT_TRUE(st->imgs[kitty].handle != st->imgs[engine].handle);
 
     /* The scoped lookup finds each one in its own space. */
-    ASSERT_EQ(cfr_img_find_by_source_id(st, IMG_SRC_KITTY, 1), kitty);
-    ASSERT_EQ(cfr_img_find_by_source_id(st, IMG_SRC_ITERM, 1), engine);
-    ASSERT_EQ(cfr_img_find_by_source_id(st, IMG_SRC_LOTTIE, 1), -1);
+    ASSERT_EQ(cfr_img_find_by_source_id(st, IMG_SRC_KITTY, 1,
+                                        IMG_SCREEN_MAIN),
+              kitty);
+    ASSERT_EQ(cfr_img_find_by_source_id(st, IMG_SRC_ITERM, 1,
+                                        IMG_SCREEN_MAIN),
+              engine);
+    ASSERT_EQ(cfr_img_find_by_source_id(st, IMG_SRC_LOTTIE, 1,
+                                        IMG_SCREEN_MAIN),
+              -1);
 
     /* The handle lookup is unambiguous. */
     ASSERT_EQ(cfr_img_find_by_handle(st, st->imgs[kitty].handle), kitty);

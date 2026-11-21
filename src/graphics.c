@@ -499,8 +499,11 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
     if (p->has_image_id) {
         uint64_t id = (uint64_t)p->image_id;
         /* The lookup is scoped to kitty's id space: a Lottie animation
-         * with the same number is a different image. */
-        int idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, id);
+         * with the same number is a different image. It is also scoped
+         * to the active screen: the two buffers have separate graphics
+         * sets. */
+        int idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, id,
+                                            (uint8_t)vt->in_altscreen);
         if (idx >= 0 && is_frame) {
             /* Animation frame: replace pixels in place, keep placements. */
             cfr_img_replace(vt, store, idx, rgba, w, h);
@@ -802,8 +805,10 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
 
     uint64_t image_id = (uint64_t)(p->has_image_id ? p->image_id : 0);
     /* The lookup is scoped to kitty's id space (a Lottie animation with
-     * the same number is a different image). */
-    int img_idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, image_id);
+     * the same number is a different image) and to the active screen
+     * (the two buffers have separate graphics sets). */
+    int img_idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, image_id,
+                                            (uint8_t)vt->in_altscreen);
     if (img_idx < 0) {
         if (!p->quiet)
             k_emit_error(vt, p->image_id, "ENOENT:unknown image id");
@@ -913,11 +918,15 @@ static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
         break;
     case 'p':
     case 'P':
-        /* Delete a single placement by placement id. */
+        /* Delete a single placement by placement id, on the screen it
+         * was sent on: the other buffer's graphics set is not visible
+         * here, and its client-chosen placement ids may collide. */
         if (p->has_placement_id) {
             uint64_t pid = (uint64_t)p->placement_id;
+            uint8_t active = (uint8_t)vt->in_altscreen;
             for (int i = 0; i < store->place_count; i++) {
-                if (store->places[i].id == pid) {
+                if (store->places[i].id == pid &&
+                    store->places[i].screen == active) {
                     store->places[i] = store->places[--store->place_count];
                     break;
                 }
@@ -929,9 +938,12 @@ static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
     {
         /* Delete images (and their placements) by image id. The lookup
          * is scoped to kitty's id space: a Lottie animation with the
-         * same number is a different image. */
+         * same number is a different image. It is also scoped to the
+         * active screen: `d=i` deletes the image on the screen it was
+         * sent on. */
         uint64_t iid = (uint64_t)(p->has_image_id ? p->image_id : 0);
-        int idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, iid);
+        int idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, iid,
+                                            (uint8_t)vt->in_altscreen);
         if (idx >= 0)
             cfr_img_remove(vt, store, idx);
         break;

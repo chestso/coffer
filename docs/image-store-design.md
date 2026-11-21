@@ -286,13 +286,17 @@ The store must satisfy, and the tests must pin:
    until the client deletes it (kitty keeps images until deleted), and
    a Lottie animation dies with its last placement.
 8. `cfr_img_clear_all()` stays for RIS — kitty: "when resetting the
-   terminal, all images must be cleared". The altscreen switch and the
-   resize clear the ANCHORED images only (`cfr_img_clear_anchored()`):
-   those images are anchored to the grid that is being swapped or
-   re-anchored, while the client-owned 1:N images carry their own
-   anchors. (Kitty wants the images of the screen being left cleared;
-   coffer has ONE image set, not one per screen — the divergence is
-   recorded in `FOLLOWUPS.md`.)
+   terminal, all images must be cleared". The resize clears the
+   ANCHORED images only (`cfr_img_clear_anchored()`): those images are
+   anchored to the grid that is being re-anchored, while the
+   client-owned 1:N images carry their own anchors. The altscreen
+   switch uses `cfr_img_screen_switch()`: every record is tagged with
+   the screen it was created on (`IMG_SCREEN_MAIN`/`IMG_SCREEN_ALT`),
+   the switch drops the ALT set, and the MAIN set survives the visit
+   (kitty: "the main screen must preserve the images when switching
+   to/away from it"). Public queries and public-id lookups are scoped
+   to the active screen, so the hidden main set neither renders on the
+   alt screen nor shares ids with it.
 9. The overflow path evicts by **creation order** (oldest first), not
    by array index: the dense array is swap-removed, so index 0 holds
    an arbitrary record — releasing it evicted the NEWEST image.
@@ -416,7 +420,7 @@ run in CI).
 | `src/sixel.c`                             | the 1:1 path + the public query wrappers                             |
 | `src/osc_1337.c`                          | the iTerm2 1:1 path                                                  |
 | `src/print.c`                             | ED/EL → `cfr_img_clear_display_rows`; scroll → `cfr_img_note_scroll` |
-| `src/modes.c`                             | altscreen / RIS → `cfr_img_clear_all`                                |
+| `src/modes.c`                             | altscreen → `cfr_img_screen_switch`; RIS → `cfr_img_clear_all`       |
 | `src/term.c`                              | resize → `cfr_img_clear_all`                                         |
 | `include/coffer/coffer.h`                 | the public surface (`CfrImage`, `CfrImagePlacement`)                 |
 | `tests/test_cfr_image_store.c`            | the store's invariants                                               |

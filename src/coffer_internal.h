@@ -832,6 +832,7 @@ void cfr_sixel_finish(CfrTerm *vt);
 void cfr_lottie_state_free(CfrTerm *vt);
 void cfr_lottie_apc_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len);
 void cfr_lottie_note_scroll(CfrTerm *vt, int lines);
+void cfr_lottie_screen_switch(CfrTerm *vt);
 void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot);
 void cfr_lottie_clear_all(CfrTerm *vt);
 

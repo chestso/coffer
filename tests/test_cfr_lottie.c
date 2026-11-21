@@ -1526,7 +1526,8 @@ static void test_store_eviction_releases_the_record(void)
 
     CfrImgStore *store = vt->images;
     ASSERT_NOT_NULL(store);
-    int idx = cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE, 1);
+    int idx = cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE, 1,
+                                        IMG_SCREEN_MAIN);
     ASSERT_TRUE(idx >= 0);
 
     /* The store evicts the image (what the budget does). */
@@ -1568,8 +1569,10 @@ static void test_lottie_and_kitty_ids_do_not_collide(void)
     ASSERT_EQ(count, 1);
 
     /* Both images are in the store, with different handles. */
-    int kitty_idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, 1);
-    int lottie_idx = cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE, 1);
+    int kitty_idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, 1,
+                                              IMG_SCREEN_MAIN);
+    int lottie_idx = cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE, 1,
+                                               IMG_SCREEN_MAIN);
     ASSERT_TRUE(kitty_idx >= 0);
     ASSERT_TRUE(lottie_idx >= 0);
     ASSERT_TRUE(store->imgs[kitty_idx].handle !=

@@ -92,14 +92,18 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
     /* Selection is screen-specific — clear on any altscreen switch. */
     cfr_selection_clear(vt);
 
-    /* The anchored (1:1) images belong to the grid that is being left:
-     * their anchors are that grid's rows, and the grid is swapped here.
-     * The client-owned 1:N images (kitty) carry their own anchors and
-     * live until the client deletes them — kitty's rule is that only
-     * the images of the screen being left are cleared, and coffer has
-     * one image set, not one per screen. */
+    /* kitty keeps a graphics set per screen buffer: switching to the
+     * alternate screen clears the ALT screen's images ("all images in
+     * the alternate screen must be cleared, just as all text is
+     * cleared") while the main screen's images survive the visit and
+     * reappear on the way back. The store tags every record with the
+     * screen it was created on, so the switch drops the alt set and
+     * leaves the main set in place (the public queries hide it while
+     * the alt screen is active). */
     if (vt->images)
-        cfr_img_clear_anchored(vt, vt->images);
+        cfr_img_screen_switch(vt, vt->images);
+    if (vt->lottie)
+        cfr_lottie_screen_switch(vt);
 
     if (on) {
         if (save_restore_cursor)
