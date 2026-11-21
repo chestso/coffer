@@ -11,6 +11,9 @@ static const char *g_title = NULL;
 static int g_bell_count = 0;
 static char g_output_buf[1024];
 static size_t g_output_len = 0;
+static int g_moverect_calls = 0;
+static CfrRect g_mr_dst;
+static CfrRect g_mr_src;
 
 static void on_title(const char *s, void *u)
 {
@@ -21,6 +24,13 @@ static void on_bell(void *u)
 {
     (void)u;
     g_bell_count++;
+}
+static void on_moverect(CfrRect dst, CfrRect src, void *u)
+{
+    (void)u;
+    g_moverect_calls++;
+    g_mr_dst = dst;
+    g_mr_src = src;
 }
 static void on_output(const uint8_t *bytes, size_t len, void *u)
 {
@@ -44,9 +54,11 @@ static CfrTerm *make_term(int rows, int cols)
     cb.set_title = on_title;
     cb.bell = on_bell;
     cb.output = on_output;
+    cb.moverect = on_moverect;
     cfr_set_callbacks(vt, &cb, NULL);
     g_output_len = 0;
     g_output_buf[0] = '\0';
+    g_moverect_calls = 0;
     return vt;
 }
 
@@ -2080,6 +2092,67 @@ static void test_irm_at_right_margin(void)
     cfr_free(vt);
 }
 
+/* Every whole-row move reports a full-width moverect: scrolls (LF at
+ * the bottom, RI), IL and DL. A host can blit `src` onto `dst` and only
+ * repaint the vacated rows. */
+static void test_moverect_scroll(void)
+{
+    CfrTerm *vt = make_term(3, 5);
+    feed(vt, "aaa\r\nbbb\r\nccc");
+
+    g_moverect_calls = 0;
+    feed(vt, "\n"); /* LF at the bottom scrolls the whole screen up 1 */
+    ASSERT_EQ(g_moverect_calls, 1);
+    ASSERT_EQ(g_mr_dst.start_row, 0);
+    ASSERT_EQ(g_mr_dst.end_row, 1);
+    ASSERT_EQ(g_mr_dst.start_col, 0);
+    ASSERT_EQ(g_mr_dst.end_col, 4);
+    ASSERT_EQ(g_mr_src.start_row, 1);
+    ASSERT_EQ(g_mr_src.end_row, 2);
+    ASSERT_EQ(g_mr_src.start_col, 0);
+    ASSERT_EQ(g_mr_src.end_col, 4);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'b');
+
+    /* RI at the top scrolls the other way. */
+    feed(vt, "\x1b[1;1H");
+    g_moverect_calls = 0;
+    feed(vt, "\x1bM");
+    ASSERT_EQ(g_moverect_calls, 1);
+    ASSERT_EQ(g_mr_dst.start_row, 1);
+    ASSERT_EQ(g_mr_dst.end_row, 2);
+    ASSERT_EQ(g_mr_src.start_row, 0);
+    ASSERT_EQ(g_mr_src.end_row, 1);
+
+    cfr_free(vt);
+}
+
+static void test_moverect_il_dl(void)
+{
+    CfrTerm *vt = make_term(4, 3);
+    feed(vt, "AAA\r\nBBB\r\nCCC\r\nDDD");
+    feed(vt, "\x1b[2;1H"); /* cursor row 1 */
+
+    g_moverect_calls = 0;
+    feed(vt, "\x1b[L"); /* IL 1: rows 1..2 move down to 2..3 */
+    ASSERT_EQ(g_moverect_calls, 1);
+    ASSERT_EQ(g_mr_dst.start_row, 2);
+    ASSERT_EQ(g_mr_dst.end_row, 3);
+    ASSERT_EQ(g_mr_src.start_row, 1);
+    ASSERT_EQ(g_mr_src.end_row, 2);
+    ASSERT_EQ(g_mr_dst.end_col, 2); /* full width */
+
+    feed(vt, "\x1b[2;1H");
+    g_moverect_calls = 0;
+    feed(vt, "\x1b[M"); /* DL 1: rows 2..3 move up to 1..2 */
+    ASSERT_EQ(g_moverect_calls, 1);
+    ASSERT_EQ(g_mr_dst.start_row, 1);
+    ASSERT_EQ(g_mr_dst.end_row, 2);
+    ASSERT_EQ(g_mr_src.start_row, 2);
+    ASSERT_EQ(g_mr_src.end_row, 3);
+
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -2186,5 +2259,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_irm_crush_pattern);
     RUN_TEST(test_ambiguous_wide);
     RUN_TEST(test_irm_at_right_margin);
+    RUN_TEST(test_moverect_scroll);
+    RUN_TEST(test_moverect_il_dl);
     TEST_SUMMARY();
 }

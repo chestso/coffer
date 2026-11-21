@@ -576,6 +576,69 @@ static void test_content_scale_physical(void)
     cfr_free(vt);
 }
 
+/* An anchored (iTerm2) image belongs to its screen buffer: it is hidden
+ * while the alt screen is active and comes back when the main screen
+ * does. kitty's rule ("the main screen must preserve the images when
+ * switching to/away from it") is the store's model for every source. */
+static void test_inline_image_altscreen_roundtrip(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    char seq[512];
+    snprintf(seq, sizeof(seq),
+             "\x1b]1337;File=inline=1:%s\x07",
+             PNG_1X1_RED_B64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+
+    feed(vt, "\x1b[?1049h");
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 0);
+    ASSERT_NULL(imgs);
+
+    feed(vt, "\x1b[?1049l");
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].source, IMG_SRC_ITERM);
+    ASSERT_EQ(imgs[0].rgba[0], 255);
+
+    cfr_free(vt);
+}
+
+/* cfr_osc_dispatch() commits the pending grapheme cluster before any OSC
+ * handler runs. The iTerm2 image anchors at the cursor, so a pending
+ * base character that is not committed first puts the image one cell to
+ * the left of where the text left the cursor. */
+static void test_pending_cluster_flushed_before_image(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    /* U+00E9 é is a non-ASCII codepoint, so it lands in the pending
+     * cluster instead of the direct-ASCII fast path. */
+    feed(vt, "\xc3\xa9");
+    char seq[512];
+    snprintf(seq, sizeof(seq),
+             "\x1b]1337;File=inline=1:%s\x07",
+             PNG_1X1_RED_B64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].col, 1);
+    ASSERT_EQ(imgs[0].row, 0);
+
+    const CfrCell *c = cfr_get_cell(vt, 0, 0);
+    ASSERT_NOT_NULL(c);
+    ASSERT_EQ(c->cp, 0x00E9u);
+
+    cfr_free(vt);
+}
+
 /* --------------------------------------------------------------- */
 /* main                                                           */
 /* --------------------------------------------------------------- */
@@ -598,6 +661,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_tiff_payload);
     RUN_TEST(test_large_single_shot);
     RUN_TEST(test_content_scale_physical);
+    RUN_TEST(test_inline_image_altscreen_roundtrip);
+    RUN_TEST(test_pending_cluster_flushed_before_image);
 
     TEST_SUMMARY();
 }

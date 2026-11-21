@@ -309,7 +309,12 @@ typedef struct
     /* damage: a rectangular region of the visible grid changed */
     void (*damage)(CfrRect rect, void *user);
 
-    /* moverect: contents of `src` were moved to `dst` (e.g. scroll). */
+    /* moverect: contents of `src` were moved to `dst` (e.g. scroll).
+     * Emitted for whole-row moves of the visible grid — scrolling (LF
+     * at the bottom, SU/SD, RI), IL and DL. Both rectangles are
+     * inclusive and span the full width, so a host may implement this
+     * with a scroll-blit; the vacated rows are still reported through
+     * `damage`. */
     void (*moverect)(CfrRect dst, CfrRect src, void *user);
 
     /* movecursor: the cursor's appearance or visibility changed (its

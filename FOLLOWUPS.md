@@ -34,20 +34,6 @@ on. Order is roughly priority, not strict dependency.
   boundary split them) re-attaches to that cell in the same row and
   re-commits the combined cluster — cross-row re-attach stays a drop.
 
-- **Hoist `cfr_flush_cluster()` into `cfr_osc_dispatch`.** OSC 8 added a
-  flush at the top of its handler (mirroring the csi.c / esc.c / modes.c
-  pattern) so the previous link's still-pending cluster gets the old
-  pen. Title-setting (OSC 0/1/2) doesn't currently mutate render state,
-  so the missing flush there is benign — but the asymmetry is a trap:
-  the next OSC code that touches the pen will quietly miscolour the
-  pending cluster. Cheap fix: move the flush to the top of
-  `cfr_osc_dispatch`. Wait for either a second consumer or a
-  reproducible corpus bug before changing it.
-
-  **Benefit:** Eliminates a latent bug where future OSC sequences that
-  change styling would silently miscolour pending text. Defensive
-  hardening with minimal cost.
-
 - **Cell re-interning degrades silently on failure.** `cfr_cell_reintern()`
   maps an allocation failure, or a full hyperlink table (65535 ids), to
   default style / no cluster / no link, because the intern functions
@@ -61,12 +47,6 @@ on. Order is roughly priority, not strict dependency.
   in `scrollback.c`), so a byte budget — a `CfrConfig` field checked there
   alongside the row count — slots in without touching the ring, the
   readers or the callers.
-
-- **`CfrCallbacks.moverect` is never emitted.** The callback is in the
-  public header, but no engine path fires it (`grep moverect src/` is
-  empty), so a host that wires it for a scroll-blit gets silence. Either
-  emit it on the whole-row moves (scroll, IL/DL) or drop it from the
-  API.
 
 ## Not yet implemented
 

@@ -90,6 +90,22 @@ void cfr_cursor_set(CfrTerm *vt, int row, int col)
     vt->cursor.col = col;
 }
 
+/* Report a whole-row move to the host. `rows` rows starting at src_row
+ * were moved to dst_row; both rectangles are inclusive and span the
+ * full width — every moverect coffer emits is a full-width row move
+ * (scroll, IL, DL), which is what a host's scroll-blit can consume.
+ * The damaged rows are reported separately (scroll damages the whole
+ * region today), so a host that ignores the callback still repaints
+ * correctly. */
+static void emit_moverect(CfrTerm *vt, int dst_row, int src_row, int rows)
+{
+    if (!vt->callbacks.moverect || rows <= 0 || vt->cols <= 0)
+        return;
+    CfrRect dst = { dst_row, 0, dst_row + rows - 1, vt->cols - 1 };
+    CfrRect src = { src_row, 0, src_row + rows - 1, vt->cols - 1 };
+    vt->callbacks.moverect(dst, src, vt->callback_user);
+}
+
 void cfr_scroll_up(CfrTerm *vt, int lines)
 {
     cfr_grid_ensure(vt);
@@ -140,6 +156,7 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
         memmove(&vt->grid->lineage[top],
                 &vt->grid->lineage[top + lines],
                 (size_t)move_count * sizeof(uint32_t));
+        emit_moverect(vt, top, top + lines, move_count);
     }
     /* Clear the new bottom rows with DEFAULT background (not BCE).
      * Scroll-induced erasure should not inherit the current pen's
@@ -180,6 +197,7 @@ void cfr_scroll_down(CfrTerm *vt, int lines)
         memmove(&vt->grid->lineage[top + lines],
                 &vt->grid->lineage[top],
                 (size_t)move_count * sizeof(uint32_t));
+        emit_moverect(vt, top + lines, top, move_count);
     }
     for (int i = 0; i < lines; ++i)
         erase_cells(vt,
@@ -855,6 +873,7 @@ void cfr_insert_lines(CfrTerm *vt, int count)
         memmove(&vt->grid->lineage[row + count],
                 &vt->grid->lineage[row],
                 (size_t)move * sizeof(uint32_t));
+        emit_moverect(vt, row + count, row, move);
     }
     for (int i = 0; i < count; ++i)
         erase_cells(vt,
@@ -883,6 +902,7 @@ void cfr_delete_lines(CfrTerm *vt, int count)
         memmove(&vt->grid->lineage[row],
                 &vt->grid->lineage[row + count],
                 (size_t)move * sizeof(uint32_t));
+        emit_moverect(vt, row, row + count, move);
     }
     int clear_start = vt->scroll_bottom - count + 1;
     for (int i = 0; i < count; ++i)

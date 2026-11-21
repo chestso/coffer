@@ -39,10 +39,10 @@ static int parse_code(const uint8_t *data, size_t len, size_t *out_offset)
  * first ';' to the end. An empty URI ('') closes the active hyperlink. */
 static void osc8_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
 {
-    /* Commit any pending cluster before mutating the pen — same pattern
-     * as csi.c / esc.c / modes.c. Without this the previous link's text
-     * (still in cluster_buf) would be stamped with the new id. */
-    cfr_flush_cluster(vt);
+    /* The pending cluster was already committed by cfr_osc_dispatch
+     * before the pen is mutated here — same pattern as csi.c / esc.c /
+     * modes.c. Without that flush the previous link's text (still in
+     * cluster_buf) would be stamped with the new id. */
 
     /* Find the first ';' separating params from URI. Per spec the
      * params field cannot contain ';', so a literal scan is correct. */
@@ -222,6 +222,16 @@ static void osc_dyn_colors(CfrTerm *vt, int code, const uint8_t *body, size_t bo
 
 void cfr_osc_dispatch(CfrTerm *vt, const uint8_t *data, size_t len)
 {
+    /* Commit any pending cluster before the OSC is dispatched — the
+     * same boundary csi.c / esc.c / modes.c draw. An OSC can move the
+     * pen (OSC 8's link), the cursor (OSC 1337's image anchor) or
+     * render state, and a cluster left pending would be committed
+     * afterwards with the NEW state: the character before the OSC
+     * would take the link/image position that belongs after it. The
+     * flush lives here, not in the individual handlers, so every OSC
+     * code (including the generic callback's) gets it for free. */
+    cfr_flush_cluster(vt);
+
     size_t off = 0;
     int code = parse_code(data, len, &off);
 
