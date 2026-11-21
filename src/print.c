@@ -28,7 +28,8 @@ static void erase_cells(CfrTerm *vt, CfrCell *dst, int count)
     erase_style.bg_rgb = vt->cursor.pen.bg_rgb;
     erase_style.color_flags = (uint16_t)(CFR_COLOR_DEFAULT_FG | CFR_COLOR_DEFAULT_UL |
                                          (vt->cursor.pen.color_flags & (uint16_t)CFR_COLOR_DEFAULT_BG));
-    uint32_t style_id = cfr_style_intern(vt, vt->grid, &erase_style);
+    uint32_t style_id = 0;
+    (void)cfr_style_intern(vt, vt->grid, &erase_style, &style_id);
     CfrCell blank = { 0 };
     blank.cp = 0x20; /* space */
     blank.style_id = style_id;
@@ -474,8 +475,13 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
      * continuation behind when a narrow cluster overwrites it. */
     int old_width = cell->width;
     cell->cp = cps[0];
-    cell->grapheme_id = (len > 1) ? cfr_grapheme_intern(vt, vt->grid, cps, len) : 0;
-    cell->style_id = cfr_style_intern(vt, vt->grid, &vt->cursor.pen);
+    /* An intern that cannot allocate degrades this print to the base
+     * codepoint / default style; there is no cell move to abort. */
+    cell->grapheme_id = 0;
+    if (len > 1)
+        (void)cfr_grapheme_intern(vt, vt->grid, cps, len, &cell->grapheme_id);
+    cell->style_id = 0;
+    (void)cfr_style_intern(vt, vt->grid, &vt->cursor.pen, &cell->style_id);
     cell->width = (uint8_t)width;
     cell->flags = 0;
     cell->hyperlink_id = cfr_link_page_id(vt, vt->grid, vt->cursor.link);
@@ -650,7 +656,8 @@ size_t cfr_print_ascii_run(CfrTerm *vt, const uint8_t *bytes, size_t len)
     CfrCell *cells = vt->grid->cells;
     /* The pen is constant inside GROUND, so the run interns the style
      * once instead of per cell. */
-    uint32_t style_id = cfr_style_intern(vt, vt->grid, &vt->cursor.pen);
+    uint32_t style_id = 0;
+    (void)cfr_style_intern(vt, vt->grid, &vt->cursor.pen, &style_id);
     uint16_t link_id = cfr_link_page_id(vt, vt->grid, vt->cursor.link);
 
     int row = vt->cursor.row;

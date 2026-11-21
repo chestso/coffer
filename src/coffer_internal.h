@@ -562,19 +562,29 @@ void cfr_grid_gc(CfrTerm *vt);
  * attaches a different style/cluster/link. `dst` and `src` must be
  * distinct, non-NULL pages (bug check otherwise).
  *
- * Failure is lossy, not fatal: an allocation failure, or a table at its
- * id cap, degrades that attribute to default style / no cluster / no
- * link (the intern functions cannot tell "failed" from "default"). */
-CfrCell cfr_cell_reintern(CfrTerm *vt, CfrPage *dst, const CfrPage *src,
-                          CfrCell cell);
+ * Returns true and writes the re-interned cell to *out on success. Returns
+ * false (leaving *out untouched) when an attribute cannot be seated: an
+ * allocation failure, or a destination table at its id cap. A caller
+ * moving cells must then abandon the move — keep the old page, drop the
+ * history row, fall back to clamp — rather than store a cell that
+ * silently lost a style, cluster or link. A source id the source page
+ * does not know still degrades to default/none: that is corrupt input,
+ * not a resource failure. */
+bool cfr_cell_reintern(CfrTerm *vt, CfrPage *dst, const CfrPage *src,
+                       CfrCell cell, CfrCell *out);
 
-/* Style intern. Returns 0 for the default style. */
-uint32_t cfr_style_intern(CfrTerm *vt, CfrPage *page, const CfrStyle *style);
+/* Style intern. On success writes the page-local id to *out_id (0 = the
+ * default style) and returns true. Returns false (leaving *out_id
+ * untouched) when the table cannot grow. */
+bool cfr_style_intern(CfrTerm *vt, CfrPage *page, const CfrStyle *style,
+                      uint32_t *out_id);
 const CfrStyle *cfr_style_lookup(const CfrPage *page, uint32_t id);
 
-/* Grapheme arena. */
-uint32_t cfr_grapheme_intern(CfrTerm *vt, CfrPage *page,
-                             const uint32_t *cps, uint32_t len);
+/* Grapheme arena. On success writes the arena offset to *out_id (0 when
+ * len < 2 or page is NULL: the single-codepoint case) and returns true.
+ * Returns false (leaving *out_id untouched) when the arena cannot grow. */
+bool cfr_grapheme_intern(CfrTerm *vt, CfrPage *page,
+                         const uint32_t *cps, uint32_t len, uint32_t *out_id);
 size_t cfr_grapheme_read(const CfrPage *page, uint32_t id,
                          uint32_t *out, size_t out_cap);
 
@@ -587,11 +597,14 @@ size_t cfr_hyperlink_read(const CfrPage *page, uint16_t id,
 /* The content key of `id` (see CfrHyperlinkTable), or 0 for id 0 or an id
  * the page does not know. Equal URIs have equal keys on every page. */
 uint64_t cfr_hyperlink_key(const CfrPage *page, uint16_t id);
-/* Re-intern `id` from `src` into `dst`. Returns the dst-local id, or 0
- * when there is no link / the source id is unknown / on allocation
- * failure. Lossless: the URI is interned from the source arena. */
-uint16_t cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
-                                const CfrPage *src, uint16_t id);
+/* Re-intern `id` from `src` into `dst`. On success writes the dst-local
+ * id to *out_id (0 for no link, or an id the source page does not know)
+ * and returns true. Returns false (leaving *out_id untouched) on
+ * allocation failure or when the destination table is at its id cap.
+ * Lossless: the URI is interned straight from the source arena. */
+bool cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
+                            const CfrPage *src, uint16_t id,
+                            uint16_t *out_id);
 void cfr_hyperlink_free(CfrTerm *vt, CfrHyperlinkTable *t);
 
 /* The pen's link (see CfrLink). new returns NULL for an empty URI or on
@@ -786,9 +799,10 @@ void cfr_damage_span(CfrTerm *vt, int start_row, int start_col, int end_row,
 /* Append one row. `src` is the page that `src_cells`' style/grapheme/
  * hyperlink ids refer to (the live grid for a scroll, the old grid for
  * reflow); the cells are re-interned into the ring, so `src` need not
- * outlive the call. A push the ring cannot allocate for is dropped.
- * Silent: the scroll that pushes announces its rows (sb_pushline), reflow
- * does not. */
+ * outlive the call. A push the ring cannot allocate for, or whose cells
+ * cannot be re-interned with their attributes intact, is dropped rather
+ * than stored degraded. Silent: the scroll that pushes announces its rows
+ * (sb_pushline), reflow does not. */
 void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
                          const CfrCell *src_cells, int cols, uint32_t lineage);
 void cfr_scrollback_clear(CfrTerm *vt);

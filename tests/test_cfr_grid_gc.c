@@ -287,6 +287,19 @@ static void fa_free(void *ptr, void *user)
     free(ptr);
 }
 
+static CfrTerm *make_failing_term(FailAlloc *f, int rows, int cols, bool reflow)
+{
+    CfrAllocator a = { fa_alloc, fa_realloc, fa_free, f };
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = rows;
+    cfg.cols = cols;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.reflow = reflow;
+    cfg.scrollback = 100;
+    return cfr_new_with_allocator(&cfg, &a);
+}
+
 /* Memory running out in the middle of a rebuild keeps the old page whole;
  * a later write retries and succeeds. */
 static void test_failed_rebuild_keeps_the_old_page(void)
@@ -335,6 +348,145 @@ static void test_failed_rebuild_keeps_the_old_page(void)
     cfr_free(vt);
 }
 
+/* A resize whose cell move cannot restore a style is abandoned whole:
+ * the old geometry and every attribute stay exactly as they were. */
+static void check_failed_resize_keeps_terminal(bool reflow)
+{
+    FailAlloc f = { 0 };
+    CfrTerm *vt = make_failing_term(&f, 4, 10, reflow);
+    ASSERT_NOT_NULL(vt);
+
+    const char *red = "\x1b[38;2;255;0;0mA";
+    write_all(vt, red, strlen(red), strlen(red));
+
+    f.fail_size = CFR_STYLES_INIT * sizeof(CfrStyle);
+    f.armed = true; /* the new page's first style table is refused */
+    cfr_resize(vt, 5, 12);
+
+    int rows = 0, cols = 0;
+    cfr_get_dimensions(vt, &rows, &cols);
+    ASSERT_EQ(rows, 4);
+    ASSERT_EQ(cols, 10);
+    const CfrCell *cell = cfr_get_cell(vt, 0, 0);
+    ASSERT_NOT_NULL(cell);
+    ASSERT_EQ(cell->cp, (uint32_t)'A');
+    const CfrStyle *st = cfr_cell_style(vt, 0, 0);
+    ASSERT_NOT_NULL(st);
+    ASSERT_EQ(st->fg_rgb, 0xFF0000u);
+
+    f.armed = false; /* the retry succeeds */
+    cfr_resize(vt, 5, 12);
+    cfr_get_dimensions(vt, &rows, &cols);
+    ASSERT_EQ(rows, 5);
+    ASSERT_EQ(cols, 12);
+    st = cfr_cell_style(vt, 0, 0);
+    ASSERT_NOT_NULL(st);
+    ASSERT_EQ(st->fg_rgb, 0xFF0000u);
+    cfr_free(vt);
+}
+
+static void test_clamp_resize_aborts_on_failed_reintern(void)
+{
+    check_failed_resize_keeps_terminal(false);
+}
+
+static void test_reflow_resize_aborts_on_failed_reintern(void)
+{
+    check_failed_resize_keeps_terminal(true);
+}
+
+/* The checked re-intern reports a grapheme arena failure and leaves the
+ * output cell untouched. */
+static void test_reintern_reports_grapheme_failure(void)
+{
+    FailAlloc f = { 0 };
+    CfrTerm *vt = make_failing_term(&f, 4, 10, false);
+    ASSERT_NOT_NULL(vt);
+    CfrPage *src = cfr_page_new(vt, 1, 2);
+    CfrPage *dst = cfr_page_new(vt, 1, 2);
+    ASSERT_NOT_NULL(src);
+    ASSERT_NOT_NULL(dst);
+
+    uint32_t cps[] = { 0x1F1E9, 0x1F1F0 }; /* DK flag */
+    uint32_t gid = 0;
+    ASSERT_TRUE(cfr_grapheme_intern(vt, src, cps, 2, &gid));
+    ASSERT_NEQ(gid, 0u);
+
+    CfrCell cell = { 0 };
+    cell.cp = cps[0];
+    cell.grapheme_id = gid;
+    cell.width = 2;
+
+    CfrCell before;
+    memset(&before, 0xAA, sizeof(before));
+    CfrCell out = before;
+
+    f.fail_size = CFR_ARENA_CP_INIT; /* the arena's first allocation */
+    f.armed = true;
+    ASSERT_TRUE(!cfr_cell_reintern(vt, dst, src, cell, &out));
+    ASSERT_TRUE(f.failed >= 1);
+    ASSERT_TRUE(memcmp(&out, &before, sizeof(out)) == 0);
+
+    f.armed = false;
+    ASSERT_TRUE(cfr_cell_reintern(vt, dst, src, cell, &out));
+    ASSERT_NEQ(out.grapheme_id, 0u);
+    uint32_t back[2] = { 0 };
+    ASSERT_EQ(cfr_grapheme_read(dst, out.grapheme_id, back, 2), 2u);
+    ASSERT_EQ(back[0], cps[0]);
+    ASSERT_EQ(back[1], cps[1]);
+
+    cfr_page_free(vt, dst);
+    cfr_page_free(vt, src);
+    cfr_free(vt);
+}
+
+/* A history row that cannot be re-interned with its style intact is
+ * dropped, not stored with the style stripped. Covers both the fresh
+ * page the push would allocate and the retry that lands there. */
+static void test_scrollback_push_drops_row_on_failed_reintern(void)
+{
+    FailAlloc f = { 0 };
+    CfrTerm *vt = make_failing_term(&f, 2, 8, false);
+    ASSERT_NOT_NULL(vt);
+    ASSERT_EQ(cfr_get_scrollback_capacity(vt), 100);
+
+    const char *red = "\x1b[38;2;255;0;0mx";
+    /* Initialize the live grid's style table, then clear the cell so the
+     * styled print is not what fills the first history page. */
+    write_all(vt, red, strlen(red), strlen(red));
+    write_all(vt, "\x1b[2J", 4, 4);
+
+    /* Fill one scrollback page with plain rows. Rows=2: N newlines scroll
+     * N-1 rows off. */
+    for (int i = 0; i < (int)CFR_SB_PAGE_ROWS + 1; ++i)
+        write_all(vt, "\n", 1, 1);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), (int)CFR_SB_PAGE_ROWS);
+
+    /* The styled row would start a fresh page; refuse its style table. */
+    f.fail_size = CFR_STYLES_INIT * sizeof(CfrStyle);
+    f.armed = true;
+    int before = cfr_get_scrollback_lines(vt);
+    write_all(vt, "\x1b[1;1H", 6, 6);
+    write_all(vt, red, strlen(red), strlen(red));
+    write_all(vt, "\n\n", 2, 2);
+    ASSERT_TRUE(f.failed >= 1);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), before); /* row dropped */
+
+    /* With memory back, the same row lands, style and all. */
+    f.armed = false;
+    write_all(vt, "\x1b[1;1H", 6, 6);
+    write_all(vt, red, strlen(red), strlen(red));
+    write_all(vt, "\n\n", 2, 2);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), before + 1);
+    const CfrCell *top = cfr_get_cell(vt, -1, 0);
+    ASSERT_NOT_NULL(top);
+    ASSERT_EQ(top->cp, (uint32_t)'x');
+    const CfrStyle *st = cfr_cell_style(vt, -1, 0);
+    ASSERT_NOT_NULL(st);
+    ASSERT_EQ(st->fg_rgb, 0xFF0000u);
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -346,6 +498,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_open_link_survives_rebuild);
     RUN_TEST(test_write_boundaries_are_invisible);
     RUN_TEST(test_failed_rebuild_keeps_the_old_page);
+    RUN_TEST(test_clamp_resize_aborts_on_failed_reintern);
+    RUN_TEST(test_reflow_resize_aborts_on_failed_reintern);
+    RUN_TEST(test_reintern_reports_grapheme_failure);
+    RUN_TEST(test_scrollback_push_drops_row_on_failed_reintern);
 
     TEST_SUMMARY();
 }

@@ -764,13 +764,15 @@ static void test_grapheme_arena_dedup(void)
     ASSERT_NOT_NULL(page);
 
     uint32_t flag[] = { 0x1F1E9, 0x1F1F0 }; /* DK flag */
-    uint32_t id1 = cfr_grapheme_intern(vt, page, flag, 2);
-    uint32_t id2 = cfr_grapheme_intern(vt, page, flag, 2);
+    uint32_t id1 = 0, id2 = 0;
+    ASSERT_TRUE(cfr_grapheme_intern(vt, page, flag, 2, &id1));
+    ASSERT_TRUE(cfr_grapheme_intern(vt, page, flag, 2, &id2));
     ASSERT_NEQ(id1, 0u);
     ASSERT_EQ(id1, id2);
 
     uint32_t fam[] = { 0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467, 0x200D, 0x1F466 };
-    uint32_t id3 = cfr_grapheme_intern(vt, page, fam, 7);
+    uint32_t id3 = 0;
+    ASSERT_TRUE(cfr_grapheme_intern(vt, page, fam, 7, &id3));
     ASSERT_NEQ(id3, 0u);
     ASSERT_NEQ(id1, id3);
 

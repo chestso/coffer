@@ -115,13 +115,15 @@ static bool grow_dedup(CfrTerm *vt, CfrPage *page)
     return true;
 }
 
-uint32_t cfr_grapheme_intern(CfrTerm *vt, CfrPage *page,
-                             const uint32_t *cps, uint32_t len)
+bool cfr_grapheme_intern(CfrTerm *vt, CfrPage *page,
+                         const uint32_t *cps, uint32_t len, uint32_t *out_id)
 {
-    if (!page || len < 2)
-        return 0;
+    if (!page || len < 2) {
+        *out_id = 0;
+        return true;
+    }
     if (!ensure_init(vt, page))
-        return 0;
+        return false;
 
     uint32_t hash = fnv1a_words(cps, len);
     uint32_t mask = page->graphemes.dedup_capacity - 1;
@@ -134,7 +136,7 @@ uint32_t cfr_grapheme_intern(CfrTerm *vt, CfrPage *page,
             uint32_t need = 2 + len;
             if (page->graphemes.used + need > page->graphemes.capacity) {
                 if (!grow_codepoints(vt, page, need))
-                    return 0;
+                    return false;
             }
             uint32_t new_off = page->graphemes.used;
             page->graphemes.codepoints[new_off] = hash;
@@ -145,18 +147,22 @@ uint32_t cfr_grapheme_intern(CfrTerm *vt, CfrPage *page,
             page->graphemes.dedup_index[slot] = new_off;
             page->graphemes.dedup_count++;
 
-            /* Keep load factor below 70%. */
+            /* Keep load factor below 70%. A failed rebuild leaves a
+             * valid, merely dense, index — entries stay findable, so it
+             * is not an intern failure. */
             if (page->graphemes.dedup_count * 10 > page->graphemes.dedup_capacity * 7) {
                 grow_dedup(vt, page);
             }
-            return new_off;
+            *out_id = new_off;
+            return true;
         }
         uint32_t stored_hash = page->graphemes.codepoints[off];
         uint32_t stored_len = page->graphemes.codepoints[off + 1];
         if (stored_hash == hash && stored_len == len &&
             memcmp(&page->graphemes.codepoints[off + 2], cps,
                    (size_t)len * sizeof(uint32_t)) == 0) {
-            return off;
+            *out_id = off;
+            return true;
         }
         slot = (slot + 1) & mask;
     }

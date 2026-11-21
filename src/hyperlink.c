@@ -147,14 +147,16 @@ static bool grow_dedup(CfrTerm *vt, CfrHyperlinkTable *t)
     return true;
 }
 
-static uint16_t intern_keyed(CfrTerm *vt, CfrPage *page, const uint8_t *uri,
-                             uint32_t uri_len, uint64_t key)
+static bool intern_keyed(CfrTerm *vt, CfrPage *page, const uint8_t *uri,
+                         uint32_t uri_len, uint64_t key, uint16_t *out_id)
 {
-    if (!page || !uri || uri_len == 0)
-        return 0;
+    if (!page || !uri || uri_len == 0) {
+        *out_id = 0;
+        return true;
+    }
     CfrHyperlinkTable *t = &page->hyperlinks;
     if (!ensure_init(vt, t))
-        return 0;
+        return false;
 
     uint32_t mask = t->dedup_capacity - 1;
     uint32_t slot = (uint32_t)key & mask;
@@ -163,21 +165,23 @@ static uint16_t intern_keyed(CfrTerm *vt, CfrPage *page, const uint8_t *uri,
         if (id == 0)
             break; /* empty — insert here */
         if (t->keys[id] == key && t->lengths[id] == uri_len &&
-            memcmp(t->data + t->offsets[id], uri, uri_len) == 0)
-            return id; /* hit */
+            memcmp(t->data + t->offsets[id], uri, uri_len) == 0) {
+            *out_id = id; /* hit */
+            return true;
+        }
         slot = (slot + 1) & mask;
     }
 
     /* Insert. Cap at UINT16_MAX. */
     if (t->count >= CFR_HYPERLINK_ID_MAX)
-        return 0;
+        return false;
     if (t->count + 1 >= t->capacity_ids) {
         if (!grow_ids(vt, t))
-            return 0;
+            return false;
     }
     if (t->used + uri_len > t->capacity) {
         if (!grow_data(vt, t, uri_len))
-            return 0;
+            return false;
     }
     uint16_t new_id = (uint16_t)(t->count + 1u);
     t->offsets[new_id] = t->used;
@@ -189,10 +193,13 @@ static uint16_t intern_keyed(CfrTerm *vt, CfrPage *page, const uint8_t *uri,
     t->dedup_index[slot] = new_id;
 
     /* Maintain load factor < 70%. Rebuild rehashes; the just-placed
-     * entry's slot may move, which is fine. */
+     * entry's slot may move, which is fine. A failed rebuild leaves a
+     * valid, merely dense, index — entries stay findable, so it is not
+     * an intern failure. */
     if ((uint32_t)t->count * 10u > t->dedup_capacity * 7u)
         grow_dedup(vt, t);
-    return new_id;
+    *out_id = new_id;
+    return true;
 }
 
 uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
@@ -200,7 +207,9 @@ uint16_t cfr_hyperlink_intern(CfrTerm *vt, CfrPage *page,
 {
     if (!uri || uri_len == 0)
         return 0;
-    return intern_keyed(vt, page, uri, uri_len, link_key(uri, uri_len));
+    uint16_t id = 0;
+    (void)intern_keyed(vt, page, uri, uri_len, link_key(uri, uri_len), &id);
+    return id;
 }
 
 uint64_t cfr_hyperlink_key(const CfrPage *page, uint16_t id)
@@ -224,18 +233,20 @@ size_t cfr_hyperlink_read(const CfrPage *page, uint16_t id,
     return n;
 }
 
-uint16_t cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
-                                const CfrPage *src, uint16_t id)
+bool cfr_hyperlink_transfer(CfrTerm *vt, CfrPage *dst,
+                            const CfrPage *src, uint16_t id, uint16_t *out_id)
 {
-    if (!dst || !src || id == 0 || id > src->hyperlinks.count)
-        return 0;
+    if (!dst || !src || id == 0 || id > src->hyperlinks.count) {
+        *out_id = 0;
+        return true;
+    }
     const CfrHyperlinkTable *t = &src->hyperlinks;
     /* Intern straight out of the source arena: reading through a fixed
      * stack buffer would truncate a URI longer than the buffer and
      * re-intern the truncated prefix as a different link. The stored key
      * is the URI's hash already, so it is not computed again. */
     return intern_keyed(vt, dst, t->data + t->offsets[id], t->lengths[id],
-                        t->keys[id]);
+                        t->keys[id], out_id);
 }
 
 CfrLink *cfr_link_new(CfrTerm *vt, const uint8_t *uri, uint32_t uri_len)
@@ -268,7 +279,9 @@ uint16_t cfr_link_page_id(CfrTerm *vt, CfrPage *page, CfrLink *link)
         return 0;
     if (link->cache_serial == page->serial && page->serial != 0)
         return link->cache_id;
-    uint16_t id = intern_keyed(vt, page, link->uri, link->len, link->key);
+    uint16_t id = 0;
+    if (!intern_keyed(vt, page, link->uri, link->len, link->key, &id))
+        return 0;
     if (id != 0) {
         link->cache_serial = page->serial;
         link->cache_id = id;

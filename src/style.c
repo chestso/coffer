@@ -110,16 +110,21 @@ static bool grow_entries(CfrTerm *vt, CfrPage *page)
     return true;
 }
 
-uint32_t cfr_style_intern(CfrTerm *vt, CfrPage *page, const CfrStyle *style)
+bool cfr_style_intern(CfrTerm *vt, CfrPage *page, const CfrStyle *style,
+                      uint32_t *out_id)
 {
-    if (!page)
-        return 0;
+    if (!page) {
+        *out_id = 0;
+        return true;
+    }
     /* Default style → reserved id 0, no allocation. */
-    if (memcmp(style, &DEFAULT_STYLE, sizeof(*style)) == 0)
-        return 0;
+    if (memcmp(style, &DEFAULT_STYLE, sizeof(*style)) == 0) {
+        *out_id = 0;
+        return true;
+    }
 
     if (!ensure_init(vt, page))
-        return 0;
+        return false;
 
     uint32_t hash = fnv1a(style, sizeof(*style));
     uint32_t mask = page->styles.index_capacity - 1;
@@ -132,7 +137,7 @@ uint32_t cfr_style_intern(CfrTerm *vt, CfrPage *page, const CfrStyle *style)
             /* Insert. */
             if (page->styles.count >= page->styles.capacity) {
                 if (!grow_entries(vt, page))
-                    return 0;
+                    return false;
             }
             uint32_t new_id = page->styles.count++;
             page->styles.entries[new_id] = *style;
@@ -148,14 +153,19 @@ uint32_t cfr_style_intern(CfrTerm *vt, CfrPage *page, const CfrStyle *style)
                 new_id, page->styles.count, page->styles.capacity);
 
             /* Maintain load factor < 70%. Rebuild rehashes; the just-
-             * placed entry's slot may move, which is fine. */
+             * placed entry's slot may move, which is fine. A failed
+             * rebuild leaves a valid, merely dense, index — the entry is
+             * still findable, so it is not an intern failure. */
             if (page->styles.count * 10 > page->styles.index_capacity * 7) {
                 grow_index(vt, page);
             }
-            return new_id;
+            *out_id = new_id;
+            return true;
         }
-        if (memcmp(&page->styles.entries[entry_idx], style, sizeof(*style)) == 0)
-            return entry_idx;
+        if (memcmp(&page->styles.entries[entry_idx], style, sizeof(*style)) == 0) {
+            *out_id = entry_idx;
+            return true;
+        }
         slot = (slot + 1) & mask;
     }
 }

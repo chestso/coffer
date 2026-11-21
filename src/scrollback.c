@@ -100,8 +100,15 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
 
     /* Store the row, if the ring retains anything and can allocate. */
     CfrPage *page = NULL;
-    if (vt->sb_capacity > 0 && ring_reserve(vt))
+    bool fresh_page = false;
+    if (vt->sb_capacity > 0 && ring_reserve(vt)) {
         page = page_for_push(vt, cols);
+        /* A page the ring does not yet reference was just allocated for
+         * this push; an abort below must free it. */
+        fresh_page =
+            page && (vt->sb_lines == 0 ||
+                     ring_at(vt, (uint32_t)vt->sb_lines - 1)->page != page);
+    }
     if (page) {
         /* Invariant: the push reads style/grapheme/hyperlink ids from
          * `src` and writes them into `page`. If a caller ever passes the
@@ -113,15 +120,26 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
                       (void *)page);
         uint32_t row = page->row_count;
         CfrCell *dst = &page->cells[(size_t)row * page->cols];
-        page->lineage[row] = lineage;
 
         /* Re-intern style, grapheme, and hyperlink references into the
-         * page — page-scoped tables don't carry across pages. */
-        for (int c = 0; c < cols && c < page->cols; ++c)
-            dst[c] = cfr_cell_reintern(vt, page, src, src_cells[c]);
-        page->row_count++;
-        *ring_at(vt, (uint32_t)vt->sb_lines) = (CfrSbRow){ page, row };
-        vt->sb_lines++;
+         * page — page-scoped tables don't carry across pages. If one
+         * cannot be seated, drop the whole row: a history row that lost
+         * its attributes is worse than a missing one. */
+        bool stored = true;
+        for (int c = 0; c < cols && c < page->cols; ++c) {
+            if (!cfr_cell_reintern(vt, page, src, src_cells[c], &dst[c])) {
+                stored = false;
+                break;
+            }
+        }
+        if (stored) {
+            page->lineage[row] = lineage;
+            page->row_count++;
+            *ring_at(vt, (uint32_t)vt->sb_lines) = (CfrSbRow){ page, row };
+            vt->sb_lines++;
+        } else if (fresh_page) {
+            cfr_page_free(vt, page);
+        }
     }
 
     evict_to_capacity(vt);

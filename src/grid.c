@@ -91,24 +91,24 @@ void cfr_grid_gc(CfrTerm *vt)
     memcpy(fresh->lineage, old->lineage,
            (size_t)old->row_capacity * sizeof(uint32_t));
 
-    /* cfr_cell_reintern degrades an attribute when an allocation fails.
-     * Rebuilding with attributes lost would be worse than not rebuilding,
-     * so a failure anywhere keeps the old page. */
-    uint64_t failures = vt->alloc_failures;
+    /* Rebuilding with an attribute lost would be worse than not
+     * rebuilding, so a failed re-intern anywhere keeps the old page and a
+     * later write retries. */
     size_t n = (size_t)old->row_capacity * old->cols;
-    for (size_t i = 0; i < n; ++i)
-        fresh->cells[i] = cfr_cell_reintern(vt, fresh, old, old->cells[i]);
-    if (vt->alloc_failures != failures) {
-        cfr_page_free(vt, fresh);
-        return;
+    for (size_t i = 0; i < n; ++i) {
+        if (!cfr_cell_reintern(vt, fresh, old, old->cells[i],
+                               &fresh->cells[i])) {
+            cfr_page_free(vt, fresh);
+            return;
+        }
     }
 
     vt->grid = fresh;
     cfr_page_free(vt, old);
 }
 
-CfrCell cfr_cell_reintern(CfrTerm *vt, CfrPage *dst, const CfrPage *src,
-                          CfrCell cell)
+bool cfr_cell_reintern(CfrTerm *vt, CfrPage *dst, const CfrPage *src,
+                       CfrCell cell, CfrCell *out)
 {
     /* A NULL or aliased page is a caller bug; passing the cell through
      * would be exactly the raw-id copy this helper exists to prevent. */
@@ -118,23 +118,40 @@ CfrCell cfr_cell_reintern(CfrTerm *vt, CfrPage *dst, const CfrPage *src,
 
     /* Nothing page-scoped to move (the common case for plain text). */
     if (cell.style_id == 0u && cell.grapheme_id == 0u &&
-        cell.hyperlink_id == 0u)
-        return cell;
+        cell.hyperlink_id == 0u) {
+        *out = cell;
+        return true;
+    }
 
     const CfrStyle *st = cfr_style_lookup(src, cell.style_id);
-    cell.style_id = st ? cfr_style_intern(vt, dst, st) : 0u;
+    if (st) {
+        if (!cfr_style_intern(vt, dst, st, &cell.style_id))
+            return false;
+    } else {
+        cell.style_id = 0u; /* source id unknown: degrade, not a failure */
+    }
 
     if (cell.grapheme_id != 0u) {
         uint32_t cps[CFR_CLUSTER_MAX];
         size_t n = cfr_grapheme_read(src, cell.grapheme_id, cps,
                                      CFR_CLUSTER_MAX);
-        cell.grapheme_id =
-            (n >= 2) ? cfr_grapheme_intern(vt, dst, cps, (uint32_t)n) : 0u;
+        if (n >= 2) {
+            uint32_t id = 0;
+            if (!cfr_grapheme_intern(vt, dst, cps, (uint32_t)n, &id))
+                return false;
+            cell.grapheme_id = id;
+        } else {
+            cell.grapheme_id = 0u; /* unknown/short source: degrade */
+        }
     }
 
-    if (cell.hyperlink_id != 0u)
-        cell.hyperlink_id =
-            cfr_hyperlink_transfer(vt, dst, src, cell.hyperlink_id);
+    if (cell.hyperlink_id != 0u) {
+        uint16_t id = 0;
+        if (!cfr_hyperlink_transfer(vt, dst, src, cell.hyperlink_id, &id))
+            return false;
+        cell.hyperlink_id = id;
+    }
 
-    return cell;
+    *out = cell;
+    return true;
 }

@@ -160,8 +160,13 @@ void cfr_resize_clamp(CfrTerm *vt, int new_rows, int new_cols)
         for (int r = 0; r < copy_rows; ++r) {
             for (int c = 0; c < copy_cols; ++c) {
                 CfrCell src = old_grid->cells[(size_t)r * vt->cols + c];
-                new_grid->cells[(size_t)r * new_cols + c] =
-                    cfr_cell_reintern(vt, new_grid, old_grid, src);
+                CfrCell *dst = &new_grid->cells[(size_t)r * new_cols + c];
+                /* Cannot preserve an attribute: abandon the resize with
+                 * the old geometry and content intact. */
+                if (!cfr_cell_reintern(vt, new_grid, old_grid, src, dst)) {
+                    cfr_page_free(vt, new_grid);
+                    return;
+                }
             }
             /* Keep the lineage id; a clamp resize preserves row identity. */
             new_grid->lineage[r] = old_grid->lineage[r];
@@ -226,8 +231,10 @@ static bool collect_prefix(Reflow *R)
             if (cell.width == 0)
                 continue;
             cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
-            R->cells[R->cells_count++] =
-                cfr_cell_reintern(vt, R->old_grid, page, cell);
+            if (!cfr_cell_reintern(vt, R->old_grid, page, cell,
+                                   &R->cells[R->cells_count]))
+                return false;
+            R->cells_count++;
         }
     }
     return true;
@@ -449,8 +456,9 @@ static bool install(Reflow *R)
                       R->rows[k].end, R->cells_count);
     }
 
-    /* Every allocation reflow itself makes happens before the first
-     * mutation below, so a failure here still falls back to clamp. */
+    /* Seat the visible rows first: re-interning them is the last fallible
+     * step, and it must run before history is touched so a failure still
+     * falls back to clamp with the old grid and scrollback intact. */
     CfrPage *new_grid = cfr_page_new(vt, new_rows, new_cols);
     if (!new_grid)
         return false;
@@ -459,11 +467,26 @@ static bool install(Reflow *R)
         cfr_page_free(vt, new_grid);
         return false;
     }
+    for (int i = 0; i < visible_count; ++i) {
+        const NewRow *nr = &R->rows[sb_count + i];
+        layout_row(R, nr, row_buf);
+        CfrCell *dst = &new_grid->cells[(size_t)i * new_cols];
+        for (int c = 0; c < new_cols; ++c) {
+            if (!cfr_cell_reintern(vt, new_grid, R->old_grid, row_buf[c],
+                                   &dst[c])) {
+                cfr_dealloc(vt, row_buf);
+                cfr_page_free(vt, new_grid);
+                return false;
+            }
+        }
+        new_grid->lineage[i] = nr->lineage;
+    }
 
-    /* The rows pulled out of history are in the flat buffer (re-interned
-     * against the old grid), so they can leave the ring now. (A later
-     * ring-page allocation failure inside cfr_scrollback_push still drops
-     * that row; push has no way to report it.) */
+    /* History moves from here on. The rows pulled out of the old end are
+     * in the flat buffer (re-interned against the old grid), so they can
+     * leave the ring now. A scrollback row that a push cannot re-intern
+     * with its attributes intact is dropped; push has no way to report
+     * it. */
     if (R->prefix_rows > 0)
         cfr_scrollback_pop_rows(vt, R->prefix_rows);
 
@@ -472,16 +495,6 @@ static bool install(Reflow *R)
         layout_row(R, &R->rows[i], row_buf);
         cfr_scrollback_push(vt, R->old_grid, row_buf, new_cols,
                             R->rows[i].lineage);
-    }
-
-    /* The newest rows land in the new grid. */
-    for (int i = 0; i < visible_count; ++i) {
-        const NewRow *nr = &R->rows[sb_count + i];
-        layout_row(R, nr, row_buf);
-        CfrCell *dst = &new_grid->cells[(size_t)i * new_cols];
-        for (int c = 0; c < new_cols; ++c)
-            dst[c] = cfr_cell_reintern(vt, new_grid, R->old_grid, row_buf[c]);
-        new_grid->lineage[i] = nr->lineage;
     }
     cfr_dealloc(vt, row_buf);
 

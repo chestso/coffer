@@ -22,13 +22,6 @@ on. Order is roughly priority, not strict dependency.
   DL-inside-one-wrapped-line over-join (spec §7) remains: wrong text,
   never wrong structure.
 
-- **Cell re-interning degrades silently on failure.** `cfr_cell_reintern()`
-  maps an allocation failure, or a full hyperlink table (65535 ids), to
-  default style / no cluster / no link, because the intern functions
-  return 0 for both "failed" and "default". Resize and scrollback moves
-  therefore lose an attribute rather than abort. Fixing it means giving
-  the intern functions a distinct failure return.
-
 - **Scrollback capacity is in rows, not bytes.** 100000 rows is about
   130 MB at 80 columns and four times that at 300; an unbounded ring fed a
   480 MB file is gigabytes. Eviction is one function (`evict_to_capacity`
