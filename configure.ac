@@ -109,18 +109,24 @@ if test "x$host_windows" = "xyes"; then
   fi
 
   if test "x$with_conpty" != "xsystem"; then
-    # exec_prefix is still NONE at this point, so expand the default
-    # libexecdir against $prefix directly.  (A custom --libexecdir is
-    # honored when it does not contain ${exec_prefix}.)
+    # prefix and exec_prefix are still NONE at this point, so expand
+    # ${prefix} / ${exec_prefix} references in libexecdir against the
+    # resolved prefix directly.  This covers both the default
+    # '${exec_prefix}/libexec' and a custom --libexecdir that reuses those
+    # variables (autoconf leaves them unexpanded until Makefile generation,
+    # which is too late for config.h).
     if test "x$prefix" = xNONE; then
       conpty_prefix=$ac_default_prefix
     else
       conpty_prefix=$prefix
     fi
-    case "$libexecdir" in
-      '${exec_prefix}/libexec') conpty_install_dir="$conpty_prefix/libexec/coffer" ;;
-      *) conpty_install_dir="$libexecdir/coffer" ;;
-    esac
+    saved_exec_prefix=$exec_prefix
+    saved_prefix=$prefix
+    exec_prefix=$conpty_prefix
+    prefix=$conpty_prefix
+    eval "conpty_install_dir=\"$libexecdir/coffer\""
+    exec_prefix=$saved_exec_prefix
+    prefix=$saved_prefix
     # Convert MSYS paths to Windows mixed paths for GetFileAttributesW /
     # LoadLibraryExW.  cygpath is part of MSYS2; a no-op elsewhere.
     if command -v cygpath >/dev/null 2>&1; then

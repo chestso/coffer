@@ -34,6 +34,13 @@ typedef struct CfrConpty CfrConpty;
  *  caller can report why the strict request failed. */
 CfrConpty *cfr_conpty_open(CfrConptyMode mode, const char *override_dir);
 
+/** Open exactly `dir`, ignoring every other search location (the loader's
+ *  other branches are covered by feeding this a directory that is missing
+ *  OpenConsole.exe, holds an unloadable conpty.dll, or nests the host under
+ *  <arch>/).  Used by the loader unit tests; the CLI always goes through
+ *  cfr_conpty_open(). */
+CfrConpty *cfr_conpty_open_dir(const char *dir);
+
 /** Release the DLL (if any).  Safe with NULL. */
 void cfr_conpty_free(CfrConpty *c);
 

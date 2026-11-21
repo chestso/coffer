@@ -27,24 +27,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "pty_internal.h"
+
 #ifdef _WIN32
-#include "pty.h"
 #include <wchar.h>
 #include <windows.h>
 #else
-#include <fcntl.h>
 #include <poll.h>
-#include <signal.h>
-#include <sys/ioctl.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
-
-#if defined(__APPLE__)
-#include <util.h>
-#else
-#include <pty.h>
-#endif
 #endif
 
 /* ================================================================ */
@@ -247,177 +238,6 @@ static void print_conpty_info(void)
     printf("passthrough=no\n");
 #endif
 }
-
-/* ================================================================ */
-/* PTY abstraction                                                  */
-/* ================================================================ */
-
-/* ---- POSIX PTY (forkpty + poll) ----
- *
- * Windows uses src/pty_w32.c (shared with test_cfr_pty) and declares the
- * same entry points in src/pty.h. */
-
-#ifndef _WIN32
-
-typedef struct PtyCtx PtyCtx;
-
-PtyCtx *pty_spawn(int rows, int cols, char *const argv[], char *const env[],
-                  int n_env);
-void pty_kill(PtyCtx *p);
-ssize_t pty_write(PtyCtx *p, const char *data, size_t len);
-ssize_t pty_read(PtyCtx *p, char *buf, size_t bufsize);
-int pty_get_fd(PtyCtx *p);
-/* Resize the PTY (the child's window size); the grid is resized by the
- * caller. POSIX: TIOCSWINSZ, which also SIGWINCHes the foreground group.
- * Returns 0 on success. */
-int pty_resize(PtyCtx *p, int rows, int cols);
-/* Non-blocking child check. Returns 1 when the child has exited (with
- * *out_status set: the exit code, or 128+signal on POSIX), 0 while it
- * still runs, -1 on error. A reaped child stays "exited" for later
- * calls. */
-int pty_poll_exit(PtyCtx *p, int *out_status);
-
-struct PtyCtx
-{
-    int master_fd;
-    char slave_name[256]; /* the slave's /dev path, for resize ioctls */
-    pid_t child_pid;      /* 0 once reaped */
-    int rows, cols;
-};
-
-/* Apply a `KEY=VALUE` override in the child (empty VALUE unsets). The
- * override strings are the caller's; this copies the key out. */
-static void apply_env_override(const char *kv)
-{
-    const char *eq = strchr(kv, '=');
-    if (!eq)
-        return;
-    char key[256];
-    size_t klen = (size_t)(eq - kv);
-    if (klen == 0 || klen >= sizeof(key))
-        return;
-    memcpy(key, kv, klen);
-    key[klen] = '\0';
-    if (eq[1] == '\0')
-        unsetenv(key);
-    else
-        setenv(key, eq + 1, 1);
-}
-
-PtyCtx *pty_spawn(int rows, int cols, char *const argv[], char *const env[],
-                  int n_env)
-{
-    PtyCtx *p = calloc(1, sizeof(*p));
-    if (!p)
-        return NULL;
-    p->rows = rows;
-    p->cols = cols;
-    struct winsize ws = {
-        .ws_row = (unsigned short)rows,
-        .ws_col = (unsigned short)cols,
-    };
-    pid_t pid = forkpty(&p->master_fd, p->slave_name, NULL, &ws);
-    if (pid < 0) {
-        perror("forkpty");
-        free(p);
-        return NULL;
-    }
-    if (pid == 0) {
-        setenv("TERM", "xterm-256color", 1);
-        setenv("COLORTERM", "truecolor", 1);
-        setenv("TERM_PROGRAM", "ghostty", 1);
-        for (int i = 0; i < n_env; i++)
-            apply_env_override(env[i]);
-        if (argv && argv[0])
-            execvp(argv[0], argv);
-        else
-            execlp(getenv("SHELL") ? getenv("SHELL") : "/bin/sh",
-                   "-sh", (char *)NULL);
-        _exit(127);
-    }
-    p->child_pid = pid;
-    return p;
-}
-
-void pty_kill(PtyCtx *p)
-{
-    if (!p)
-        return;
-    if (p->master_fd >= 0)
-        close(p->master_fd);
-    if (p->child_pid > 0) {
-        kill(p->child_pid, SIGHUP);
-        usleep(100000);
-        kill(p->child_pid, SIGKILL);
-        waitpid(p->child_pid, NULL, 0);
-    }
-    free(p);
-}
-
-ssize_t pty_write(PtyCtx *p, const char *data, size_t len)
-{
-    if (!p || p->master_fd < 0)
-        return -1;
-    return write(p->master_fd, data, len);
-}
-
-ssize_t pty_read(PtyCtx *p, char *buf, size_t bufsize)
-{
-    if (!p || p->master_fd < 0)
-        return -1;
-    return read(p->master_fd, buf, bufsize);
-}
-
-int pty_get_fd(PtyCtx *p)
-{
-    return p ? p->master_fd : -1;
-}
-
-int pty_resize(PtyCtx *p, int rows, int cols)
-{
-    if (!p || p->master_fd < 0)
-        return -1;
-    struct winsize ws = {
-        .ws_row = (unsigned short)rows,
-        .ws_col = (unsigned short)cols,
-    };
-    /* TIOCSWINSZ must land on the SLAVE's tty — the child's `stty size`
-     * reads that one. The master is a different tty struct: an ioctl on
-     * it still signals SIGWINCH, which makes a master-only resize look
-     * like it worked while the child keeps the old size. Open the slave
-     * by name for the ioctl and close it immediately: holding it open
-     * would suppress the master's EOF when the child exits. */
-    int fd = open(p->slave_name, O_RDWR | O_NOCTTY);
-    if (fd < 0)
-        return -1;
-    int r = ioctl(fd, TIOCSWINSZ, &ws);
-    close(fd);
-    if (r != 0)
-        return -1;
-    p->rows = rows;
-    p->cols = cols;
-    return 0;
-}
-
-int pty_poll_exit(PtyCtx *p, int *out_status)
-{
-    if (!p)
-        return -1;
-    if (p->child_pid <= 0)
-        return 1; /* already reaped */
-    int st = 0;
-    pid_t r = waitpid(p->child_pid, &st, WNOHANG);
-    if (r == 0)
-        return 0;
-    if (r < 0)
-        return -1;
-    if (out_status)
-        *out_status = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
-    p->child_pid = 0;
-    return 1;
-}
-
-#endif /* !_WIN32 */
 
 /* ================================================================ */
 /* Time                                                             */

@@ -39,6 +39,15 @@ selects the latest stable version, updates `conpty.lock`, verifies the
 package hash and (on Windows) the Authenticode signature, then fetches
 all architectures. Run it from a clean tree and commit the lock change.
 
+## Verifying
+
+`scripts/verify_conpty_bundle.py` checks every fetched architecture: both
+files must be Windows PE images of the right machine type (`x64`, `arm64`,
+`x86`), `SHA256SUMS` must match them, and `VERSION` must agree with
+`conpty.lock`. `make verify-conpty` checks the host architecture;
+`make dist` checks all three before packaging. CI runs it on the Windows
+x64 and arm64 runners, so a mislabelled arm64 DLL cannot ship unseen.
+
 Preview builds are opt-in:
 
 ```sh

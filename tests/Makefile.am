@@ -1,6 +1,11 @@
 # tests/Makefile.am - coffer unit and integration tests
 
 check_PROGRAMS = test_cfr_parser test_cfr_keys test_cfr_pty test_cfr_sixel test_cfr_lottie test_cfr_altscreen test_cfr_sgr test_cfr_log test_cfr_rep test_cfr_stubs test_cfr_width test_cfr_image_store test_cfr_osc_1337 test_cfr_graphics test_cfr_selection test_cfr_wrap_erase test_cfr_lines test_cfr_rows test_cfr_wrap_width test_cfr_zwj test_cfr_introspect test_cfr_ascii_run test_cfr_sync_output test_cfr_grid_gc test_script
+# Loader unit tests: temp directories, unloadable DLLs, search order. The
+# loader only exists on Windows.
+if HOST_WINDOWS
+check_PROGRAMS += test_cfr_conpty
+endif
 TESTS = $(check_PROGRAMS)
 
 # Regression test for the coffer CLI itself (script driver + render path).
@@ -21,22 +26,22 @@ else
 AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src -I$(srcdir)
 endif
 
-# Platform-specific PTY implementation
+# The PTY layer (src/pty_posix.c or src/pty_w32.c + conpty.c) is shared
+# with the CLI.
 if HOST_WINDOWS
-# The Windows PTY and bundled-ConPTY loader are shared with the CLI.
-PTY_SOURCE =
 PTY_LDADD = $(top_builddir)/src/libcofferpty.a -lkernel32 -lversion
 else
-PTY_SOURCE = pty.c
-PTY_LDADD =
+PTY_LDADD = $(top_builddir)/src/libcofferpty.a
 endif
 
 test_cfr_parser_SOURCES = test_cfr_parser.c test_common.c
 test_cfr_sixel_SOURCES  = test_cfr_sixel.c  test_common.c
 test_cfr_lottie_SOURCES = test_cfr_lottie.c test_common.c
 test_cfr_keys_SOURCES   = test_cfr_keys.c   test_common.c
-test_cfr_pty_SOURCES    = test_cfr_pty.c    test_common.c $(PTY_SOURCE) coffer_pty.h common.h
+test_cfr_pty_SOURCES    = test_cfr_pty.c    test_common.c common.h
 test_cfr_pty_LDADD      = $(LDADD) $(PTY_LDADD)
+test_cfr_conpty_SOURCES = test_cfr_conpty.c test_common.c
+test_cfr_conpty_LDADD   = $(LDADD) $(PTY_LDADD)
 test_cfr_altscreen_SOURCES = test_cfr_altscreen.c test_common.c
 test_cfr_sgr_SOURCES      = test_cfr_sgr.c test_common.c
 test_cfr_log_SOURCES      = test_cfr_log.c test_common.c
@@ -61,5 +66,5 @@ test_script_SOURCES = test_script.c test_common.c
 test_cfr_sync_output_SOURCES = test_cfr_sync_output.c test_common.c
 test_cfr_grid_gc_SOURCES = test_cfr_grid_gc.c test_common.c
 
-EXTRA_DIST = test_helpers.h common.h coffer_pty.h zwj_sequences.h \
+EXTRA_DIST = test_helpers.h common.h zwj_sequences.h \
     test-coffer.sh test-coffer-w32.sh

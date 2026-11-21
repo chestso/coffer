@@ -106,6 +106,12 @@ jobs:
             unzip
             git
 
+      - name: Cache ConPTY bundle
+        uses: actions/cache@v4
+        with:
+          path: data/conpty
+          key: conpty-${{ hashFiles('data/conpty/conpty.lock') }}
+
       - name: Build
         shell: msys2 {0}
         run: |
@@ -120,6 +126,15 @@ jobs:
           grep -q '^backend=bundled$' conpty-info.txt
           grep -q '^passthrough=yes$' conpty-info.txt
           grep -q '^version=1\.' conpty-info.txt
+
+      - name: Verify ConPTY bundle architecture
+        shell: msys2 {0}
+        run: |
+          if command -v python3 >/dev/null 2>&1; then
+            python3 scripts/verify_conpty_bundle.py
+          else
+            echo "python3 unavailable in MSYS2; release job verifies all bundles"
+          fi
 
       - name: Run tests
         shell: msys2 {0}
@@ -142,6 +157,80 @@ jobs:
           path: build/tests/*.log
           retention-days: 7
 
+  windows-arm64:
+    name: Windows arm64 (MSYS2 CLANGARM64)
+    runs-on: windows-11-arm
+
+    steps:
+      - name: Checkout coffer
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-autotools
+            mingw-w64-clang-aarch64-pkgconf
+            unzip
+            git
+
+      - name: Cache ConPTY bundle
+        uses: actions/cache@v4
+        with:
+          path: data/conpty
+          key: conpty-${{ hashFiles('data/conpty/conpty.lock') }}
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          export COFFER_MSYS2_ENV=CLANGARM64
+          ./scripts/build-ucrt64.sh --no-check
+          # Compile terminfo so PTY tests can resolve coffer-vty-256color
+          tic -x -o "${PWD}/build/terminfo" data/coffer.ti
+
+      - name: Verify bundled ConPTY
+        shell: msys2 {0}
+        run: |
+          ./build/src/coffer.exe --conpty-info | tee conpty-info.txt
+          grep -q '^backend=bundled$' conpty-info.txt
+          grep -q '^passthrough=yes$' conpty-info.txt
+          grep -q '^version=1\.' conpty-info.txt
+
+      - name: Verify ConPTY bundle architecture
+        shell: msys2 {0}
+        run: |
+          if command -v python3 >/dev/null 2>&1; then
+            python3 scripts/verify_conpty_bundle.py
+          else
+            echo "python3 unavailable in CLANGARM64; release job verifies all bundles"
+          fi
+
+      - name: Run tests
+        shell: msys2 {0}
+        run: |
+          export TERMINFO_DIRS="${PWD}/build/terminfo"
+          make -C build check
+
+      - name: Run tests with system conhost fallback
+        shell: msys2 {0}
+        run: |
+          export TERMINFO_DIRS="${PWD}/build/terminfo"
+          export COFFER_CONPTY=system
+          ./build/tests/test_cfr_pty.exe -v
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-arm64-test-logs
+          path: build/tests/*.log
+          retention-days: 7
+
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -159,6 +248,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             autoconf automake libtool make pkg-config unzip
+
+      - name: Cache ConPTY bundle
+        uses: actions/cache@v4
+        with:
+          path: data/conpty
+          key: conpty-${{ hashFiles('data/conpty/conpty.lock') }}
 
       - name: Build dist tarball
         run: |

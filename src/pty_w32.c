@@ -12,7 +12,7 @@
 #include "config.h"
 #endif
 
-#include "pty.h"
+#include "pty_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,10 +45,16 @@ static CfrConpty *g_conpty;
 static char *g_conpty_dir;
 static int g_conpty_initialized;
 static int g_verbose;
+static DWORD g_create_flags;
 
 void pty_set_verbose(int verbose)
 {
     g_verbose = verbose;
+}
+
+void pty_set_conpty_flags(DWORD flags)
+{
+    g_create_flags = flags;
 }
 
 int pty_set_conpty(CfrConptyMode mode, const char *override_dir)
@@ -244,11 +250,12 @@ PtyCtx *pty_spawn(int rows, int cols, char *const argv[], char *const env[],
     size.X = (SHORT)cols;
     size.Y = (SHORT)rows;
 
-    /* Flags are deliberately 0: the bundled 1.25 OpenConsole passes DCS,
+    /* Flags are 0 in production: the bundled 1.25 OpenConsole passes DCS,
      * APC and unknown OSC through by default.  0x8 used to be the system
-     * passthrough flag but is now PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES. */
+     * passthrough flag but is now PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES;
+     * test_cfr_pty overrides the flags to check the width modes. */
     HRESULT hr = cfr_conpty_create(ctx->conpty, size, input_read, output_write,
-                                   0, &ctx->hpc);
+                                   g_create_flags, &ctx->hpc);
     if (FAILED(hr)) {
         fprintf(stderr, "ERROR: CreatePseudoConsole failed: 0x%08lx%s%s\n",
                 (unsigned long)hr,

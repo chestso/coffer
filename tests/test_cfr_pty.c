@@ -6,7 +6,7 @@
  * the bvt grid via the public coffer.h API.
  */
 
-#include "coffer_pty.h"
+#include "pty_internal.h"
 #include "test_helpers.h"
 #include <coffer/coffer.h>
 
@@ -177,6 +177,67 @@ static int emit_sequences(void)
     DWORD written = 0;
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     WriteFile(out, seq, (DWORD)(sizeof(seq) - 1), &written, NULL);
+    return 0;
+}
+
+/* ConPTY create flags that decide how the host measures characters.  They
+ * are part of the NuGet package's inc/conpty.h, not the Windows SDK. */
+#ifndef PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES
+#define PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES 0x08
+#endif
+#ifndef PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE
+#define PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE 0x20
+#endif
+
+/* Width-alignment probe: text that wraps differently depending on how
+ * characters are measured — ambiguous-width, CJK, a ZWJ cluster, and
+ * VS16/VS15 pairs.  The test feeds the same bytes straight into coffer to
+ * get the reference layout, then checks that a PTY round trip reproduces
+ * it under each measuring mode. */
+static const char width_probe_seq[] =
+    "\x1b[2J\x1b[H"
+    /* 16 East Asian Ambiguous characters at 12 columns: two rows narrow,
+     * three rows wide. */
+    "\xc2\xb0\xc2\xb1\xc3\x97\xc3\xb7"
+    "\xc2\xb0\xc2\xb1\xc3\x97\xc3\xb7"
+    "\xc2\xb0\xc2\xb1\xc3\x97\xc3\xb7"
+    "\xc2\xb0\xc2\xb1\xc3\x97\xc3\xb7"
+    "\r\n"
+    /* A relative cursor move after ambiguous text: whether the host or the
+     * engine resolves it, the X column exposes a width disagreement (col 7
+     * narrow, col 10 wide). */
+    "\xc2\xb0\xc2\xb1\xc3\x97\x1b[3CX\r\n"
+    /* 10 CJK ideographs: 20 cells, so two rows at width 2. */
+    "\xe4\xbd\xa0\xe5\xa5\xbd\xe4\xb8\x96\xe7\x95\x8c"
+    "\xe4\xbd\xa0\xe5\xa5\xbd\xe4\xb8\x96\xe7\x95\x8c"
+    "\xe4\xbd\xa0\xe5\xa5\xbd\r\n"
+    /* ZWJ family + ASCII, and VS16/VS15 pairs. */
+    "\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9\xe2\x80\x8d"
+    "\xf0\x9f\x91\xa7\xe2\x80\x8d\xf0\x9f\x91\xa6"
+    "AB\r\n"
+    "\xe2\x9d\xa4\xef\xb8\x8f"
+    "\xe2\x9d\xa4\xef\xb8\x8e"
+    "CD\r\n"
+    /* Overwrite probe: 16 ambiguous characters fill two rows narrow and
+     * three rows wide, then CUU 2 lands on a different buffer row and Z
+     * overwrites different content.  If a host ever applies its own width
+     * rules when re-serialising, this is where it shows up. */
+    "\xc2\xb0\xc2\xb1\xc3\x97\xc3\xb7"
+    "\xc2\xb0\xc2\xb1\xc3\x97\xc3\xb7"
+    "\xc2\xb0\xc2\xb1\xc3\x97\xc3\xb7"
+    "\xc2\xb0\xc2\xb1\xc3\x97\xc3\xb7"
+    "\x1b[2AZ\r\n";
+
+/* Child mode: write the probe to the console. */
+static int emit_width_probe(void)
+{
+    /* The probe is UTF-8; without this the conhost side decodes the bytes
+     * in the console code page and the round trip is mojibake. */
+    SetConsoleOutputCP(CP_UTF8);
+    DWORD written = 0;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    WriteFile(out, width_probe_seq, (DWORD)(sizeof(width_probe_seq) - 1),
+              &written, NULL);
     return 0;
 }
 #endif
@@ -549,6 +610,162 @@ static void test_conpty_passthrough(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* ConPTY width alignment                                              */
+/* ------------------------------------------------------------------ */
+
+#ifdef _WIN32
+
+/* Join every visible row's text into `out` (rows separated by '\n').
+ * Width disagreements show up as shifted text, which this captures. */
+static int grid_text(CfrTerm *vt, char *out, size_t cap)
+{
+    int rows = 0, cols = 0;
+    size_t used = 0;
+    cfr_get_dimensions(vt, &rows, &cols);
+    (void)cols;
+    out[0] = '\0';
+    for (int r = 0; r < rows; r++) {
+        size_t need = cfr_row_text_size(vt, r);
+        if (need == 0)
+            need = 1;
+        char *row = malloc(need);
+        if (!row)
+            return -1;
+        cfr_row_text(vt, r, row, need);
+        int n = snprintf(out + used, cap - used, "%s%s", r ? "\n" : "", row);
+        free(row);
+        if (n < 0 || (size_t)n >= cap - used)
+            return -1;
+        used += (size_t)n;
+    }
+    return 0;
+}
+
+/* Reference layout: the same bytes fed into the engine directly. */
+static int render_probe(bool ambiguous_wide, char *out, size_t cap)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 10;
+    cfg.cols = 12;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.ambiguous_wide = ambiguous_wide;
+    CfrTerm *vt = cfr_new(&cfg);
+    if (!vt)
+        return -1;
+    cfr_input_write(vt, (const uint8_t *)width_probe_seq,
+                    sizeof(width_probe_seq) - 1);
+    int rc = grid_text(vt, out, cap);
+    if (rc != 0)
+        fprintf(stderr, "DEBUG render_probe rc=%d outlen=%zu cap=%zu\n", rc,
+                strlen(out), cap);
+    cfr_free(vt);
+    return rc;
+}
+
+/* Run the width probe under the given host flags and engine setting. */
+static int run_width_probe(DWORD flags, bool ambiguous_wide, char *out,
+                           size_t cap)
+{
+    char self[MAX_PATH * 2];
+    DWORD n = GetModuleFileNameA(NULL, self, sizeof(self));
+    if (n == 0 || n >= sizeof(self))
+        return -1;
+
+    char *const argv[] = { self, "--emit-width-probe", NULL };
+    pty_set_conpty_flags(flags);
+    PtyContext *pty = pty_create(10, 12, argv);
+    if (!pty) {
+        pty_set_conpty_flags(0);
+        return -1;
+    }
+
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 10;
+    cfg.cols = 12;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.ambiguous_wide = ambiguous_wide;
+    CfrTerm *vt = cfr_new(&cfg);
+    if (!vt) {
+        pty_destroy(pty);
+        pty_set_conpty_flags(0);
+        return -1;
+    }
+
+    drain_pty(vt, pty, 2000);
+    int rc = grid_text(vt, out, cap);
+    cfr_free(vt);
+    pty_destroy(pty);
+    pty_set_conpty_flags(0);
+    return rc;
+}
+
+#endif /* _WIN32 */
+
+/* The host re-serialises its buffer and the receiving engine lays the text
+ * out with its own width rules, so the PTY round trip must reproduce the
+ * engine's direct rendering of the same bytes under each host mode.  The
+ * probe covers ambiguous-width text, CJK, a ZWJ cluster, VS16/VS15 pairs,
+ * a relative cursor move and an overwrite, which between them would expose
+ * any width rule the host started applying itself. */
+static void test_conpty_width_alignment(void)
+{
+#ifdef _WIN32
+    static char narrow[8192];
+    static char wide[8192];
+    static char host[8192];
+
+    if (render_probe(false, narrow, sizeof(narrow)) != 0 ||
+        render_probe(true, wide, sizeof(wide)) != 0) {
+        printf("    (skipping: could not render the probe)\n");
+        return;
+    }
+    /* The two measuring modes must actually produce different layouts,
+     * otherwise the test proves nothing. */
+    ASSERT_TRUE(strcmp(narrow, wide) != 0);
+
+    if (run_width_probe(0, false, host, sizeof(host)) != 0) {
+        printf("    (skipping: could not run the width probe)\n");
+        return;
+    }
+    if (strcmp(pty_conpty_backend(), "bundled") != 0) {
+        printf("    (skipping: system conhost ignores the width flags)\n");
+        return;
+    }
+
+    /* The round trip reproduces the engine's narrow layout. */
+    ASSERT_STR_EQ(host, narrow);
+
+    /* Grapheme measurement is what coffer does natively; enabling it on
+     * the host does not change the stream the engine receives. */
+    ASSERT_TRUE(run_width_probe(PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES, false,
+                                host, sizeof(host)) == 0);
+    ASSERT_STR_EQ(host, narrow);
+
+    /* PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE is a host-side mode: the bundled
+     * OpenConsole still re-serialises text and lets the receiving engine
+     * measure it, so with the engine narrow the grid stays narrow.  That
+     * is why no --ambiguous-wide / --conpty-glyph-width switch is
+     * warranted: it would claim a host effect that has none.  If a future
+     * OpenConsole starts baking widths into the stream this assertion
+     * fails, and the decision has to be revisited. */
+    ASSERT_TRUE(run_width_probe(PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES |
+                                    PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE,
+                                false, host, sizeof(host)) == 0);
+    ASSERT_STR_EQ(host, narrow);
+
+    /* The layout is the engine's ambiguous_wide setting, on both paths. */
+    ASSERT_TRUE(run_width_probe(PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES |
+                                    PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE,
+                                true, host, sizeof(host)) == 0);
+    ASSERT_STR_EQ(host, wide);
+#else
+    printf("    (skipping on POSIX: ConPTY-specific)\n");
+#endif
+}
+
+/* ------------------------------------------------------------------ */
 /* Entry point                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -557,10 +774,12 @@ int main(int argc, char *argv[])
 #ifdef _WIN32
     if (argc > 1 && strcmp(argv[1], "--emit-sequences") == 0)
         return emit_sequences();
+    if (argc > 1 && strcmp(argv[1], "--emit-width-probe") == 0)
+        return emit_width_probe();
 #endif
     test_parse_args(argc, argv);
 
-    /* Required before pty_create — pty.c installs a SIGCHLD handler
+    /* Required before pty_create — pty_posix.c installs a SIGCHLD handler
      * (no-op on Windows, where child exit is detected via process handle). */
     if (pty_signal_init() != 0) {
         fprintf(stderr, "pty_signal_init failed\n");
@@ -569,6 +788,7 @@ int main(int argc, char *argv[])
 
     printf("Running test_cfr_pty\n");
     RUN_TEST(test_conpty_passthrough);
+    RUN_TEST(test_conpty_width_alignment);
     RUN_TEST(test_echo_hello);
     RUN_TEST(test_sgr_red);
     RUN_TEST(test_tput_cursor);

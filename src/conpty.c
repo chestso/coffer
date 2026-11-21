@@ -323,6 +323,29 @@ CfrConpty *cfr_conpty_open(CfrConptyMode mode, const char *override_dir)
     return c;
 }
 
+CfrConpty *cfr_conpty_open_dir(const char *dir)
+{
+    CfrConpty *c = calloc(1, sizeof(*c));
+    if (!c)
+        return NULL;
+    c->version = "system";
+    c->strict_bundled = 1;
+
+    if (!dir || !*dir || try_bundle_str(c, dir) != 0) {
+        if (c->error[0] == '\0')
+            snprintf(c->error, sizeof(c->error), "no bundle in %s",
+                     dir && *dir ? dir : "(empty path)");
+        c->dll = NULL;
+        c->create = NULL;
+        c->resize = NULL;
+        c->close = NULL;
+        c->bundled = 0;
+        c->has_openconsole = 0;
+        c->version = "system";
+    }
+    return c;
+}
+
 void cfr_conpty_free(CfrConpty *c)
 {
     if (!c)

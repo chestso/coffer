@@ -53,6 +53,7 @@ dist-hook:
 	       "$(distdir)/data/conpty/$$a/"; \
 	done
 	-cp "$(top_srcdir)/data/conpty/VERSION" "$(distdir)/data/conpty/"
+	"$(top_srcdir)/scripts/verify_conpty_bundle.py" --arch all
 
 # The C sources the format targets own, as a NUL-separated find command.
 # third_party/ is deliberately excluded; it is vendored verbatim.
@@ -131,12 +132,19 @@ format-check:
 # The pinned Microsoft.Windows.Console.ConPTY package is fetched on demand;
 # see data/conpty/README.md.  configure runs fetch-conpty automatically on
 # Windows when the bundle is missing.
-.PHONY: fetch-conpty fetch-conpty-all update-conpty check-conpty-update
+.PHONY: fetch-conpty fetch-conpty-all update-conpty check-conpty-update verify-conpty
 fetch-conpty:
 	@if test -n "$(CONPTY_ARCH)"; then \
 	    "$(top_srcdir)/scripts/fetch_conpty.sh" --arch "$(CONPTY_ARCH)"; \
 	else \
 	    "$(top_srcdir)/scripts/fetch_conpty.sh"; \
+	fi
+
+verify-conpty:
+	@if test -n "$(CONPTY_ARCH)"; then \
+	    "$(top_srcdir)/scripts/verify_conpty_bundle.py" --arch "$(CONPTY_ARCH)"; \
+	else \
+	    "$(top_srcdir)/scripts/verify_conpty_bundle.py"; \
 	fi
 
 fetch-conpty-all:

@@ -322,6 +322,13 @@ Extra args are forwarded to `configure`:
 ./scripts/build-ucrt64.sh --disable-thorvg    # skip optional Lottie rasterizer
 ```
 
+The same script builds Windows arm64 in an MSYS2 CLANGARM64 shell; set the
+environment selector and it re-execs into the right one:
+
+```sh
+COFFER_MSYS2_ENV=CLANGARM64 ./scripts/build-ucrt64.sh
+```
+
 To build manually inside an MSYS2 UCRT64 shell:
 
 ```sh
@@ -337,6 +344,9 @@ Configure fetches `data/conpty/<arch>/` automatically when the pinned
 `conpty.dll` + `OpenConsole.exe` bundle is missing; `make fetch-conpty`
 does the same explicitly. `--with-conpty=system` builds without the bundle,
 and `--with-conpty=bundled` makes a missing bundle a hard error.
+`make verify-conpty` checks the fetched bundle for the host architecture
+(PE machine type, `SHA256SUMS`, pinned version); `make dist` runs the same
+check for x64, arm64 and x86 before packaging.
 
 > Note: building from outside an MSYS2 UCRT64 shell (e.g. plain git-bash) with
 > `--prefix="$MINGW_PREFIX"` fails because `/ucrt64` is not mounted and

@@ -62,7 +62,15 @@ endif
 # Windows PTY + bundled ConPTY loader, shared with test_cfr_pty.
 if HOST_WINDOWS
 noinst_LIBRARIES = libcofferpty.a
-libcofferpty_a_SOURCES = pty_w32.c conpty.c pty.h conpty.h
+libcofferpty_a_SOURCES = pty_w32.c conpty.c pty_internal.h conpty.h
 libcofferpty_a_CPPFLAGS = -I$(top_srcdir)/src
 coffer_LDADD += libcofferpty.a -lkernel32 -lversion
+endif
+
+# POSIX PTY (forkpty), shared with test_cfr_pty.
+if !HOST_WINDOWS
+noinst_LIBRARIES = libcofferpty.a
+libcofferpty_a_SOURCES = pty_posix.c pty_internal.h
+libcofferpty_a_CPPFLAGS = -I$(top_srcdir)/src
+coffer_LDADD += libcofferpty.a
 endif

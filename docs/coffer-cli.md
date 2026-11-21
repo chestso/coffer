@@ -98,6 +98,12 @@ fallback. The bundle is fetched by `scripts/fetch_conpty.sh` and is
 installed under `$(libexecdir)/coffer`. On POSIX these options are
 accepted but have no effect.
 
+`COFFER_CONPTY_DIR` is read by the Win32 loader rather than by the
+shell, so MSYS2's automatic path conversion does not touch it: give it a
+Windows/mixed path (`C:\...` or `C:/...`). `--conpty-dir` is converted by
+MSYS2 like any other argument, so the two spellings are not
+interchangeable.
+
 The initial wait always happens, with or without a script; a script that
 synchronizes with `wait-for` can pass a small value (`-w 0.5`). A replay
 with no child has nothing to drain, so the wait is skipped there.

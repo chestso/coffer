@@ -1,33 +1,36 @@
 #!/bin/bash
-# build-ucrt64.sh - build coffer natively on Windows (MSYS2 UCRT64).
+# build-ucrt64.sh - build coffer natively on Windows (MSYS2 UCRT64, or
+# CLANGARM64 with COFFER_MSYS2_ENV=CLANGARM64).
 #
 # Two MSYS2 quirks defeat a plain "./autogen.sh && ./configure && make" from a
 # non-MSYS shell (git-bash, cmd, PowerShell):
 #
-#   1. /ucrt64 is only mounted inside a real MSYS2 UCRT64 shell. Outside one,
-#      $MINGW_PREFIX is empty, /ucrt64 does not exist, and --prefix=/ucrt64
-#      either installs to a wrong/scoop-relative location or configure aborts
-#      with "unsafe srcdir value" because the backslashes in a Windows path
-#      confuse automake's sanity check. We re-exec into a genuine UCRT64 shell
-#      via msys2_shell.cmd so the mount table is populated and $MINGW_PREFIX
-#      resolves to /ucrt64 before configure ever runs.
+#   1. $MINGW_PREFIX is only set inside a real MSYS2 environment shell. Outside
+#      one, $MINGW_PREFIX is empty, the environment root does not exist, and
+#      --prefix=$MINGW_PREFIX either installs to a wrong/scoop-relative
+#      location or configure aborts with "unsafe srcdir value" because the
+#      backslashes in a Windows path confuse automake's sanity check. We
+#      re-exec into a genuine MSYS2 shell via msys2_shell.cmd so the mount
+#      table is populated and $MINGW_PREFIX resolves before configure runs.
 #
 #   2. MSYS2's /usr/bin/sh and /usr/bin/bash are the same binary, but when bash
 #      is invoked as "sh" (as libtoolize's #!/usr/bin/env sh does) its
-#      POSIX-mode `test -d` builtin intermittently fails to see /ucrt64 paths
-#      — a mount-table race that aborts autoreconf with "$pkgauxdir is not a
-#      directory". Shadowing sh with a bash copy earlier on PATH sidesteps the
-#      race so autoreconf works.
+#      POSIX-mode `test -d` builtin intermittently fails to see the
+#      environment paths — a mount-table race that aborts autoreconf with
+#      "$pkgauxdir is not a directory". Shadowing sh with a bash copy earlier
+#      on PATH sidesteps the race so autoreconf works.
 #
 # Can be launched from any shell (git-bash, cmd, PowerShell, or an MSYS2
-# shell); it re-execs into a real MSYS2 UCRT64 shell via msys2_shell.cmd.
-# The prerequisites (gcc, autotools, and optionally ThorVG for Lottie
-# rasterization) must already be installed — see the README Windows
-# section for the pacman command. This script never runs pacman itself.
+# shell); it re-execs into a real MSYS2 shell via msys2_shell.cmd.  The
+# prerequisites (a compiler, autotools, and optionally ThorVG for Lottie
+# rasterization) must already be installed — see the README Windows section
+# for the pacman command. This script never runs pacman itself.
 #
 # Usage:
 #   ./scripts/build-ucrt64.sh            # autogen + configure + make + check
 #   ./scripts/build-ucrt64.sh --install  # build, then make install
+#
+#   COFFER_MSYS2_ENV=CLANGARM64 ./scripts/build-ucrt64.sh   # Windows arm64
 #
 # Extra args are forwarded to configure, e.g.:
 #   ./scripts/build-ucrt64.sh --enable-release
@@ -36,6 +39,10 @@
 set -eu
 
 cd "$(dirname "$0")/.."
+
+# MSYS2 environment to build in: UCRT64 (x64, default) or CLANGARM64.
+MSYS2_ENV="${COFFER_MSYS2_ENV:-UCRT64}"
+MSYS2_ENV_FLAG="$(printf '%s' "$MSYS2_ENV" | tr '[:upper:]' '[:lower:]')"
 
 DO_INSTALL=0
 SKIP_CHECK=0
@@ -48,13 +55,13 @@ for arg in "$@"; do
 	esac
 done
 
-# If not already inside an MSYS2 UCRT64 shell, re-exec into one via
-# msys2_shell.cmd so /ucrt64 is mounted and /usr/bin/pacman resolves.
-if [ -z "${MSYSTEM:-}" ] || [ "${MSYSTEM:-}" != "UCRT64" ]; then
+# If not already inside the requested MSYS2 environment, re-exec into one via
+# msys2_shell.cmd so the mounts are in place and /usr/bin/pacman resolves.
+if [ -z "${MSYSTEM:-}" ] || [ "${MSYSTEM:-}" != "$MSYS2_ENV" ]; then
 	PACMAN_PATH="$(command -v pacman 2>/dev/null || true)"
 	if [ -z "$PACMAN_PATH" ]; then
 		echo "ERROR: pacman not found on PATH. Install MSYS2 and add its" >&2
-		echo "       /usr/bin to PATH, or run this from an MSYS2 UCRT64 shell." >&2
+		echo "       /usr/bin to PATH, or run this from an MSYS2 $MSYS2_ENV shell." >&2
 		exit 1
 	fi
 	# pacman is at <MSYS2_ROOT>/usr/bin/pacman; msys2_shell.cmd is at
@@ -67,13 +74,13 @@ if [ -z "${MSYSTEM:-}" ] || [ "${MSYSTEM:-}" != "UCRT64" ]; then
 		exit 1
 	fi
 	REPO_WIN="$(cygpath -w "$(pwd)" 2>/dev/null || echo "$(pwd)")"
-	exec cmd.exe //c "$MSYS2_SHELL" -ucrt64 -defterm -no-start -here \
+	exec cmd.exe //c "$MSYS2_SHELL" "-$MSYS2_ENV_FLAG" -defterm -no-start -here \
 		-c "cd '$REPO_WIN' && ./scripts/build-ucrt64.sh $*"
 fi
 
-# --- Inside the MSYS2 UCRT64 shell from here on ------------------------------
+# --- Inside the MSYS2 environment from here on -------------------------------
 
-echo "==> MSYS2 UCRT64 shell (MSYSTEM=$MSYSTEM)"
+echo "==> MSYS2 $MSYS2_ENV shell (MSYSTEM=$MSYSTEM)"
 
 # Workaround for the /usr/bin/sh test -d mount race (see header comment).
 FIXSH_DIR="$(mktemp -d /tmp/portty-fixsh.XXXXXX)"

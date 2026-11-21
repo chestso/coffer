@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   check:
@@ -14,5 +15,76 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - name: Compare pinned version with NuGet
-        run: ./scripts/update_conpty.py --check
+        id: check
+        # A newer package is a normal outcome here: it is reported through
+        # the tracking issue below, not as a red workflow. Network and
+        # parsing failures still fail the job in the last step.
+        continue-on-error: true
+        run: |
+          set +e
+          ./scripts/update_conpty.py --check 2>&1 | tee check.log
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit $status
+
+      - name: Open or refresh the tracking issue
+        if: steps.check.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(sed -n 's/^update_conpty: newer .* is available: //p' check.log | tail -n 1)
+          if [ -z "$version" ]; then
+            echo "::error::ConPTY check failed without naming a newer version"
+            cat check.log
+            exit 1
+          fi
+          current=$(sed -n 's/^CONPTY_VERSION=//p' data/conpty/conpty.lock)
+          title="ConPTY update available: ${version}"
+          body=$(printf '%s\n' \
+            "A newer stable \`Microsoft.Windows.Console.ConPTY\` is available." \
+            "" \
+            "- pinned: \`${current:-unknown}\`" \
+            "- available: \`${version}\`" \
+            "" \
+            "Update with:" \
+            "" \
+            '```sh' \
+            "./scripts/update_conpty.py" \
+            '```' \
+            "" \
+            "then commit \`data/conpty/conpty.lock\` and the refetched" \
+            "\`data/conpty/<arch>/\` binaries." \
+            "" \
+            "_Opened by \`.github/workflows/conpty-update.yml\`._")
+          existing=$(gh issue list --state open --limit 100 \
+            --search 'ConPTY update available in:title' \
+            --json number --jq '.[].number' | head -n 1)
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body "$body"
+            echo "Updated issue #$existing"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+
+      - name: Close the tracking issue when up to date
+        if: steps.check.outputs.status == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for n in $(gh issue list --state open --limit 100 \
+            --search 'ConPTY update available in:title' \
+            --json number --jq '.[].number'); do
+            gh issue close "$n" \
+              --comment "The pinned ConPTY package is up to date again."
+          done
+
+      - name: Fail on unexpected check errors
+        if: steps.check.outputs.status != '0'
+        run: |
+          grep -q 'newer .* is available:' check.log || {
+            echo "::error::ConPTY update check failed"
+            cat check.log
+            exit 1
+          }

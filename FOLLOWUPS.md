@@ -143,21 +143,35 @@ emit this pattern. Purely defensive.
 
 ### Bundled ConPTY
 
-The CLI now loads the pinned `Microsoft.Windows.Console.ConPTY`
+The CLI loads the pinned `Microsoft.Windows.Console.ConPTY`
 `conpty.dll` + `OpenConsole.exe` bundle when available; system conhost is
-the fallback. Remaining work:
+the fallback. The PTY layer is shared with the tests on both platforms:
+`src/pty_posix.c` (`forkpty`) and `src/pty_w32.c` + `src/conpty.c`, archived
+into `libcofferpty.a`.
 
-- Portty now bundles 1.25.261109001, prefers the `Conpty*` exports, uses
+- `test_cfr_conpty` covers the loader branches a live bundle cannot reach:
+  a directory with `conpty.dll` but no `OpenConsole.exe`, an unloadable
+  (wrong-architecture) DLL, the `<arch>/OpenConsole.exe` fallback, and the
+  `--conpty-dir` > `COFFER_CONPTY_DIR` > compiled-path search order.
+- `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` and
+  `PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE` were evaluated with
+  `test_conpty_width_alignment`: the bundled OpenConsole re-serialises text
+  and lets the receiving engine measure it, so these host flags do not
+  change coffer's grid, and no `--conpty-glyph-width` / `--ambiguous-wide`
+  switch is warranted. The test fails if a future OpenConsole starts baking
+  widths into the stream, which is the signal to revisit that decision.
+- The OSC 5555 (input) and 5556 (response) carriers stay. 5555 is emitted by
+  the child, which cannot know which backend the CLI selected; 5556 must
+  remain usable because `cfr_conpty_create()` can fall back to system
+  conhost at runtime.
+- `scripts/verify_conpty_bundle.py` checks every fetched architecture's PE
+  machine type, `SHA256SUMS` and lock version; `make dist` runs it for all
+  architectures, and CI covers Windows arm64 natively in addition to x64.
+- Portty now bundles 1.25.261109001, prefers the `Conpty*` exports and uses
   flags 0 (the old `0x8` passthrough constant is
-  `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` in 1.25), and only reports the
-  bundled backend when `OpenConsole.exe` is present. Remaining: adopt
-  coffer's `conpty.lock` + fetch/update scripts instead of tracking the
-  binaries directly, and expose the package version in diagnostics.
-- Evaluate `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` and
-  `PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE` against coffer's width rules; add a
-  CLI switch only after a width-alignment test.
-- Consider dropping the OSC 5556 response carrier when the bundled backend
-  is active. It is harmless and still required for the system fallback.
+  `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` in 1.25). Remaining portty work:
+  adopt coffer's `conpty.lock` + fetch/update scripts instead of tracking
+  the binaries directly, and expose the package version in diagnostics.
 
 ### Kitty graphics protocol — remaining gaps
 

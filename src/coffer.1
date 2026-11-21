@@ -609,7 +609,11 @@ Directory containing
 and
 .BR OpenConsole.exe .
 Equivalent to
-.BR \-\-conpty\-dir .
+.BR \-\-conpty\-dir ,
+except that it is read by the Win32 loader and therefore must be a
+Windows/mixed path
+.RB ( C:/... );
+MSYS2 converts command-line arguments but not environment variables.
 .PP
 The first three can be overridden with
 .BR \-\-env .
