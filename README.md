@@ -106,6 +106,16 @@ compositing. See the portty README for renderer-side details.
   against it; without a response, partial transparency was lost. The
   colors are seeded from `CfrConfig` (`.fg_color` / `.bg_color` /
   `.cursor_color`) and read back with `cfr_get_dynamic_color()`.
+- **Palette overrides (OSC 4/104)** — set, query (`?`) and reset indexed
+  palette entries (0–255) per xterm. Set and query accept the XParseColor
+  `rgb:R/G/B` and `#RGB`/`#RRGGBB`/`#RRRRGGGGBBBB` forms and may carry
+  several index/spec pairs in one sequence; `OSC 104` resets listed entries
+  or, with no parameters, the whole palette. A style stores the palette
+  index the application requested, so an override recolors already-written
+  text and scrollback on the next repaint; renderers resolve it through
+  `cfr_palette_rgb()` or the `cfr_style_fg_rgb()` / `_bg_` / `_ul_`
+  helpers. Overrides are global across the alternate screen and reset on
+  RIS. `cfr_default_palette_rgb()` still reports the built-in values.
 - **Cursor style (DECSCUSR)** — `CSI Ps SP q` sets the cursor shape
   (block / underline / bar) and its blinking per xterm's Ps table,
   tracked in `CfrCursor.shape` / `.blink`; Ps = 7 restores the initial
@@ -275,6 +285,7 @@ make check TESTS='test_cfr_parser test_cfr_keys test_cfr_sixel test_cfr_osc_1337
 | Binary                 | Scope                                                                                                                     |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `test_cfr_parser`      | CSI/OSC/ESC/DCS dispatch, cursor, scroll, charsets, DEC modes, DECSC/DECRC, tabs (TBC), OSC 8 hyperlinks, ambiguous-width |
+| `test_cfr_palette`     | OSC 4/104 palette overrides, query replies, damage on change, indexed-style repaint                                       |
 | `test_cfr_keys`        | Kitty keyboard protocol (flags 0x1, 0x8), push/pop/set/query                                                              |
 | `test_cfr_pty`         | Integration: spawns child on real PTY, pipes output through engine                                                        |
 | `test_cfr_sixel`       | Sixel decode, color registers, RLE, placement, scrolling                                                                  |
@@ -520,7 +531,7 @@ The full API is in [`include/coffer/coffer.h`](include/coffer/coffer.h).
 
 ## Attribution
 
-The default 16-color ANSI palette is [Dracula](https://draculatheme.com) (per the [official spec](https://draculatheme.com/spec)). The default terminal background is pitch-black (`#000000`), separate from the palette's AnsiBlack.
+The default 16-color ANSI palette is [Dracula](https://draculatheme.com) (per the [official spec](https://draculatheme.com/spec)). The default terminal background is pitch-black (`#000000`), separate from the palette's AnsiBlack. An application can override any entry at run time with OSC 4; `cfr_default_palette_rgb()` keeps reporting these built-in values.
 
 Embedded third-party code:
 

@@ -71,6 +71,20 @@ None of these are needed by Claude Code or the common TUIs. Implement
 when a concrete consumer asks for them or when building a full-featured
 terminal emulator frontend.
 
+### OSC 5 / OSC 105 special colors
+
+The 256 indexed entries (`OSC 4`, `OSC 104`) are implemented. xterm's
+special colors — `OSC 5` / `OSC 105` for bold, blink, reverse, underline,
+italic and the like — are not; they fall through to the generic OSC
+callback. No known consumer of the engine uses them.
+
+### X11 color names in color specs
+
+OSC 4 and OSC 10/11/12 accept the XParseColor RGB forms (`rgb:R/G/B`,
+`#RGB`, `#RRGGBB`, `#RRRRGGGGBBBB`). X11 color _names_ (`red`, `LightSkyBlue`,
+…) are not looked up: they are ignored, and logged once as an unparseable
+specification. Applications that care can send the `rgb:` form.
+
 ### OSC 8 inside DCS / SOS-PM-APC strings
 
 Not implemented. Standard OSC parsing only; no support for OSC sequences
