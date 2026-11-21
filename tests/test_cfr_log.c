@@ -99,10 +99,10 @@ static void test_vlog_format(void)
     LogCapture cap;
     CfrTerm *vt = make_term_with_log(&cap);
 
-    cfr_vlog(vt, CFR_LOG_DEBUG, "palette override (OSC %d) not implemented yet", 4);
+    cfr_vlog(vt, CFR_LOG_DEBUG, "format check %d/%s", 4, "ok");
     ASSERT_EQ(cap.call_count, 1);
     ASSERT_EQ(cap.last_level, CFR_LOG_DEBUG);
-    ASSERT_STR_EQ(cap.last_msg, "palette override (OSC 4) not implemented yet");
+    ASSERT_STR_EQ(cap.last_msg, "format check 4/ok");
 
     cfr_free(vt);
 }
