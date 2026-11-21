@@ -405,19 +405,26 @@ typedef struct
 
 /* Configuration for cfr_new(). Zero-initialize (or start from
  * CFR_CONFIG_DEFAULTS) then set fields. Rows, cols, and cell pixel size
- * are required and must be > 0. `scrollback` and `cursor_blink` use
- * -1 for "engine default" (their zero value is a real choice). */
-#define CFR_CONFIG_DEFAULTS                                                                                                                                                                                                                                                             \
-    {                                                                                                                                                                                                                                                                                   \
-        .rows = 0, .cols = 0, .cell_w_px = 0, .cell_h_px = 0, .scrollback = -1, .reflow = false, .ambiguous_wide = false, .terminal_name = NULL, .cursor_shape = CFR_CURSOR_BLOCK, .cursor_blink = -1, .fg_color = { false, 0 }, .bg_color = { false, 0 }, .cursor_color = { false, 0 } \
+ * are required and must be > 0. `scrollback`, `scrollback_bytes` and
+ * `cursor_blink` use -1 for "engine default" (their zero value is a real
+ * choice). */
+#define CFR_CONFIG_DEFAULTS                                                                                                                                                                                                                                                                                     \
+    {                                                                                                                                                                                                                                                                                                           \
+        .rows = 0, .cols = 0, .cell_w_px = 0, .cell_h_px = 0, .scrollback = -1, .scrollback_bytes = -1, .reflow = false, .ambiguous_wide = false, .terminal_name = NULL, .cursor_shape = CFR_CURSOR_BLOCK, .cursor_blink = -1, .fg_color = { false, 0 }, .bg_color = { false, 0 }, .cursor_color = { false, 0 } \
     }
 typedef struct
 {
-    int rows;                  /* grid height (required > 0) */
-    int cols;                  /* grid width  (required > 0) */
-    int cell_w_px;             /* pixel width of one cell  (required > 0) */
-    int cell_h_px;             /* pixel height of one cell (required > 0) */
-    int scrollback;            /* scrollback lines (-1 = default 1000, 0 = off) */
+    int rows;       /* grid height (required > 0) */
+    int cols;       /* grid width  (required > 0) */
+    int cell_w_px;  /* pixel width of one cell  (required > 0) */
+    int cell_h_px;  /* pixel height of one cell (required > 0) */
+    int scrollback; /* scrollback lines (-1 = default 1000, 0 = off) */
+    /* Additional bound on retained scrollback cell storage, in bytes:
+     * sizeof(CfrCell) * the row's width for every held row (page overhead
+     * and intern tables excluded). The line count and this budget both
+     * evict; whichever binds first wins. -1 = default 64 MiB, 0 = no byte
+     * cap. */
+    int scrollback_bytes;
     bool reflow;               /* reflow text on resize (default false) */
     bool ambiguous_wide;       /* treat ambiguous-width chars as wide (default false) */
     const char *terminal_name; /* XTVERSION response string (default "coffer") */

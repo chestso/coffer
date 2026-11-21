@@ -86,6 +86,9 @@ CfrTerm *cfr_new_with_allocator(const CfrConfig *cfg, const CfrAllocator *alloc)
     vt->scroll_top = 0;
     vt->scroll_bottom = cfg->rows - 1;
     vt->sb_capacity = cfg->scrollback >= 0 ? cfg->scrollback : CFR_DEFAULT_SCROLLBACK;
+    vt->sb_bytes_cap = cfg->scrollback_bytes < 0
+                           ? CFR_DEFAULT_SCROLLBACK_BYTES
+                           : (uint64_t)cfg->scrollback_bytes;
     vt->reflow_enabled = cfg->reflow;
     vt->ambiguous_wide = cfg->ambiguous_wide;
     vt->terminal_name = cfg->terminal_name;

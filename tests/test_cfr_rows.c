@@ -26,6 +26,22 @@ static CfrTerm *make_term(int rows, int cols, int scrollback)
     return cfr_new(&cfg);
 }
 
+/* Same, but with an explicit byte budget and reflow off so history keeps
+ * the width it was written at across resizes. */
+static CfrTerm *make_term_capped(int rows, int cols, int scrollback,
+                                 int scrollback_bytes)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = rows;
+    cfg.cols = cols;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.reflow = false;
+    cfg.scrollback = scrollback;
+    cfg.scrollback_bytes = scrollback_bytes;
+    return cfr_new(&cfg);
+}
+
 static void feed(CfrTerm *vt, const char *s)
 {
     cfr_input_write(vt, (const uint8_t *)s, strlen(s));
@@ -318,11 +334,13 @@ static void check_ring(const CfrTerm *vt)
     int nseen = 0;
     const CfrPage *prev = NULL;
     int prev_row = 0;
+    uint64_t bytes = 0;
     for (int d = 0; d < n; ++d) {
         int row = -1;
         const CfrPage *p = cfr_sb_page_for_row(vt, d, &row);
         ASSERT_NOT_NULL(p);
         ASSERT_TRUE(row >= 0 && row < p->row_count);
+        bytes += (uint64_t)p->cols * sizeof(CfrCell);
         if (p == prev) {
             ASSERT_EQ(row, prev_row - 1);
         } else {
@@ -337,6 +355,11 @@ static void check_ring(const CfrTerm *vt)
     }
     int row = -1;
     ASSERT_NULL(cfr_sb_page_for_row(vt, n, &row));
+
+    /* The byte counter is exactly the held rows' cell storage, and the
+     * budget never binds after eviction returns. */
+    ASSERT_EQ(vt->sb_bytes, bytes);
+    ASSERT_TRUE(vt->sb_bytes_cap == 0 || vt->sb_bytes <= vt->sb_bytes_cap);
 }
 
 /* Read the whole unified buffer back as logical lines: every line must be
@@ -505,6 +528,136 @@ static void test_pop_after_front_eviction_frees_the_page(void)
     cfr_free(vt);
 }
 
+/* The byte budget is an additional bound: it evicts oldest-first exactly
+ * like the line cap, and leaves the ring's byte accounting at the cap. */
+static void test_byte_cap_evicts_by_bytes(void)
+{
+    enum
+    {
+        COLS = 8,
+        ROWS = 3,
+        HELD = 5
+    };
+    int cap = HELD * COLS * (int)sizeof(CfrCell);
+    CfrTerm *vt = make_term_capped(ROWS, COLS, 100, cap);
+    ASSERT_NOT_NULL(vt);
+    ASSERT_EQ(vt->sb_bytes_cap, (uint64_t)cap);
+
+    for (int n = 0; n < 20; ++n)
+        feed_short(vt, n);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), HELD);
+    ASSERT_EQ(vt->sb_bytes, (uint64_t)cap);
+    ASSERT_EQ(row_line_no(vt, -1), 17);
+    ASSERT_EQ(row_line_no(vt, -HELD), 13);
+    ASSERT_NULL(cfr_get_row(vt, -HELD - 1, NULL));
+    check_ring(vt);
+    cfr_free(vt);
+}
+
+/* The line cap still applies when it is the smaller of the two bounds. */
+static void test_line_cap_still_wins(void)
+{
+    enum
+    {
+        COLS = 8,
+        LINES = 3
+    };
+    CfrTerm *vt = make_term_capped(2, COLS, LINES, 1 << 20);
+    ASSERT_NOT_NULL(vt);
+    for (int n = 0; n < 10; ++n)
+        feed_short(vt, n);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), LINES);
+    ASSERT_EQ(vt->sb_bytes, (uint64_t)LINES * COLS * sizeof(CfrCell));
+    check_ring(vt);
+    cfr_free(vt);
+}
+
+/* Eviction charges a row by the width it was stored at, not the current
+ * grid width: after a shrink, removing an old wide row frees more budget
+ * than removing a new narrow one. */
+static void test_byte_cap_uses_each_rows_width(void)
+{
+    enum
+    {
+        OLD_COLS = 8,
+        NEW_COLS = 4,
+        ROWS = 2
+    };
+    uint64_t wide = (uint64_t)OLD_COLS * sizeof(CfrCell);
+    uint64_t narrow = (uint64_t)NEW_COLS * sizeof(CfrCell);
+    /* Four rows are still 8 wide when the grid shrinks; twelve more arrive
+     * at 4 wide. The budget fits three wide + twelve narrow. */
+    int cap = (int)(3 * wide + 12 * narrow);
+    CfrTerm *vt = make_term_capped(ROWS, OLD_COLS, 100, cap);
+    ASSERT_NOT_NULL(vt);
+
+    for (int n = 0; n < 5; ++n)
+        feed_short(vt, n);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 4);
+
+    cfr_resize(vt, ROWS, NEW_COLS); /* reflow off: history keeps its width */
+    for (int n = 5; n < 17; ++n)
+        feed_short(vt, n);
+
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 15);
+    ASSERT_EQ(vt->sb_bytes, (uint64_t)cap);
+    ASSERT_NULL(cfr_get_row(vt, -16, NULL));
+    int cols = 0;
+    ASSERT_NOT_NULL(cfr_get_row(vt, -15, &cols));
+    ASSERT_EQ(cols, OLD_COLS); /* L1..L3 are the surviving wide rows */
+    ASSERT_EQ(row_line_no(vt, -15), 1);
+    ASSERT_EQ(row_line_no(vt, -13), 3);
+    ASSERT_NOT_NULL(cfr_get_row(vt, -12, &cols));
+    ASSERT_EQ(cols, NEW_COLS); /* L4..L15 are four wide */
+    ASSERT_EQ(row_line_no(vt, -12), 4);
+    ASSERT_EQ(row_line_no(vt, -1), 15);
+    check_ring(vt);
+    cfr_free(vt);
+}
+
+/* -1 selects the engine default budget; 0 disables the byte bound, and
+ * ED 3 resets the counter along with the ring. */
+static void test_byte_cap_default_off_and_clear(void)
+{
+    CfrTerm *vt = make_term_capped(3, 8, 100, -1);
+    ASSERT_NOT_NULL(vt);
+    ASSERT_EQ(vt->sb_bytes_cap, (uint64_t)CFR_DEFAULT_SCROLLBACK_BYTES);
+    cfr_free(vt);
+
+    vt = make_term_capped(3, 8, 100, 0);
+    ASSERT_NOT_NULL(vt);
+    ASSERT_EQ(vt->sb_bytes_cap, 0u);
+    for (int n = 0; n < 20; ++n)
+        feed_short(vt, n);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 18); /* line cap only */
+    ASSERT_EQ(vt->sb_bytes, (uint64_t)18 * 8 * sizeof(CfrCell));
+    check_ring(vt);
+
+    feed(vt, "\x1b[3J"); /* erase saved lines */
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    ASSERT_EQ(vt->sb_bytes, 0u);
+    for (int n = 20; n < 30; ++n)
+        feed_short(vt, n);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 10);
+    check_ring(vt);
+    cfr_free(vt);
+}
+
+/* A budget smaller than a single row retains nothing, without allocating a
+ * page only to evict it again. */
+static void test_byte_cap_below_one_row_retains_nothing(void)
+{
+    int cap = 8 * (int)sizeof(CfrCell) - 1;
+    CfrTerm *vt = make_term_capped(2, 8, 100, cap);
+    ASSERT_NOT_NULL(vt);
+    for (int n = 0; n < 10; ++n)
+        feed_short(vt, n);
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    ASSERT_EQ(vt->sb_bytes, 0u);
+    check_ring(vt);
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -520,5 +673,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_set_size_evicts_now);
     RUN_TEST(test_set_size_drops_selection_into_evicted_rows);
     RUN_TEST(test_pop_after_front_eviction_frees_the_page);
+    RUN_TEST(test_byte_cap_evicts_by_bytes);
+    RUN_TEST(test_line_cap_still_wins);
+    RUN_TEST(test_byte_cap_uses_each_rows_width);
+    RUN_TEST(test_byte_cap_default_off_and_clear);
+    RUN_TEST(test_byte_cap_below_one_row_retains_nothing);
     TEST_SUMMARY();
 }

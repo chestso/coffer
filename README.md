@@ -195,10 +195,12 @@ design goals. Concretely:
 - **Paged scrollback.** History is a ring of row records over pages of 64
   rows (one width per page), default 1000 lines. Any row is a direct index —
   no walking, no per-reader state — and eviction is row-exact: the ring holds
-  at most the configured count, and a page is freed when its last row leaves.
-  Allocations happen only when a page fills or the ring doubles, so scrollback
-  memory is bounded by the configured line count regardless of input.
-  Lowering the capacity evicts immediately.
+  at most the configured count and byte budget (default 64 MiB of cell
+  storage), and a page is freed when its last row leaves. Allocations happen
+  only when a page fills or the ring doubles, so scrollback cell storage is
+  bounded by the line count and the byte budget regardless of input; page
+  overhead and intern tables sit outside the budget. Lowering the capacity
+  evicts immediately.
 - **Bounded work.** An operation costs the grid plus a named constant, or
   something linear in what the caller asked for — never the amount of
   history or the length of a line. Reflow pulls back at most 1024 history

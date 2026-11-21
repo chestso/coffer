@@ -78,24 +78,48 @@ static CfrPage *page_for_push(CfrTerm *vt, int cols)
     return new_sb_page(vt, cols);
 }
 
+/* Cell storage one retained row accounts for. Charging per row (not per
+ * page) means unused page slots cost nothing and eviction subtracts
+ * exactly what the push added, even when the row width changed since. */
+static uint64_t row_bytes(int cols)
+{
+    return (uint64_t)cols * sizeof(CfrCell);
+}
+
 /* The one place rows leave the old end. */
 static void evict_to_capacity(CfrTerm *vt)
 {
-    while (vt->sb_lines > vt->sb_capacity) {
+    while (vt->sb_lines > 0 &&
+           (vt->sb_lines > vt->sb_capacity ||
+            (vt->sb_bytes_cap != 0 && vt->sb_bytes > vt->sb_bytes_cap))) {
         CfrSbRow *oldest = ring_at(vt, 0);
         CfrPage *page = oldest->page;
+        uint64_t gone = row_bytes(page->cols);
+        CFR_BUG_CHECK(vt->sb_bytes >= gone,
+                      "scrollback bytes underflow: held=%llu row=%llu",
+                      (unsigned long long)vt->sb_bytes,
+                      (unsigned long long)gone);
         *oldest = (CfrSbRow){ 0 }; /* no stale pointer to a page we may free */
         vt->sb_first = (vt->sb_first + 1) & (vt->sb_ring_cap - 1);
+        vt->sb_bytes -= gone;
         vt->sb_lines--;
         if (vt->sb_lines == 0 || ring_at(vt, 0)->page != page)
             cfr_page_free(vt, page);
     }
+    CFR_BUG_CHECK(vt->sb_lines > 0 || vt->sb_bytes == 0,
+                  "scrollback accounting: %llu bytes with no rows",
+                  (unsigned long long)vt->sb_bytes);
 }
 
 void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
                          const CfrCell *src_cells, int cols, uint32_t lineage)
 {
     if (!vt || cols <= 0 || !src || !src_cells)
+        return;
+
+    /* A row that alone exceeds the byte budget can never be retained:
+     * drop it before allocating a page just to evict it again. */
+    if (vt->sb_bytes_cap != 0 && row_bytes(cols) > vt->sb_bytes_cap)
         return;
 
     /* Store the row, if the ring retains anything and can allocate. */
@@ -137,6 +161,7 @@ void cfr_scrollback_push(CfrTerm *vt, const CfrPage *src,
             page->row_count++;
             *ring_at(vt, (uint32_t)vt->sb_lines) = (CfrSbRow){ page, row };
             vt->sb_lines++;
+            vt->sb_bytes += row_bytes(page->cols);
         } else if (fresh_page) {
             cfr_page_free(vt, page);
         }
@@ -157,7 +182,13 @@ void cfr_scrollback_pop_rows(CfrTerm *vt, int n)
         CFR_BUG_CHECK(gone.row + 1 == gone.page->row_count,
                       "scrollback pop: row %u of a page filled to %u",
                       gone.row, (unsigned)gone.page->row_count);
+        uint64_t bytes = row_bytes(gone.page->cols);
+        CFR_BUG_CHECK(vt->sb_bytes >= bytes,
+                      "scrollback bytes underflow on pop: held=%llu row=%llu",
+                      (unsigned long long)vt->sb_bytes,
+                      (unsigned long long)bytes);
         *slot = (CfrSbRow){ 0 };
+        vt->sb_bytes -= bytes;
         vt->sb_lines--;
         gone.page->row_count--; /* the slot is free for the next push */
         if (vt->sb_lines == 0 ||
@@ -183,6 +214,7 @@ void cfr_scrollback_clear(CfrTerm *vt)
     vt->sb_ring_cap = 0;
     vt->sb_first = 0;
     vt->sb_lines = 0;
+    vt->sb_bytes = 0;
 }
 
 void cfr_scrollback_set_capacity(CfrTerm *vt, int lines)

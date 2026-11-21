@@ -53,7 +53,12 @@
 #define CFR_CSI_PARAM_MAX      32u
 #define CFR_INTERMEDIATE_MAX   4u
 #define CFR_DEFAULT_SCROLLBACK 1000
-#define CFR_SB_PAGE_ROWS       64u /* rows per scrollback page */
+/* Default byte budget for retained scrollback cell storage (see
+ * CfrConfig.scrollback_bytes). Large enough for the default 1000 lines at
+ * any sane width, small enough that a huge line count on a wide grid
+ * cannot turn into gigabytes. */
+#define CFR_DEFAULT_SCROLLBACK_BYTES (64ull * 1024ull * 1024ull)
+#define CFR_SB_PAGE_ROWS             64u /* rows per scrollback page */
 
 /* Bounded work. What an operation costs is the grid plus a named constant
  * below, or something linear in what the caller asked for (the size of a
@@ -319,6 +324,12 @@ struct CfrTerm
     uint32_t sb_first;
     int sb_lines;    /* rows held */
     int sb_capacity; /* most rows kept; 0 = scrollback off */
+    /* Retained cell storage: cols * sizeof(CfrCell) per held row. Kept in
+     * step with the ring (push adds, evict/pop subtract, clear zeroes) so
+     * eviction can enforce sb_bytes_cap without walking history. The cap
+     * is 0 when disabled. */
+    uint64_t sb_bytes;
+    uint64_t sb_bytes_cap;
 
     CfrCursorState cursor;
     /* One saved-cursor register per screen: [0]=normal, [1]=alt. DECSC/DECRC

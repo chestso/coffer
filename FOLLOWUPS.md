@@ -22,13 +22,6 @@ on. Order is roughly priority, not strict dependency.
   DL-inside-one-wrapped-line over-join (spec §7) remains: wrong text,
   never wrong structure.
 
-- **Scrollback capacity is in rows, not bytes.** 100000 rows is about
-  130 MB at 80 columns and four times that at 300; an unbounded ring fed a
-  480 MB file is gigabytes. Eviction is one function (`evict_to_capacity`
-  in `scrollback.c`), so a byte budget — a `CfrConfig` field checked there
-  alongside the row count — slots in without touching the ring, the
-  readers or the callers.
-
 ## Not yet implemented
 
 ### Kitty keyboard protocol — remaining flags
