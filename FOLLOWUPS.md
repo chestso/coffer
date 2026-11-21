@@ -12,6 +12,13 @@ on. Order is roughly priority, not strict dependency.
   (the child exiting quits the app before the script observes it).
   Neither affects the `coffer` CLI, where both work end to end.
 
+- **OSC 4/104 through ConPTY.** The bundled OpenConsole parses VT itself
+  and re-serialises what reaches coffer; whether it forwards palette
+  changes, consumes them, or rewrites indexed SGR to baked RGB is not
+  covered by any test. Capture a Windows session (pywal or a manual
+  `OSC 4` set) before promising palette-override parity there. The POSIX
+  path and `--feed` are covered by `test_cfr_palette`.
+
 - **Wrapped-line behavioral spec + differential fuzz.** The spec is
   `docs/wrapped-lines-spec.md` (policy knobs, edit/severance table, text
   extraction) and the oracle is `tests/test_cfr_wrap_fuzz.c` (random op
