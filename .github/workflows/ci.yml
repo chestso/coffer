@@ -142,6 +142,11 @@ jobs:
           export TERMINFO_DIRS="${PWD}/build/terminfo"
           make -C build check
 
+      - name: Report ConPTY palette forwarding
+        shell: msys2 {0}
+        run: |
+          grep -E 'palette probe|raw \(' build/tests/test_cfr_pty.log || true
+
       - name: Run tests with system conhost fallback
         shell: msys2 {0}
         run: |
@@ -215,6 +220,11 @@ jobs:
         run: |
           export TERMINFO_DIRS="${PWD}/build/terminfo"
           make -C build check
+
+      - name: Report ConPTY palette forwarding
+        shell: msys2 {0}
+        run: |
+          grep -E 'palette probe|raw \(' build/tests/test_cfr_pty.log || true
 
       - name: Run tests with system conhost fallback
         shell: msys2 {0}

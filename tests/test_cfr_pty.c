@@ -241,24 +241,40 @@ static int emit_width_probe(void)
     return 0;
 }
 
-/* Palette probe: an application sets palette entry 1, prints with indexed
- * colour 1, resets the entry and prints again.  What the host forwards
- * decides what the engine sees: OSC 4/104 intact, nothing at all, or the
- * indexed SGR rewritten to RGB. */
-static const char palette_probe_seq[] =
+/* Palette probes: set entry 1 and print with indexed colour 1.  The
+ * set-only form shows whether a forwarded override reaches the engine's
+ * palette before the text does; the reset form shows whether OSC 104
+ * follows as well.  What the host does with them decides what the engine
+ * sees: the sequences intact, nothing at all, or the indexed SGR rewritten
+ * to RGB. */
+static const char palette_set_seq[] =
     "\x1b]4;1;rgb:12/34/56\x1b\\" /* entry 1 -> #123456 */
-    "\x1b[38;5;1mPX\x1b[0m\r\n"   /* indexed fg 1, override in force */
-    "\x1b]104;1\x1b\\"            /* entry 1 back to the built-in */
-    "\x1b[38;5;1mRX\x1b[0m\r\n";  /* indexed fg 1, after the reset */
+    "\x1b[38;5;1mPX\x1b[0m\r\n";  /* indexed fg 1 */
 
-/* Child mode: write the palette probe to the console. */
-static int emit_palette_probe(void)
+static const char palette_reset_seq[] =
+    "\x1b]4;1;rgb:12/34/56\x1b\\" /* entry 1 -> #123456 */
+    "\x1b[38;5;1mAX\x1b[0m\r\n"   /* indexed fg 1, override in force */
+    "\x1b]104;1\x1b\\"            /* entry 1 back to the built-in */
+    "\x1b[38;5;1mBX\x1b[0m\r\n";  /* indexed fg 1, after the reset */
+
+/* Child mode: write one palette probe to the console. */
+static int emit_palette_probe(const char *seq, size_t len)
 {
     DWORD written = 0;
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
-    WriteFile(out, palette_probe_seq, (DWORD)(sizeof(palette_probe_seq) - 1),
-              &written, NULL);
+    WriteFile(out, seq, (DWORD)len, &written, NULL);
     return 0;
+}
+
+static int emit_palette_set(void)
+{
+    return emit_palette_probe(palette_set_seq, sizeof(palette_set_seq) - 1);
+}
+
+static int emit_palette_reset(void)
+{
+    return emit_palette_probe(palette_reset_seq,
+                              sizeof(palette_reset_seq) - 1);
 }
 #endif
 
@@ -869,6 +885,55 @@ static void log_cell_style(const CfrTerm *vt, const char *label, int row,
 
 #endif /* _WIN32 */
 
+#ifdef _WIN32
+
+/* Spawn this binary in `mode` and capture the raw ConPTY stream.  Returns
+ * the byte count, 0 when the child could not be started. */
+static size_t capture_mode(const char *mode, char *raw, size_t cap)
+{
+    char self[MAX_PATH * 2];
+    DWORD n = GetModuleFileNameA(NULL, self, sizeof(self));
+    if (n == 0 || n >= sizeof(self))
+        return 0;
+    char *const argv[] = { self, (char *)mode, NULL };
+    PtyContext *pty = pty_create(24, 80, argv);
+    if (!pty)
+        return 0;
+    size_t len = capture_pty(pty, raw, cap, 3000);
+    pty_destroy(pty);
+    return len;
+}
+
+/* Feed a captured stream to a fresh engine sized like the PTY. */
+static CfrTerm *term_from_raw(const char *raw, size_t len)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    CfrTerm *vt = cfr_new(&cfg);
+    if (vt)
+        cfr_input_write(vt, (const uint8_t *)raw, len);
+    return vt;
+}
+
+/* A probe cell asked for indexed colour 1.  Either the request survived
+ * (kind indexed, index 1) or the host baked it, in which case it is one of
+ * the two reds the entry can hold. */
+static void check_probe_cell(const CfrTerm *vt, int row, int col)
+{
+    const CfrStyle *st = cfr_cell_style(vt, row, col);
+    ASSERT_NOT_NULL(st);
+    if (st->fg.kind == CFR_COLOR_KIND_INDEXED)
+        ASSERT_EQ(st->fg.index, 1);
+    else if (st->fg.kind == CFR_COLOR_KIND_RGB)
+        ASSERT_TRUE(st->fg.rgb == 0x123456u ||
+                    st->fg.rgb == cfr_default_palette_rgb(1));
+}
+
+#endif /* _WIN32 */
+
 /* The host parses VT itself and re-serialises what reaches the engine, so
  * a palette override sent by the child may arrive intact, be consumed (the
  * host's own palette changes, the engine's does not), or show up only as
@@ -877,63 +942,71 @@ static void log_cell_style(const CfrTerm *vt, const char *label, int row,
 static void test_conpty_palette(void)
 {
 #ifdef _WIN32
-    char self[MAX_PATH * 2];
-    DWORD n = GetModuleFileNameA(NULL, self, sizeof(self));
-    ASSERT_TRUE(n > 0 && n < sizeof(self));
-
-    char *const argv[] = { self, "--emit-palette-probe", NULL };
-    PtyContext *pty = pty_create(24, 80, argv);
-    ASSERT_NOT_NULL(pty);
-    ASSERT_TRUE(pty_conpty_backend() != NULL);
-
     static char raw[16384];
-    size_t len = capture_pty(pty, raw, sizeof(raw), 3000);
+    size_t len = capture_mode("--emit-palette-set", raw, sizeof(raw));
+    ASSERT_TRUE(len > 0);
     const char *backend = pty_conpty_backend();
-    pty_destroy(pty);
-
-    printf("    palette probe: backend=%s bytes=%zu\n", backend, len);
+    printf("    palette probe (set): backend=%s bytes=%zu\n", backend, len);
     log_raw(raw, len, 8192);
 
-    int osc4 = contains_bytes(raw, len, "\x1b]4;1;", 7);
-    int osc104 = contains_bytes(raw, len, "\x1b]104;", 7);
-    int indexed = contains_bytes(raw, len, "38;5;1", 6);
-    int rgb_sgr = contains_bytes(raw, len, "38;2;", 5);
-    printf("    palette probe: osc4=%d osc104=%d sgr-indexed=%d sgr-rgb=%d\n",
-           osc4, osc104, indexed, rgb_sgr);
+    int osc4 = contains_bytes(raw, len, "\x1b]4;", strlen("\x1b]4;")) != 0;
+    int indexed = contains_bytes(raw, len, "38;5;1", strlen("38;5;1")) != 0;
+    int rgb_sgr = contains_bytes(raw, len, "38;2;", strlen("38;2;")) != 0;
+    printf("    palette probe (set): osc4=%d sgr-indexed=%d sgr-rgb=%d\n",
+           osc4, indexed, rgb_sgr);
 
-    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
-    cfg.rows = 24;
-    cfg.cols = 80;
-    cfg.cell_w_px = 10;
-    cfg.cell_h_px = 6;
-    CfrTerm *vt = cfr_new(&cfg);
+    CfrTerm *vt = term_from_raw(raw, len);
     ASSERT_NOT_NULL(vt);
-    cfr_input_write(vt, (const uint8_t *)raw, len);
-
-    int p_row = -1, p_col = -1, r_row = -1, r_col = -1;
-    ASSERT_TRUE(find_run(vt, "PX", &p_row, &p_col));
-    ASSERT_TRUE(find_run(vt, "RX", &r_row, &r_col));
-    log_cell_style(vt, "PX (override in force)", p_row, p_col);
-    log_cell_style(vt, "RX (after the reset)", r_row, r_col);
-    printf("    palette probe: palette[1]=#%06x builtin[1]=#%06x\n",
+    int row = -1, col = -1;
+    ASSERT_TRUE(find_run(vt, "PX", &row, &col));
+    log_cell_style(vt, "PX", row, col);
+    printf("    palette probe (set): palette[1]=#%06x builtin[1]=#%06x\n",
            (unsigned)cfr_palette_rgb(vt, 1),
            (unsigned)cfr_default_palette_rgb(1));
 
-    /* The engine applied the override if the host forwarded it, and left
-     * the built-in entry alone if the host consumed it.  Loose for the
-     * first observation; pin the actual host behaviour once known. */
+    /* The engine applied the override if and only if the host forwarded
+     * it.  Indexed text then renders through the updated entry. */
     uint32_t pal = cfr_palette_rgb(vt, 1);
-    ASSERT_TRUE(pal == cfr_default_palette_rgb(1) || pal == 0x123456u);
+    if (osc4) {
+        ASSERT_EQ(pal, 0x123456u);
+        const CfrStyle *st = cfr_cell_style(vt, row, col);
+        ASSERT_NOT_NULL(st);
+        if (st->fg.kind == CFR_COLOR_KIND_INDEXED)
+            ASSERT_EQ(cfr_style_fg_rgb(vt, st), 0x123456u);
+    } else {
+        ASSERT_EQ(pal, cfr_default_palette_rgb(1));
+    }
+    check_probe_cell(vt, row, col);
+    cfr_free(vt);
 
-    /* The indexed SGR reaches the engine as a request (index 1) or not at
-     * all; if the host bakes it, it is #123456 by construction. */
-    const CfrStyle *pst = cfr_cell_style(vt, p_row, p_col);
-    ASSERT_NOT_NULL(pst);
-    if (pst->fg.kind == CFR_COLOR_KIND_INDEXED)
-        ASSERT_EQ(pst->fg.index, 1);
-    else if (pst->fg.kind == CFR_COLOR_KIND_RGB)
-        ASSERT_EQ(pst->fg.rgb, 0x123456u);
+    /* Set then reset: the end state of the palette says whether OSC 104
+     * followed, and the cells stay valid either way. */
+    len = capture_mode("--emit-palette-reset", raw, sizeof(raw));
+    ASSERT_TRUE(len > 0);
+    printf("    palette probe (reset): backend=%s bytes=%zu\n", backend, len);
+    log_raw(raw, len, 8192);
 
+    int osc4b = contains_bytes(raw, len, "\x1b]4;", strlen("\x1b]4;")) != 0;
+    int osc104 =
+        contains_bytes(raw, len, "\x1b]104;", strlen("\x1b]104;")) != 0;
+    printf("    palette probe (reset): osc4=%d osc104=%d\n", osc4b, osc104);
+
+    vt = term_from_raw(raw, len);
+    ASSERT_NOT_NULL(vt);
+    int a_row = -1, a_col = -1, b_row = -1, b_col = -1;
+    ASSERT_TRUE(find_run(vt, "AX", &a_row, &a_col));
+    ASSERT_TRUE(find_run(vt, "BX", &b_row, &b_col));
+    log_cell_style(vt, "AX", a_row, a_col);
+    log_cell_style(vt, "BX", b_row, b_col);
+    pal = cfr_palette_rgb(vt, 1);
+    printf("    palette probe (reset): palette[1]=#%06x\n", (unsigned)pal);
+
+    if (osc4b && !osc104)
+        ASSERT_EQ(pal, 0x123456u);
+    else
+        ASSERT_EQ(pal, cfr_default_palette_rgb(1));
+    check_probe_cell(vt, a_row, a_col);
+    check_probe_cell(vt, b_row, b_col);
     cfr_free(vt);
 #else
     printf("    (skipping on POSIX: ConPTY-specific)\n");
@@ -951,8 +1024,10 @@ int main(int argc, char *argv[])
         return emit_sequences();
     if (argc > 1 && strcmp(argv[1], "--emit-width-probe") == 0)
         return emit_width_probe();
-    if (argc > 1 && strcmp(argv[1], "--emit-palette-probe") == 0)
-        return emit_palette_probe();
+    if (argc > 1 && strcmp(argv[1], "--emit-palette-set") == 0)
+        return emit_palette_set();
+    if (argc > 1 && strcmp(argv[1], "--emit-palette-reset") == 0)
+        return emit_palette_reset();
 #endif
     test_parse_args(argc, argv);
 
