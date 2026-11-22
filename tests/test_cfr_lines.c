@@ -7,6 +7,7 @@
 
 #include "coffer_internal.h"
 #include "test_helpers.h"
+#include "wrap_cases.h"
 #include <coffer/coffer.h>
 
 #include <stdio.h>
@@ -30,80 +31,30 @@ static void feed(CfrTerm *vt, const char *s)
     cfr_input_write(vt, (const uint8_t *)s, strlen(s));
 }
 
-/* Build the design's 4-column example: twelve A's (wrapping rows 0→1→2),
- * then LF and "BBBB" on row 3. */
-static void prime_aaaa_bbbb(CfrTerm *vt)
-{
-    feed(vt, "AAAAAAAAAAAA"); /* 12 A's: rows 0,1,2 in a 4-col grid */
-    feed(vt, "\nBBBB");
-}
+/* Simple join/severance cases. The multi-step reflow, callback and
+ * attribute tests stay as functions below. */
+static const JoinCase LINE_JOIN_CASES[] = {
+    { "12 A's join rows 0-1", 8, 4, "AAAAAAAAAAAA", NULL, 1, true },
+    { "12 A's join rows 1-2", 8, 4, "AAAAAAAAAAAA", NULL, 2, true },
+    { "DL of a foreign line severs", 8, 4, "AAAAAAAAAAAA\nBBBB",
+      "\x1b[3;1H\x1b[1M", 2, false },
+    { "EL truncation severs", 8, 20, "AAAAAAAAAAAAAAAAAAAAA",
+      "\x1b[1;1H\x1b[K", 1, false },
+    { "IL blank severs", 8, 4, "AAAAAAAAAAAA", "\x1b[2;1H\x1b[1L", 1,
+      false },
+    { "scroll preserves the join", 4, 4, "AAAAAAAAAAAA",
+      "\x1b[4;1H\x1b[1S", 1, true },
+    { "scroll leaves the new bottom unjoined", 4, 4, "AAAAAAAAAAAA",
+      "\x1b[4;1H\x1b[1S", 3, false },
+    { "DL inside a line keeps the known join", 8, 4, "AAAAAAAAAAAA",
+      "\x1b[2;1H\x1b[1M", 1, true },
+};
 
-/* -------- A: DL of a *different* line must not create a false join ------
- *
- * The §2.3 example, DL at row 2. Row 1's margin bit survives untouched (a
- * row-flag design would false-join); lineage catches it because the row
- * that slid up carries a different id. */
-static void test_dl_foreign_line_no_false_join(void)
+static void test_line_join_cases(void)
 {
-    CfrTerm *vt = make_term(8, 4, false);
-    prime_aaaa_bbbb(vt);
-    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
-    ASSERT_TRUE(cfr_row_is_continuation(vt, 2));
-    /* Delete row 2 (the last A fragment); BBBB slides up under row 1. */
-    feed(vt, "\x1b[3;1H\x1b[1M");
-    /* Row 1 still ends in a wrap, but the row below it is now BBBB, a
-     * different logical line. No join. */
-    ASSERT_FALSE(cfr_row_is_continuation(vt, 2));
-    cfr_free(vt);
-}
-
-/* -------- B: EL truncating the row must sever the join ------------------
- *
- * Erase row 0 to end of line: the margin cell is rewritten, so its wrap
- * edge dies automatically even though row 1 still shares row 0's lineage
- * (the lineage-alone failure mode). */
-static void test_el_truncation_severs(void)
-{
-    CfrTerm *vt = make_term(8, 20, false);
-    feed(vt, "AAAAAAAAAAAAAAAAAAAAA"); /* row 0 wraps 'A' onto row 1 */
-    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
-    feed(vt, "\x1b[1;1H\x1b[K"); /* EL0 over the whole wrapped row */
-    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
-    cfr_free(vt);
-}
-
-/* -------- C: IL inserts a blank with lineage 0 --------------------------
- *
- * An inserted blank row arrives with lineage 0, so it severs on its own
- * — no explicit clear-call at the IL site. */
-static void test_il_blank_severs(void)
-{
-    CfrTerm *vt = make_term(8, 4, false);
-    feed(vt, "AAAAAAAAAAAA");
-    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
-    /* Insert a blank line at row 1: the previous row 1 slides to row 2. */
-    feed(vt, "\x1b[2;1H\x1b[1L");
-    ASSERT_FALSE(cfr_row_is_continuation(vt, 1)); /* blank row, lineage 0 */
-    cfr_free(vt);
-}
-
-/* -------- D: SU under a live edge ---------------------------------------
- *
- * A full-screen scroll moves the wrapped pair and its ids together; the
- * join survives, and the newly exposed bottom row (lineage 0) joins
- * nothing. */
-static void test_scroll_preserves_join(void)
-{
-    CfrTerm *vt = make_term(4, 4, false);
-    feed(vt, "AAAAAAAAAAAA"); /* rows 0,1,2 filled; 0→1→2 wrapped */
-    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
-    ASSERT_TRUE(cfr_row_is_continuation(vt, 2));
-    feed(vt, "\x1b[4;1H"); /* move to bottom row */
-    feed(vt, "\x1b[1S");   /* SU 1: rows shift up, blank enters at bottom */
-    /* Rows 0 and 1 still form the pair (now holding the old rows 1 and 2). */
-    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
-    ASSERT_FALSE(cfr_row_is_continuation(vt, 3));
-    cfr_free(vt);
+    ASSERT_TRUE(run_join_cases("lines", LINE_JOIN_CASES,
+                               sizeof(LINE_JOIN_CASES) /
+                                   sizeof(LINE_JOIN_CASES[0])));
 }
 
 /* -------- E: phantom + SU -----------------------------------------------
@@ -139,21 +90,6 @@ static void test_join_into_scrollback(void)
         if (cfr_row_is_continuation(vt, u))
             joins++;
     ASSERT_EQ(joins, 1);
-    cfr_free(vt);
-}
-
-/* -------- Known imperfection: DL *inside* one wrapped line --------------
- *
- * Fragment 1 and fragment 3 of the same line share an id, so deleting the
- * middle fragment leaves a join that the representation cannot detect
- * (§2.3). Documented: wrong text, never wrong structure. */
-static void test_dl_inside_line_known_join(void)
-{
-    CfrTerm *vt = make_term(8, 4, false);
-    feed(vt, "AAAAAAAAAAAA");     /* rows 0,1,2 one logical line */
-    feed(vt, "\x1b[2;1H\x1b[1M"); /* delete the middle fragment */
-    /* The known-imperfect answer: still joined. */
-    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
     cfr_free(vt);
 }
 
@@ -730,13 +666,9 @@ int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
 
-    RUN_TEST(test_dl_foreign_line_no_false_join);
-    RUN_TEST(test_el_truncation_severs);
-    RUN_TEST(test_il_blank_severs);
-    RUN_TEST(test_scroll_preserves_join);
+    RUN_TEST(test_line_join_cases);
     RUN_TEST(test_phantom_then_scroll);
     RUN_TEST(test_join_into_scrollback);
-    RUN_TEST(test_dl_inside_line_known_join);
     RUN_TEST(test_reflow_preserves_line_identity);
     RUN_TEST(test_reflow_roundtrip_shrink_grow);
     RUN_TEST(test_resize_carries_hyperlink);

@@ -68,5 +68,5 @@ test_script_SOURCES = test_script.c test_common.c
 test_cfr_sync_output_SOURCES = test_cfr_sync_output.c test_common.c
 test_cfr_grid_gc_SOURCES = test_cfr_grid_gc.c test_common.c
 
-EXTRA_DIST = test_helpers.h common.h zwj_sequences.h \
+EXTRA_DIST = test_helpers.h common.h zwj_sequences.h wrap_cases.h \
     test-coffer.sh test-coffer-w32.sh
