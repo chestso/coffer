@@ -24,15 +24,18 @@ on. Order is roughly priority, not strict dependency.
   extraction) and the oracle is `tests/test_cfr_wrap_fuzz.c` (random op
   stream vs. a naive row model, checked after every op). The model now
   covers resize/reflow (per-row widths, the scrollback/grid boundary,
-  `CFR_REFLOW_PREFIX_ROWS`), partial scroll regions (DECSTBM), altscreen
+  `CFR_REFLOW_PREFIX_ROWS`), the clamp-only resize path (`reflow =
+  false`, resize on the alt screen, and the exit-time catch-up of the
+  stale main page), DECOM, partial scroll regions (DECSTBM), altscreen
   1049 and raw 47/1047, and selector/ZWJ clusters printed as one write.
-  Still not modeled, and covered by targeted tests: the clamp-only resize
-  path (`reflow = false`, or a resize on the alt screen), DECOM, and
-  stray-joiner re-attachment across writes (`test_cfr_wrap_width`). The
-  model extension found and pinned two engine fixes in
-  `test_cfr_wrap_erase`: the ASCII run fast path wrote one cell past the
-  row after a failed wrap commit, and ED 0/1 indexed rows out of bounds
-  after a DECRC restored a pre-shrink cursor. The accepted
+  Still not modeled: stray-joiner re-attachment across writes
+  (`test_cfr_wrap_width` covers it). The model extension found and
+  pinned three engine fixes: the ASCII run fast path wrote one cell past
+  the row after a failed wrap commit and ED 0/1 indexed rows out of
+  bounds after a DECRC restored a pre-shrink cursor (both in
+  `test_cfr_wrap_erase`), and a width-changing clamp carried the margin
+  WRAPLINE bit onto an interior cell, where a later resize could
+  resurrect a severed join (`test_cfr_lines`). The accepted
   DL-inside-one-wrapped-line over-join (spec §7) remains: wrong text,
   never wrong structure.
 

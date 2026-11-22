@@ -245,8 +245,10 @@ lines with trailing blanks gone.
 | DECAWM toggled off mid-phantom | the phantom dies, clamped to the margin                                                                                                                                                |
 | DECSC / phantom                | saved and restored natively (logical column)                                                                                                                                           |
 | Narrow print over a wide lead  | blank the stranded continuation (severs if that is the margin)                                                                                                                         |
+| Clamp resize, height only      | join survives (the margin cell is copied unchanged)                                                                                                                                    |
+| Clamp resize, width change     | join severed: the old margin is not the new margin, and copied interior edge bits are cleared                                                                                          |
 | DL inside one wrapped line     | **still joins** — the accepted limitation (design §2.3): two fragments of one line meeting after a shift are indistinguishable from a genuine join. Wrong text, never wrong structure. |
-| Wrap edges on interior cells   | MUST NOT exist; DCH clears what it shifts (§5.6)                                                                                                                                       |
+| Wrap edges on interior cells   | MUST NOT exist; DCH and a width-changing clamp clear the bits they would otherwise shift inward (§5.6)                                                                                 |
 
 ## 8. The differential fuzzer
 
@@ -260,30 +262,44 @@ a naive model and the engine and compares state after **every** op:
   rows).
 
 The model is an array of rows, each with a width, `wrap` (the margin
-edge) and `line` (lineage). Cells own their UTF-8 bytes, so the model can
-distinguish a plain ASCII byte from a selector cluster or a ZWJ sequence
-without reusing the engine's intern tables. It implements §3–§6 directly,
-not the engine's page/cell/interning machinery; it relies on the §5.6
-invariant that the edge exists only on the margin.
+edge) and `line` (lineage), plus the page dimensions of both screens.
+Cells own their UTF-8 bytes, so the model can distinguish a plain ASCII
+byte from a selector cluster or a ZWJ sequence without reusing the
+engine's intern tables. It implements §3–§6 directly, not the engine's
+page/cell/interning machinery; it relies on the §5.6 invariant that the
+edge exists only on the margin.
 
 Ops: printable ASCII runs, a wide ideograph, and selector/ZWJ clusters
 (VS16, VS15 with and without a text glyph, a combining mark, a ZWJ
 sequence); CR/LF/BS/HT/RI; CUP/CHA/VPA; SU/SD, IL/DL, ICH/DCH/ECH;
-EL 0–2, ED 0–3; DECAWM and IRM toggles; DECSC/DECRC; DECSTBM (including
-partial regions and invalid regions); altscreen 1049 and raw 47/1047;
-and `cfr_resize()` with reflow enabled. The resize op is skipped while
-the alt screen is active: that path clamps in the engine and the model
-does not carry the alt screen's second geometry.
+EL 0–2, ED 0–3; DECAWM, IRM and DECOM toggles; DECSC/DECRC; DECSTBM
+(including partial regions and invalid regions); altscreen 1049 and raw
+47/1047, including `cfr_resize()` while the alt screen is active; and
+host calls `cfr_resize()` / `cfr_set_reflow()`.
 
-The model's resize replays `cfr_reflow()` phase for phase: collect the
-logical line straddling the top scrollback edge (bounded by
+The model's reflow resize replays `cfr_reflow()` phase for phase: collect
+the logical line straddling the top scrollback edge (bounded by
 `CFR_REFLOW_PREFIX_ROWS`), collect the grid, group rows by the join
 predicate, trim blank trailing lines not hosting the cursor, rewrap at
 the new width, and install — the oldest rows to scrollback, the newest in
 the grid. Rows keep the width they were written at, so the text
-extraction bounds every walk by the row's own width. The clamp-only
-resize (`reflow = false`, or a resize on the alt screen) stays covered by
-`test_cfr_lines` and `test_cfr_altscreen`.
+extraction bounds every walk by the row's own width.
+
+The clamp-only resize replays `cfr_resize_clamp()`: copy the overlapping
+top-left cells, leave cells outside the old page as holes, keep lineage
+per copied row, and preserve the wrap edge only across a height-only
+resize. A width change cannot carry the edge — the old margin cell is not
+the new margin — and copied interior edge bits are cleared so a later
+clamp back to the old width cannot resurrect a severed join. The scroll
+region resets to full and the cursor is clamped absolutely (a phantom
+dies).
+
+A resize on the alt screen always clamps the alt page; the main page
+keeps its dimensions until the screen is left. On exit the model runs the
+normal reflow or clamp path on the main grid at the current size, placed
+with the **alt cursor**, before restoring the 1049 register. That mirrors
+`cfr_set_altscreen()`: the main grid is caught up before the saved cursor
+comes back.
 
 Each run starts with ED 2 so the lazily allocated grid exists; the model
 starts from the same erased screen. Scrollback pages written at a
@@ -291,19 +307,22 @@ different width are modeled as per-row widths.
 
 Knobs (environment): `COFFER_FUZZ_ITERS` (default 150),
 `COFFER_FUZZ_SEED` (base seed), `COFFER_FUZZ_ONLY`
-(`small|narrow|wide|evict|none`), `COFFER_FUZZ_STRICT` (also compare the
-exact lineage ids and margin bits — a debugging oracle; ids are an
-implementation detail), `COFFER_FUZZ_TRACE=N` (dump both grids from op N).
+(`small|narrow|wide|evict|none|clamp`), `COFFER_FUZZ_STRICT` (also
+compare the exact lineage ids and margin bits — a debugging oracle; ids
+are an implementation detail), `COFFER_FUZZ_TRACE=N` (dump both grids
+from op N). The `clamp` run starts with `reflow = false`; every run
+flips `cfr_set_reflow()` occasionally, so both resize paths interleave.
 
-Not modeled, covered by targeted tests instead: the clamp-only resize
-path (`reflow = false`, resize on the alt screen), DECOM, and stray-joiner
-re-attachment (§3.4) — the cluster ops print a base and its selectors in
-one write, so `commit_cluster()`'s one-shot path is what the model mirrors;
-`test_cfr_wrap_width` covers the split-write re-attachment path. The
-extension found two engine bugs now pinned by `test_cfr_wrap_erase`: the
-ASCII run fast path wrote one cell past the row after a failed wrap
-commit, and ED 0/1 indexed rows out of bounds when DECRC had restored a
-cursor saved before a shrink.
+Not modeled: stray-joiner re-attachment (§3.4). The cluster ops print a
+base and its selectors in one write, so `commit_cluster()`'s one-shot
+path is what the model mirrors; `test_cfr_wrap_width` covers the
+split-write re-attachment path. The extension found three engine bugs:
+the ASCII run fast path wrote one cell past the row after a failed wrap
+commit and ED 0/1 indexed rows out of bounds when DECRC had restored a
+cursor saved before a shrink (both pinned by `test_cfr_wrap_erase`); a
+width-changing clamp could move the margin WRAPLINE bit to an interior
+cell and later restore a severed join (pinned by
+`test_cfr_lines`'s `test_clamp_resize_join_rules`).
 
 ## 9. Normative test references
 
