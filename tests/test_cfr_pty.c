@@ -240,6 +240,26 @@ static int emit_width_probe(void)
               &written, NULL);
     return 0;
 }
+
+/* Palette probe: an application sets palette entry 1, prints with indexed
+ * colour 1, resets the entry and prints again.  What the host forwards
+ * decides what the engine sees: OSC 4/104 intact, nothing at all, or the
+ * indexed SGR rewritten to RGB. */
+static const char palette_probe_seq[] =
+    "\x1b]4;1;rgb:12/34/56\x1b\\" /* entry 1 -> #123456 */
+    "\x1b[38;5;1mPX\x1b[0m\r\n"   /* indexed fg 1, override in force */
+    "\x1b]104;1\x1b\\"            /* entry 1 back to the built-in */
+    "\x1b[38;5;1mRX\x1b[0m\r\n";  /* indexed fg 1, after the reset */
+
+/* Child mode: write the palette probe to the console. */
+static int emit_palette_probe(void)
+{
+    DWORD written = 0;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    WriteFile(out, palette_probe_seq, (DWORD)(sizeof(palette_probe_seq) - 1),
+              &written, NULL);
+    return 0;
+}
 #endif
 
 /* Search the visible grid for a UTF-8 substring (ASCII-only callers).
@@ -766,6 +786,161 @@ static void test_conpty_width_alignment(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* ConPTY palette forwarding                                           */
+/* ------------------------------------------------------------------ */
+
+#ifdef _WIN32
+
+/* Locate `needle` (ASCII) on the grid; returns 1 and its top-left cell. */
+static int find_run(CfrTerm *vt, const char *needle, int *out_row,
+                    int *out_col)
+{
+    int rows = 0, cols = 0;
+    size_t nlen = strlen(needle);
+    cfr_get_dimensions(vt, &rows, &cols);
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c + (int)nlen <= cols; c++) {
+            size_t i = 0;
+            for (; i < nlen; i++) {
+                const CfrCell *cell = cfr_get_cell(vt, r, c + (int)i);
+                if (!cell || cell->cp != (uint32_t)(unsigned char)needle[i])
+                    break;
+            }
+            if (i == nlen) {
+                if (out_row)
+                    *out_row = r;
+                if (out_col)
+                    *out_col = c;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Print `n` bytes with escapes visible, so a CI log shows what the host
+ * actually forwarded.  Truncates past `log_cap` bytes. */
+static void log_raw(const char *buf, size_t n, size_t log_cap)
+{
+    size_t shown = n < log_cap ? n : log_cap;
+    printf("    raw (%zu bytes%s): \"", n, shown < n ? ", truncated" : "");
+    for (size_t i = 0; i < shown; i++) {
+        unsigned char b = (unsigned char)buf[i];
+        if (b == 0x1b)
+            fputs("\\e", stdout);
+        else if (b == '\r')
+            fputs("\\r", stdout);
+        else if (b == '\n')
+            fputs("\\n", stdout);
+        else if (b == '\\')
+            fputs("\\\\", stdout);
+        else if (b == '"')
+            fputs("\\\"", stdout);
+        else if (b < 0x20 || b >= 0x7f)
+            printf("\\x%02x", (unsigned)b);
+        else
+            putchar((int)b);
+    }
+    fputs("\"\n", stdout);
+}
+
+static const char *fg_kind_name(const CfrStyle *st)
+{
+    if (st->fg.kind == CFR_COLOR_KIND_INDEXED)
+        return "indexed";
+    if (st->fg.kind == CFR_COLOR_KIND_RGB)
+        return "rgb";
+    return "default";
+}
+
+static void log_cell_style(const CfrTerm *vt, const char *label, int row,
+                           int col)
+{
+    const CfrStyle *st = cfr_cell_style(vt, row, col);
+    if (!st) {
+        printf("    %s: no cell at (%d,%d)\n", label, row, col);
+        return;
+    }
+    printf("    %s at (%d,%d): fg kind=%s index=%u rgb=#%06x "
+           "resolved=#%06x\n",
+           label, row, col, fg_kind_name(st), (unsigned)st->fg.index,
+           (unsigned)st->fg.rgb, (unsigned)cfr_style_fg_rgb(vt, st));
+}
+
+#endif /* _WIN32 */
+
+/* The host parses VT itself and re-serialises what reaches the engine, so
+ * a palette override sent by the child may arrive intact, be consumed (the
+ * host's own palette changes, the engine's does not), or show up only as
+ * RGB baked into SGR.  Report which one happens and check the engine acted
+ * on exactly what arrived. */
+static void test_conpty_palette(void)
+{
+#ifdef _WIN32
+    char self[MAX_PATH * 2];
+    DWORD n = GetModuleFileNameA(NULL, self, sizeof(self));
+    ASSERT_TRUE(n > 0 && n < sizeof(self));
+
+    char *const argv[] = { self, "--emit-palette-probe", NULL };
+    PtyContext *pty = pty_create(24, 80, argv);
+    ASSERT_NOT_NULL(pty);
+    ASSERT_TRUE(pty_conpty_backend() != NULL);
+
+    static char raw[16384];
+    size_t len = capture_pty(pty, raw, sizeof(raw), 3000);
+    const char *backend = pty_conpty_backend();
+    pty_destroy(pty);
+
+    printf("    palette probe: backend=%s bytes=%zu\n", backend, len);
+    log_raw(raw, len, 8192);
+
+    int osc4 = contains_bytes(raw, len, "\x1b]4;1;", 7);
+    int osc104 = contains_bytes(raw, len, "\x1b]104;", 7);
+    int indexed = contains_bytes(raw, len, "38;5;1", 6);
+    int rgb_sgr = contains_bytes(raw, len, "38;2;", 5);
+    printf("    palette probe: osc4=%d osc104=%d sgr-indexed=%d sgr-rgb=%d\n",
+           osc4, osc104, indexed, rgb_sgr);
+
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 24;
+    cfg.cols = 80;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    CfrTerm *vt = cfr_new(&cfg);
+    ASSERT_NOT_NULL(vt);
+    cfr_input_write(vt, (const uint8_t *)raw, len);
+
+    int p_row = -1, p_col = -1, r_row = -1, r_col = -1;
+    ASSERT_TRUE(find_run(vt, "PX", &p_row, &p_col));
+    ASSERT_TRUE(find_run(vt, "RX", &r_row, &r_col));
+    log_cell_style(vt, "PX (override in force)", p_row, p_col);
+    log_cell_style(vt, "RX (after the reset)", r_row, r_col);
+    printf("    palette probe: palette[1]=#%06x builtin[1]=#%06x\n",
+           (unsigned)cfr_palette_rgb(vt, 1),
+           (unsigned)cfr_default_palette_rgb(1));
+
+    /* The engine applied the override if the host forwarded it, and left
+     * the built-in entry alone if the host consumed it.  Loose for the
+     * first observation; pin the actual host behaviour once known. */
+    uint32_t pal = cfr_palette_rgb(vt, 1);
+    ASSERT_TRUE(pal == cfr_default_palette_rgb(1) || pal == 0x123456u);
+
+    /* The indexed SGR reaches the engine as a request (index 1) or not at
+     * all; if the host bakes it, it is #123456 by construction. */
+    const CfrStyle *pst = cfr_cell_style(vt, p_row, p_col);
+    ASSERT_NOT_NULL(pst);
+    if (pst->fg.kind == CFR_COLOR_KIND_INDEXED)
+        ASSERT_EQ(pst->fg.index, 1);
+    else if (pst->fg.kind == CFR_COLOR_KIND_RGB)
+        ASSERT_EQ(pst->fg.rgb, 0x123456u);
+
+    cfr_free(vt);
+#else
+    printf("    (skipping on POSIX: ConPTY-specific)\n");
+#endif
+}
+
+/* ------------------------------------------------------------------ */
 /* Entry point                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -776,6 +951,8 @@ int main(int argc, char *argv[])
         return emit_sequences();
     if (argc > 1 && strcmp(argv[1], "--emit-width-probe") == 0)
         return emit_width_probe();
+    if (argc > 1 && strcmp(argv[1], "--emit-palette-probe") == 0)
+        return emit_palette_probe();
 #endif
     test_parse_args(argc, argv);
 
@@ -789,6 +966,7 @@ int main(int argc, char *argv[])
     printf("Running test_cfr_pty\n");
     RUN_TEST(test_conpty_passthrough);
     RUN_TEST(test_conpty_width_alignment);
+    RUN_TEST(test_conpty_palette);
     RUN_TEST(test_echo_hello);
     RUN_TEST(test_sgr_red);
     RUN_TEST(test_tput_cursor);
