@@ -18,10 +18,10 @@
  * model has no pages, no cell interning and no scrollback ring).
  *
  * Coverage includes partial scroll regions (DECSTBM), DECOM origin mode,
- * altscreen 1049 and raw 47/1047, resize with reflow on, and
- * VS16/VS15/combining/ZWJ clusters printed as one write. Not modeled:
- * clamp-only resize, and stray-joiner re-attachment across writes (see
- * spec §8).
+ * altscreen 1049 and raw 47/1047, resize with reflow on and clamp-only
+ * resize with reflow off, and VS16/VS15/combining/ZWJ clusters printed
+ * as one write. Not modeled: a resize on the alt screen, and
+ * stray-joiner re-attachment across writes (see spec §8).
  *
  * The run is deterministic. Set COFFER_FUZZ_ITERS to run longer and
  * COFFER_FUZZ_SEED to start from another base seed; a failure prints the
@@ -98,6 +98,7 @@ typedef struct
     bool decawm;
     bool irm;
     bool decom;
+    bool reflow_on;
     bool in_alt;
     int scroll_top, scroll_bottom;
     /* DECSC/DECRC use the active screen's register (normal = 0, alt = 1);
@@ -926,6 +927,42 @@ static void m_set_altscreen(Model *m, bool on, bool save_cursor)
 /* Reflow model (resize)                                              */
 /* ------------------------------------------------------------------ */
 
+/* Clamp-only resize (cfr_resize_clamp): copy the overlapping top-left
+ * rectangle into a fresh page, leave the new cells as holes, keep each
+ * copied row's lineage, and preserve the wrap edge only across a
+ * height-only resize. A width change cannot carry the edge: the old
+ * margin cell is not the new margin, and the engine clears the bit when
+ * a copied cell lands inside the row. */
+static void m_clamp_grid(Model *m, int old_rows, int old_cols,
+                         int new_rows, int new_cols)
+{
+    if (new_rows <= 0 || new_cols <= 0)
+        return;
+    if (new_rows == old_rows && new_cols == old_cols)
+        return;
+
+    MRow newgrid[ROWS_MAX];
+    memset(newgrid, 0, sizeof(newgrid));
+    for (int r = 0; r < new_rows; ++r) {
+        MRow *dst = &newgrid[r];
+        dst->cols = new_cols;
+        if (r >= old_rows)
+            continue;
+        const MRow *src = &m->grid[r];
+        int copy_cols = new_cols < old_cols ? new_cols : old_cols;
+        for (int c = 0; c < copy_cols; ++c)
+            dst->cells[c] = src->cells[c];
+        dst->line = src->line;
+        dst->wrap = (new_cols == old_cols) ? src->wrap : false;
+    }
+    memcpy(m->grid, newgrid, sizeof(m->grid));
+    m->rows = new_rows;
+    m->cols = new_cols;
+    m->scroll_top = 0;
+    m->scroll_bottom = new_rows - 1;
+    m_cursor_set(m, m->row, m->col);
+}
+
 #define FLAT_MAX 4096
 
 typedef struct
@@ -1353,9 +1390,17 @@ static bool run_op(CfrTerm *vt, Model *m, uint64_t *rng, char *op,
         strcpy(seq, "\x1b"
                     "8\x1b[0m");
     } else {
-        /* A resize is a host API call, not an escape sequence. On the
-         * alt screen the engine clamps and the model has no clamp, so
-         * skip the op there instead of desynchronizing. */
+        /* Host API calls, not escape sequences. Flip the reflow setting
+         * occasionally so one run covers both resize paths. */
+        if (rng_below(rng, 10) == 0) {
+            m->reflow_on = !m->reflow_on;
+            cfr_set_reflow(vt, m->reflow_on);
+            snprintf(op, op_cap, "reflow %s", m->reflow_on ? "on" : "off");
+            return true;
+        }
+        /* On the alt screen the engine clamps and the model has no
+         * alt-screen geometry yet, so skip the op there instead of
+         * desynchronizing. */
         if (m->in_alt) {
             snprintf(op, op_cap, "resize (skipped: alt)");
             return true;
@@ -1363,7 +1408,10 @@ static bool run_op(CfrTerm *vt, Model *m, uint64_t *rng, char *op,
         int nr = 1 + (int)rng_below(rng, ROWS_MAX);
         int nc = 1 + (int)rng_below(rng, COLS_MAX);
         snprintf(op, op_cap, "resize %dx%d", nr, nc);
-        m_reflow(m, nr, nc);
+        if (m->reflow_on)
+            m_reflow(m, nr, nc);
+        else
+            m_clamp_grid(m, m->rows, m->cols, nr, nc);
         cfr_resize(vt, nr, nc);
         return true;
     }
@@ -1415,7 +1463,8 @@ static void fuzz_dump_grid(CfrTerm *vt, Model *m)
     }
 }
 
-static bool fuzz_run(int rows, int cols, int sb_cap, uint64_t seed, int iters)
+static bool fuzz_run(int rows, int cols, int sb_cap, bool reflow,
+                     uint64_t seed, int iters)
 {
     CfrConfig cfg = CFR_CONFIG_DEFAULTS;
     cfg.rows = rows;
@@ -1423,7 +1472,7 @@ static bool fuzz_run(int rows, int cols, int sb_cap, uint64_t seed, int iters)
     cfg.cell_w_px = 10;
     cfg.cell_h_px = 6;
     cfg.scrollback = sb_cap;
-    cfg.reflow = true;
+    cfg.reflow = reflow;
     CfrTerm *vt = cfr_new(&cfg);
     if (!vt)
         return false;
@@ -1440,6 +1489,7 @@ static bool fuzz_run(int rows, int cols, int sb_cap, uint64_t seed, int iters)
     m.cols = cols;
     m.sb_cap = sb_cap;
     m.decawm = true;
+    m.reflow_on = reflow;
     m.scroll_top = 0;
     m.scroll_bottom = rows - 1;
     /* cfr_new() seeds both saved-cursor registers from the home cursor. */
@@ -1510,14 +1560,14 @@ static uint64_t fuzz_seed(void)
     return s ? strtoull(s, NULL, 0) : 0x5EEDu;
 }
 
-static bool run_config(int rows, int cols, int sb, int seeds)
+static bool run_config(int rows, int cols, int sb, bool reflow, int seeds)
 {
     uint64_t base = fuzz_seed();
     int iters = fuzz_iters();
     for (int i = 0; i < seeds; ++i) {
         check_failed = false;
-        if (!fuzz_run(rows, cols, sb, base + (uint64_t)i * 0x10001u,
-                      iters))
+        if (!fuzz_run(rows, cols, sb, reflow,
+                      base + (uint64_t)i * 0x10001u, iters))
             return false;
     }
     return true;
@@ -1525,27 +1575,32 @@ static bool run_config(int rows, int cols, int sb, int seeds)
 
 static void test_wrap_fuzz_small(void)
 {
-    ASSERT_TRUE(run_config(4, 3, 16, 8));
+    ASSERT_TRUE(run_config(4, 3, 16, true, 8));
 }
 
 static void test_wrap_fuzz_narrow(void)
 {
-    ASSERT_TRUE(run_config(6, 5, 32, 8));
+    ASSERT_TRUE(run_config(6, 5, 32, true, 8));
 }
 
 static void test_wrap_fuzz_wide(void)
 {
-    ASSERT_TRUE(run_config(8, 12, 64, 8));
+    ASSERT_TRUE(run_config(8, 12, 64, true, 8));
 }
 
 static void test_wrap_fuzz_evicting(void)
 {
-    ASSERT_TRUE(run_config(5, 8, 5, 8));
+    ASSERT_TRUE(run_config(5, 8, 5, true, 8));
 }
 
 static void test_wrap_fuzz_no_scrollback(void)
 {
-    ASSERT_TRUE(run_config(4, 6, 0, 8));
+    ASSERT_TRUE(run_config(4, 6, 0, true, 8));
+}
+
+static void test_wrap_fuzz_clamp(void)
+{
+    ASSERT_TRUE(run_config(5, 6, 16, false, 8));
 }
 
 int main(int argc, char *argv[])
@@ -1557,7 +1612,8 @@ int main(int argc, char *argv[])
         if (t)
             trace_from = atoi(t);
     }
-    /* COFFER_FUZZ_ONLY=small|narrow|wide|evict|none narrows the run. */
+    /* COFFER_FUZZ_ONLY=small|narrow|wide|evict|none|clamp narrows the
+     * run. */
     const char *only = getenv("COFFER_FUZZ_ONLY");
     printf("Running wrapped-line differential fuzz:\n");
 
@@ -1571,6 +1627,8 @@ int main(int argc, char *argv[])
         RUN_TEST(test_wrap_fuzz_evicting);
     if (!only || strcmp(only, "none") == 0)
         RUN_TEST(test_wrap_fuzz_no_scrollback);
+    if (!only || strcmp(only, "clamp") == 0)
+        RUN_TEST(test_wrap_fuzz_clamp);
 
     TEST_SUMMARY();
 }
