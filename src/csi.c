@@ -689,11 +689,16 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
         break;
     }
 
-    case 's': /* CSI s — Save Cursor (ANSI.SYS form). Only the bare
-               * variant; `CSI ? s` is XTSAVE for DEC private modes
-               * and `CSI < s` / `CSI > s` are vendor extensions we
-               * do not implement. */
-        if (p->intermediate_count == 0)
+    case 's': /* `CSI s` — Save Cursor (ANSI.SYS), but only while DECLRMM
+               * (`?69`) is off: with left/right margins enabled the same
+               * final byte is DECSLRM (`CSI Pl ; Pr s`), and a
+               * parameterized form is always DECSLRM. Margins are not
+               * implemented, so a DECSLRM does nothing. It must not fall
+               * back to saving the cursor — a later `CSI u` would restore
+               * the wrong position, and the caller's real save would be
+               * gone. */
+        if (p->intermediate_count == 0 && p->param_count == 0 &&
+            !vt->modes[CFR_MODE_LEFT_RIGHT_MARGINS])
             cfr_cursor_assign(vt, cfr_active_saved_cursor(vt), &vt->cursor);
         break;
     case 'u':

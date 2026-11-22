@@ -4,6 +4,7 @@
  * Covers:
  * - SGR 2 (dim) and SGR 8 (invisible): attr bits set/cleared
  * - DECSET ?5 (DECSCNM), ?1034 (meta), ?69 (margins): mode tracking
+ * - DECSLRM vs. `CSI s` save cursor: DECSLRM is not a save-cursor alias
  * - CSI i (media copy), ESC l (meml), ESC m (memu): noop + log-once
  */
 
@@ -199,6 +200,52 @@ static void test_lr_margin_mode_reset(void)
     cfr_free(vt);
 }
 
+/* ---- DECSLRM (CSI Pl ; Pr s) is not a save-cursor alias ---- */
+
+/* DECSLRM shares its final byte with the ANSI.SYS save-cursor form. A
+ * parameterized `CSI ... s` is always DECSLRM: margins are not
+ * implemented, so it must do nothing — in particular it must not
+ * overwrite the saved cursor that a later `CSI u` restores. */
+static void test_declrmm_parameterized_not_save(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[3;3H");  /* cursor (2,2) */
+    feed(vt, "\x1b[1;10s"); /* DECSLRM, ignored */
+    feed(vt, "\x1b[5;5H");  /* cursor (4,4) */
+    feed(vt, "\x1b[0s");    /* also parameterized: not a save */
+    feed(vt, "\x1b[u");     /* restores the initial (0,0) */
+    CfrCursor cur = cfr_get_cursor(vt);
+    ASSERT_EQ(cur.row, 0);
+    ASSERT_EQ(cur.col, 0);
+    cfr_free(vt);
+}
+
+/* The bare form still saves while DECLRMM is off. */
+static void test_save_cursor_bare_still_saves(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[3;4H\x1b[s");
+    feed(vt, "\x1b[1;1H\x1b[u");
+    CfrCursor cur = cfr_get_cursor(vt);
+    ASSERT_EQ(cur.row, 2);
+    ASSERT_EQ(cur.col, 3);
+    cfr_free(vt);
+}
+
+/* With DECLRMM set, `CSI s` is DECSLRM with default margins; it is not
+ * a save-cursor either. */
+static void test_declrmm_on_bare_s_not_save(void)
+{
+    CfrTerm *vt = make_term();
+    feed(vt, "\x1b[?69h");
+    feed(vt, "\x1b[3;4H\x1b[s");
+    feed(vt, "\x1b[1;1H\x1b[u");
+    CfrCursor cur = cfr_get_cursor(vt);
+    ASSERT_EQ(cur.row, 0);
+    ASSERT_EQ(cur.col, 0);
+    cfr_free(vt);
+}
+
 /* ---- CSI i (media copy) — noop + log-once ---- */
 
 static void test_media_copy_noop_log(void)
@@ -268,6 +315,9 @@ int main(int argc, char *argv[])
     RUN_TEST(test_meta_mode_reset);
     RUN_TEST(test_lr_margin_mode_set);
     RUN_TEST(test_lr_margin_mode_reset);
+    RUN_TEST(test_declrmm_parameterized_not_save);
+    RUN_TEST(test_save_cursor_bare_still_saves);
+    RUN_TEST(test_declrmm_on_bare_s_not_save);
     RUN_TEST(test_media_copy_noop_log);
     RUN_TEST(test_media_copy_no_callback);
     RUN_TEST(test_meml_noop_log);

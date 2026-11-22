@@ -109,11 +109,10 @@ it; DECRQM is the honest path — it reports `?69` as permanently reset
 be relied on.
 
 `CSI Pl ; Pr s` (DECSLRM) shares its final byte with `CSI s` (save
-cursor). `case 's'` checks only that there is no intermediate and
-therefore ignores the parameters, so a DECSLRM silently saves the
-cursor — and keeps doing so when `?69` is reset, where xterm ignores
-the sequence. At minimum the parameterized form must stop being a
-save-cursor alias before margins are implemented.
+cursor). The save form is now honoured only bare and with DECLRMM off;
+a DECSLRM — parameterized, or bare while `?69` is on — is recognized
+and ignored instead of silently overwriting the saved cursor that a
+later `CSI u` would restore.
 
 Implementing margins means bounding print/wrap and cursor motion by the
 left/right margins, deciding which editing operations (ICH/DCH/ECH at
