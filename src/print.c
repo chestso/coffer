@@ -672,9 +672,16 @@ size_t cfr_print_ascii_run(CfrTerm *vt, const uint8_t *bytes, size_t len)
             if (autowrap) {
                 vt->cursor.row = row;
                 vt->cursor.col = col;
-                cfr_wrap_commit(vt);
+                bool committed = cfr_wrap_commit(vt);
                 row = vt->cursor.row;
                 col = vt->cursor.col;
+                /* The cursor can be on the last row but below the
+                 * scroll region's bottom: there is no wrap and the
+                 * print overwrites the margin. commit_cluster() clamps
+                 * after a failed commit; the run must too, or the write
+                 * lands one cell past the row. */
+                if (!committed && col >= cols)
+                    col = cols - 1;
             } else {
                 col = cols - 1;
             }
@@ -932,6 +939,13 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
     if (!vt->grid)
         return;
     int row = vt->cursor.row;
+    /* ED 0/1 are cursor-relative. A DECRC register saved before a shrink
+     * can restore a row outside the grid; the row loops below would then
+     * index out of bounds. Treat those modes as no-ops, as
+     * cfr_erase_in_line already does. ED 2/3 do not depend on the
+     * cursor. */
+    if ((mode == 0 || mode == 1) && (row < 0 || row >= vt->rows))
+        return;
     switch (mode) {
     case 0:
         cfr_erase_in_line(vt, 0);

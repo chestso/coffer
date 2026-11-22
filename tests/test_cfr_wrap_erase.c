@@ -247,6 +247,54 @@ static void test_decsc_roundtrips_phantom(void)
     cfr_free(vt);
 }
 
+/* A print at the phantom on the last row but *below* the scroll region's
+ * bottom has no wrap: the print overwrites the margin cell. The ASCII run
+ * fast path used to skip the clamp after a failed cfr_wrap_commit() and
+ * write one cell past the row (a heap overflow). It must land on the
+ * margin, exactly as commit_cluster() does. */
+static void test_ascii_run_below_scroll_region_clamps(void)
+{
+    CfrTerm *vt = make_term(3, 4);
+    feed(vt, "\x1b[1;2r"); /* region rows 0..1; row 2 is outside it */
+    feed(vt, "\x1b[3;3H"); /* row index 2, col index 2 */
+    feed(vt, "ab");        /* fills the row; cursor is the phantom */
+    ASSERT_TRUE(PENDING_WRAP(vt));
+    feed(vt, "c"); /* no wrap possible; overwrite the margin */
+    ASSERT_EQ(cfr_get_cell(vt, 2, 3)->cp, (uint32_t)'c');
+    char buf[16];
+    cfr_row_text(vt, 2, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "ac");
+    cfr_free(vt);
+}
+
+/* DECRC restores a saved cursor without clamping, so a register saved
+ * before a shrink can put the cursor row outside the grid. ED 0/1 must
+ * treat that as a no-op instead of clearing rows past the end. */
+static void test_ed_with_stale_cursor_row_is_noop(void)
+{
+    CfrTerm *vt = make_term(4, 6);
+    feed(vt, "top\r\nabc");
+    feed(vt, "\x1b[4;2H\x1b"
+             "7"); /* cursor row 3, saved */
+    cfr_resize(vt, 2, 6);
+    feed(vt, "\x1b"
+             "8"); /* restore row 3: outside the 2-row grid */
+    feed(vt, "\x1b[1J");
+
+    /* The visible rows are untouched (ED1 was a no-op) and the cursor
+     * still reports the restored position. A print then clamps it. */
+    char buf[16];
+    cfr_row_text(vt, 0, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "top");
+    cfr_row_text(vt, 1, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "abc");
+    ASSERT_EQ(cfr_get_cursor(vt).row, 3);
+    feed(vt, "Z");
+    ASSERT_EQ(cfr_get_cursor(vt).row, 1);
+    ASSERT_EQ(cfr_get_cell(vt, 1, 1)->cp, (uint32_t)'Z');
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -266,5 +314,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_ich_keeps_wrap_dch_to_margin_clears);
     RUN_TEST(test_dch_then_ich_does_not_resurrect_wrap);
     RUN_TEST(test_decsc_roundtrips_phantom);
+    RUN_TEST(test_ascii_run_below_scroll_region_clamps);
+    RUN_TEST(test_ed_with_stale_cursor_row_is_noop);
     TEST_SUMMARY();
 }
