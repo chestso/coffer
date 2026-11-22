@@ -83,6 +83,8 @@ CfrTerm *cfr_new_with_allocator(const CfrConfig *cfg, const CfrAllocator *alloc)
     vt->cols = cfg->cols;
     vt->cell_w_px = cfg->cell_w_px;
     vt->cell_h_px = cfg->cell_h_px;
+    vt->last_print_row = -1;
+    vt->last_print_col = -1;
     vt->scroll_top = 0;
     vt->scroll_bottom = cfg->rows - 1;
     vt->sb_capacity = cfg->scrollback >= 0 ? cfg->scrollback : CFR_DEFAULT_SCROLLBACK;
@@ -173,6 +175,10 @@ void cfr_resize(CfrTerm *vt, int rows, int cols)
         return;
     if (rows == vt->rows && cols == vt->cols)
         return;
+    /* The resize rebuilds or clamps the active grid; the last printed
+     * cell no longer reliably names the same content. */
+    vt->last_print_row = -1;
+    vt->last_print_col = -1;
     cfr_selection_clear(vt);
     /* Reflow rebuilds the grid with no line identity, so anchored sixel
      * images can't be followed across a rewrap — drop them on resize.

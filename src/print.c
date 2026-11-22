@@ -122,6 +122,11 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
     if (lines > (bot - top + 1))
         lines = bot - top + 1;
 
+    /* The rows moved: the recorded last print no longer names the same
+     * cells. */
+    vt->last_print_row = -1;
+    vt->last_print_col = -1;
+
     /* Push lines off the top of the scroll region into scrollback iff
      * the region covers the full screen (no DECSTBM region active,
      * not on altscreen). cfr owns the scrollback storage; sb_pushline is
@@ -187,6 +192,11 @@ void cfr_scroll_down(CfrTerm *vt, int lines)
         return;
     if (lines > (bot - top + 1))
         lines = bot - top + 1;
+
+    /* The rows moved: the recorded last print no longer names the same
+     * cells. */
+    vt->last_print_row = -1;
+    vt->last_print_col = -1;
 
     int move_count = bot - top - lines + 1;
     if (move_count > 0) {
@@ -361,15 +371,18 @@ static void attach_stray_joiners(CfrTerm *vt, const uint32_t *cps, uint32_t len)
     if (row < 0 || row >= vt->rows)
         return;
 
-    /* The cell before the cursor; the phantom means the row's margin. */
-    int col = vt->cursor.col;
-    int lead = (col >= vt->cols) ? vt->cols - 1 : col - 1;
-    if (lead < 0)
-        return; /* start of row: the previous content is another row */
+    /* Re-attach to the lead cell of the last print in this row — not to
+     * the cell before the cursor. The two differ when DECAWM is off and
+     * a print on the margin parks the cursor there (the base is the
+     * cursor's own cell), and when a cursor move came between the base
+     * and the joiner. A print on another row is a cross-row drop
+     * (spec §3.4). */
+    if (vt->last_print_row != row || vt->last_print_col < 0 ||
+        vt->last_print_col >= vt->cols)
+        return;
+    int lead = vt->last_print_col;
 
     CfrCell *cells = vt->grid->cells;
-    while (lead > 0 && cells[(size_t)row * (size_t)vt->cols + (size_t)lead].width == 0)
-        lead--; /* step off a continuation onto its lead cell */
     CfrCell *lead_cell = &cells[(size_t)row * (size_t)vt->cols + (size_t)lead];
     if (lead_cell->width == 0 || lead_cell->cp == 0u || lead_cell->cp == 0x20u)
         return; /* never printed, or an erase blank — nothing to attach to */
@@ -483,6 +496,10 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
     cell->width = (uint8_t)width;
     cell->flags = 0;
     cell->hyperlink_id = cfr_link_page_id(vt, vt->grid, vt->cursor.link);
+
+    /* A stray modifier in a later write re-attaches here (§3.4). */
+    vt->last_print_row = vt->cursor.row;
+    vt->last_print_col = vt->cursor.col;
 
     /* Track last printed codepoint for REP (CSI Ps b). */
     vt->last_char = cps[0];
@@ -660,6 +677,7 @@ size_t cfr_print_ascii_run(CfrTerm *vt, const uint8_t *bytes, size_t len)
 
     int row = vt->cursor.row;
     int col = vt->cursor.col;
+    int last_row = -1, last_col = -1;
     int stamped_row = -1;
     int dmg_r0 = -1, dmg_r1 = 0, dmg_cmin = 0, dmg_cmax = 0;
     size_t k = 0;
@@ -707,6 +725,8 @@ size_t cfr_print_ascii_run(CfrTerm *vt, const uint8_t *bytes, size_t len)
         cell->width = 1;
         cell->flags = 0;
         cell->hyperlink_id = link_id;
+        last_row = row;
+        last_col = col;
         if (old_width == 2 && col + 1 < cols) {
             /* A narrow print over the lead of a wide cluster strands
              * its continuation: blank it, as commit_cluster() does. */
@@ -737,6 +757,10 @@ size_t cfr_print_ascii_run(CfrTerm *vt, const uint8_t *bytes, size_t len)
         return 0;
 
     vt->last_char = bytes[k - 1];
+    if (last_row >= 0) {
+        vt->last_print_row = last_row;
+        vt->last_print_col = last_col;
+    }
     vt->cursor.row = row;
     vt->cursor.col = col;
     /* The cells were committed as they were written, so no cluster is
@@ -801,6 +825,10 @@ void cfr_insert_chars(CfrTerm *vt, int count)
     if (count > vt->cols - col)
         count = vt->cols - col;
 
+    /* ICH shifts the row's cells; the recorded last print moved. */
+    vt->last_print_row = -1;
+    vt->last_print_col = -1;
+
     CfrCell *line = &vt->grid->cells[(size_t)row * (size_t)vt->cols];
     /* ICH shifts the existing cells (including whatever sits at the
      * margin) to the right rather than removing them, so the row's wrap
@@ -837,6 +865,10 @@ void cfr_delete_chars(CfrTerm *vt, int count)
         return;
     if (count > vt->cols - col)
         count = vt->cols - col;
+
+    /* DCH shifts the row's cells; the recorded last print moved. */
+    vt->last_print_row = -1;
+    vt->last_print_col = -1;
 
     CfrCell *line = &vt->grid->cells[(size_t)row * (size_t)vt->cols];
     int move = vt->cols - col - count;
@@ -884,6 +916,12 @@ void cfr_insert_lines(CfrTerm *vt, int count)
     int region_height = vt->scroll_bottom - row + 1;
     if (count > region_height)
         count = region_height;
+
+    /* The rows moved: the recorded last print no longer names the same
+     * cells. */
+    vt->last_print_row = -1;
+    vt->last_print_col = -1;
+
     int move = region_height - count;
     if (move > 0) {
         memmove(&vt->grid->cells[(size_t)(row + count) * (size_t)vt->cols],
@@ -913,6 +951,12 @@ void cfr_delete_lines(CfrTerm *vt, int count)
     int region_height = vt->scroll_bottom - row + 1;
     if (count > region_height)
         count = region_height;
+
+    /* The rows moved: the recorded last print no longer names the same
+     * cells. */
+    vt->last_print_row = -1;
+    vt->last_print_col = -1;
+
     int move = region_height - count;
     if (move > 0) {
         memmove(&vt->grid->cells[(size_t)row * (size_t)vt->cols],

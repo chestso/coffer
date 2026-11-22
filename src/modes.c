@@ -171,6 +171,10 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
             cfr_cursor_restore_full(vt, &vt->saved_cursor[0]);
     }
 
+    /* The last printed cell belonged to the screen being left. */
+    vt->last_print_row = -1;
+    vt->last_print_col = -1;
+
     cfr_damage_all(vt);
     if (vt->callbacks.set_mode)
         vt->callbacks.set_mode(CFR_MODE_ALTSCREEN, on, vt->callback_user);
@@ -327,6 +331,8 @@ void cfr_reset(CfrTerm *vt)
     vt->logged_once = 0;
     /* Reset last-printed char for REP. */
     vt->last_char = 0;
+    vt->last_print_row = -1;
+    vt->last_print_col = -1;
     /* Fresh logical-line id sequence (not required for correctness —
      * the grid was just zeroed — but keeps ids tidy across sessions). */
     vt->next_lineage = 0;

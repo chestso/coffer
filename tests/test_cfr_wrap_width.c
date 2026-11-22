@@ -495,6 +495,75 @@ static void test_vs16_split_at_margin_wraps(void)
     cfr_free(vt);
 }
 
+static void test_split_selector_attaches_to_margin_base(void)
+{
+    /* DECAWM off. A base printed in the margin parks the cursor on that
+     * cell; an arriving VS16 must widen the margin cell, not the cell
+     * before it. */
+    CfrTerm *vt = make_term(4, 4, false, false);
+    feed(vt, "\x1b[?7l");
+    feed(vt, "abc");
+    feed(vt, "\xE2\x9A\xA0"); /* ⚠ in the margin, cursor parked on it */
+    feed(vt, "\xEF\xB8\x8F"); /* VS16 in the next write */
+    ASSERT_EQ(cfr_get_cell(vt, 0, 2)->cp, (uint32_t)'c');
+    ASSERT_EQ(cfr_get_cell(vt, 0, 2)->width, 1);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 3)->cp, 0x26A0u);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 3)->width, 2);
+    ASSERT_EQ(vt->cursor.col, 3);
+    cfr_free(vt);
+
+    /* A base one cell before the margin parks the cursor on the margin
+     * too, but there the last print really is the cell before it. */
+    vt = make_term(4, 4, false, false);
+    feed(vt, "\x1b[?7l");
+    feed(vt, "ab");
+    feed(vt, "\xE2\x9A\xA0"); /* ⚠ at col 2; cursor parks on the margin */
+    feed(vt, "\xEF\xB8\x8F");
+    ASSERT_EQ(cfr_get_cell(vt, 0, 1)->cp, (uint32_t)'b');
+    ASSERT_EQ(cfr_get_cell(vt, 0, 1)->width, 1);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 2)->cp, 0x26A0u);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 2)->width, 2);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 3)->width, 0); /* continuation */
+    cfr_free(vt);
+}
+
+static void test_stray_joiner_uses_last_print_cell(void)
+{
+    /* §3.4 re-attaches to the last printed cell, not to whatever is
+     * before the cursor: a cursor move between the base and the joiner
+     * does not change the target. */
+    CfrTerm *vt = make_term(4, 8, false, false);
+    feed(vt, "ab");
+    feed(vt, "\x1b[1;5H"); /* cursor to col 4 */
+    feed(vt, "\xEF\xB8\x8F");
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->width, 1);
+    ASSERT_EQ(cfr_get_cell(vt, 0, 1)->cp, (uint32_t)'b');
+    ASSERT_EQ(cfr_get_cell(vt, 0, 1)->width, 2);
+    ASSERT_EQ(vt->cursor.col, 3); /* the re-commit advances from col 1 */
+    cfr_free(vt);
+
+    /* Cross-row re-attachment is a drop: after LF the last print is on
+     * the row above. */
+    vt = make_term(4, 8, false, false);
+    feed(vt, "a");
+    feed(vt, "\n");
+    feed(vt, "\xEF\xB8\x8F");
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->width, 1);
+    ASSERT_EQ(cfr_get_cell(vt, 1, 0)->cp, 0u);
+    cfr_free(vt);
+
+    /* A scroll moves the rows even though the cursor stays put, so the
+     * recorded cell is no longer the base: the joiner is dropped. */
+    vt = make_term(4, 8, false, false);
+    feed(vt, "\x1b[2;1Hb"); /* 'b' on row 1 */
+    feed(vt, "\x1b[1;1Ha"); /* 'a' on row 0: the last print */
+    feed(vt, "\x1b[S");     /* SU 1: 'b' scrolls onto row 0 */
+    feed(vt, "\xEF\xB8\x8F");
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->cp, (uint32_t)'b');
+    ASSERT_EQ(cfr_get_cell(vt, 0, 0)->width, 1);
+    cfr_free(vt);
+}
+
 static void test_combining_mark_split_across_writes(void)
 {
     /* Same split case with a plain combining mark. */
@@ -634,6 +703,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_vs16_split_across_writes_attaches);
     RUN_TEST(test_vs15_split_cancels_vs16);
     RUN_TEST(test_vs16_split_at_margin_wraps);
+    RUN_TEST(test_split_selector_attaches_to_margin_base);
+    RUN_TEST(test_stray_joiner_uses_last_print_cell);
     RUN_TEST(test_combining_mark_split_across_writes);
     RUN_TEST(test_stray_selector_dropped);
     RUN_TEST(test_utf8_display_width_presentation);

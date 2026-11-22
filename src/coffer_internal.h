@@ -456,6 +456,13 @@ struct CfrTerm
     /* Last printed codepoint for REP (CSI Ps b). 0 = nothing printed yet. */
     uint32_t last_char;
 
+    /* Lead cell of the last print, for stray-joiner re-attachment across
+     * write boundaries (print.c, spec §3.4). Kept as row/column rather
+     * than a pointer: cfr_grid_gc() may replace the page between input
+     * bytes. -1, -1 = no print in the current grid. */
+    int last_print_row;
+    int last_print_col;
+
     /* Monotonic logical-line id source (lines.c). Wraps at 2^32, skipping
      * 0 — the blank/unwritten sentinel. */
     uint32_t next_lineage;
