@@ -2,7 +2,9 @@
 
 `data/conpty/` holds the pinned
 [`Microsoft.Windows.Console.ConPTY`](https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY)
-binaries used by the `coffer` CLI on Windows.
+binaries used by the `coffer` CLI on Windows. This directory is the canonical
+copy: portty carries byte-identical `conpty.lock`, `fetch_conpty.sh`,
+`update_conpty.py` and `verify_conpty_bundle.py` files.
 
 ## Layout
 
@@ -37,7 +39,8 @@ so the loader checks for it explicitly.
 `scripts/update_conpty.py` queries the NuGet flat-container index,
 selects the latest stable version, updates `conpty.lock`, verifies the
 package hash and (on Windows) the Authenticode signature, then fetches
-all architectures. Run it from a clean tree and commit the lock change.
+all architectures. Run it from a clean tree and commit the lock change, then
+copy the lock and the three scripts to portty (they are kept identical).
 
 ## Verifying
 

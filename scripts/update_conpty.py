@@ -64,8 +64,8 @@ def write_lock(version, url, sha256):
     text = f"""# Pinned Microsoft.Windows.Console.ConPTY bundle.
 #
 # This file is the single source of truth for the ConPTY version used by
-# coffer (and, later, portty). Update it with scripts/update_conpty.py;
-# do not edit the version by hand without updating the hash.
+# coffer and portty. Update it with scripts/update_conpty.py; do not edit
+# the version by hand without updating the hash.
 CONPTY_PACKAGE={PACKAGE}
 CONPTY_VERSION={version}
 CONPTY_NUPKG_SHA256={sha256}

@@ -5,13 +5,6 @@ on. Order is roughly priority, not strict dependency.
 
 ## Investigate
 
-- **Script engine leftovers** (see `docs/script-engine-design.md`):
-  portty's `-S` process exit code does not reflect a failed script run
-  (the engine reports CFR_SCRIPT_FAILED and the app quits, but exit 0);
-  and in portty, `await-exit` races the app's own PTY-close quit path
-  (the child exiting quits the app before the script observes it).
-  Neither affects the `coffer` CLI, where both work end to end.
-
 - **Wrapped-line behavioral spec + differential fuzz.** The spec is
   `docs/wrapped-lines-spec.md` (policy knobs, edit/severance table, text
   extraction) and the oracle is `tests/test_cfr_wrap_fuzz.c` (random op
@@ -166,9 +159,11 @@ into `libcofferpty.a`.
   architectures, and CI covers Windows arm64 natively in addition to x64.
 - Portty now bundles 1.25.261109001, prefers the `Conpty*` exports and uses
   flags 0 (the old `0x8` passthrough constant is
-  `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` in 1.25). Remaining portty work:
-  adopt coffer's `conpty.lock` + fetch/update scripts instead of tracking
-  the binaries directly, and expose the package version in diagnostics.
+  `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` in 1.25). It has adopted this
+  directory's lock and fetch/update/verify scripts (portty `10d9555`) and
+  no longer tracks the binaries; its diagnostics report the pinned package
+  version. Portty's `-S` exit status and `await-exit` races are fixed in
+  portty `1dcec02`.
 
 ### Kitty graphics protocol — remaining gaps
 
