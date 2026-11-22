@@ -7,7 +7,8 @@ Emits a data-only header — sorted, non-overlapping {lo, hi} ranges and a
 
     UAX #11 East Asian Width     classes W/F (wide), class A (ambiguous)
     UAX #29 Grapheme Cluster     GCB Extend, ZWJ, SpacingMark, Prepend
-    UTS #51 emoji-data           Extended_Pictographic
+    UTS #51 emoji-data           Emoji, Emoji_Modifier_Base,
+                                 Extended_Pictographic
     UTS #51 variation sequences  text-presentation (VS15) bases
     DerivedCoreProperties        Default_Ignorable_Code_Point
 
@@ -238,6 +239,16 @@ def main(argv: list[str]) -> int:
             "EXT_PICT",
             "Extended_Pictographic — GB11's ZWJ-suppression test",
             coalesce(emo.get("Extended_Pictographic", [])),
+        ),
+        (
+            "EMOJI",
+            "UTS #51 Emoji property — kitty's VS15/VS16 base test",
+            coalesce(emo.get("Emoji", [])),
+        ),
+        (
+            "EMOJI_MOD_BASE",
+            "UTS #51 Emoji_Modifier_Base — kitty's two-cell person/hand bases",
+            coalesce(emo.get("Emoji_Modifier_Base", [])),
         ),
         (
             "TEXT_PRES",
