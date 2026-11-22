@@ -124,6 +124,16 @@ compositing. See the portty README for renderer-side details.
 - **Window-size queries (XTWINOPS)** — `CSI 14 t`, `CSI 16 t`, and
   `CSI 18 t` report the text area in pixels, cell size in pixels, and text
   area in character cells respectively, matching xterm responses.
+- **Device and mode queries** — `CSI c`, `CSI > c` and `CSI = c` answer
+  primary, secondary and tertiary DA (the last with xterm's
+  `DCS ! | 00000000 ST` unit-ID reply, not a primary one). `CSI Ps $ p` /
+  `CSI ? Ps $ p` (DECRQM) report a mode's state as `CSI Ps ; Pm $ y`:
+  1 set, 2 reset, 3 permanently set, 4 permanently reset, 0 unrecognized.
+  Modes the engine implements report their live state; KAM/SRM/LNM are
+  permanently reset, unconditional grapheme clustering (`?2027`) and
+  sixel private color registers (`?1070`) permanently set, and the
+  accepted-but-unenforced `?69`/`?1034` permanently reset so a probe does
+  not rely on them.
 - **Windows ConPTY note:** The system `conhost.exe` VtEngine recognises
   CSI, OSC, and DCS but _not_ APC (`ESC _`), so APC sequences are silently
   dropped and sixel/DCS may be re-serialised (Windows Terminal issue #8389).

@@ -1525,6 +1525,121 @@ static void test_da1(void)
     cfr_free(vt);
 }
 
+/* Feed one query and compare everything the terminal emitted with
+ * `want`. */
+static void expect_reply(CfrTerm *vt, const char *seq, const char *want)
+{
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    feed(vt, seq);
+    ASSERT_STR_EQ(g_output_buf, want);
+}
+
+static void test_da2_secondary(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    expect_reply(vt, "\x1b[>c", "\x1b[>1;0;0c");
+    cfr_free(vt);
+}
+
+/* DA3 (`CSI = c`) asks for a unit-ID DCS, not a primary DA. Answering it
+ * with the DA1 reply tells a client the wrong thing about which query it
+ * sent. */
+static void test_da3_tertiary(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    expect_reply(vt, "\x1b[=c", "\x1bP!|00000000\x1b\\");
+    cfr_free(vt);
+}
+
+/* An intermediate that names no DA form makes the sequence unknown; it
+ * must not be answered as DA1. */
+static void test_da_unknown_intermediate_ignored(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    expect_reply(vt, "\x1b[!c", "");
+    cfr_free(vt);
+}
+
+/* DECRQM — `CSI Ps $ p` asks about an ANSI mode, `CSI ? Ps $ p` about a
+ * DEC private one; the reply is `CSI Ps ; Pm $ y`, with Pm 0
+ * unrecognized, 1 set, 2 reset, 3 permanently set, 4 permanently
+ * reset. */
+static void test_decrqm_ansi_modes(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    expect_reply(vt, "\x1b[4$p", "\x1b[4;2$y"); /* IRM, reset */
+    feed(vt, "\x1b[4h");
+    expect_reply(vt, "\x1b[4$p", "\x1b[4;1$y");
+    feed(vt, "\x1b[4l");
+    expect_reply(vt, "\x1b[4$p", "\x1b[4;2$y");
+    /* Fixed dispositions: no keyboard lock, no local echo, and LF never
+     * implies CR. */
+    expect_reply(vt, "\x1b[2$p", "\x1b[2;4$y");   /* KAM */
+    expect_reply(vt, "\x1b[12$p", "\x1b[12;4$y"); /* SRM */
+    expect_reply(vt, "\x1b[20$p", "\x1b[20;4$y"); /* LNM */
+    /* An unknown ANSI mode, and a bare query (Ps = 0). */
+    expect_reply(vt, "\x1b[999$p", "\x1b[999;0$y");
+    expect_reply(vt, "\x1b[$p", "\x1b[0;0$y");
+    cfr_free(vt);
+}
+
+static void test_decrqm_dec_modes(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    expect_reply(vt, "\x1b[?7$p", "\x1b[?7;1$y"); /* DECAWM on by default */
+    feed(vt, "\x1b[?7l");
+    expect_reply(vt, "\x1b[?7$p", "\x1b[?7;2$y");
+    expect_reply(vt, "\x1b[?25$p", "\x1b[?25;1$y");
+    feed(vt, "\x1b[?25l");
+    expect_reply(vt, "\x1b[?25$p", "\x1b[?25;2$y");
+    expect_reply(vt, "\x1b[?1$p", "\x1b[?1;2$y");
+    feed(vt, "\x1b[?1h\x1b[?6h");
+    expect_reply(vt, "\x1b[?1$p", "\x1b[?1;1$y");
+    expect_reply(vt, "\x1b[?6$p", "\x1b[?6;1$y");
+    expect_reply(vt, "\x1b[?1006$p", "\x1b[?1006;2$y");
+    feed(vt, "\x1b[?1006h\x1b[?2004h\x1b[?2026h");
+    expect_reply(vt, "\x1b[?1006$p", "\x1b[?1006;1$y");
+    expect_reply(vt, "\x1b[?2004$p", "\x1b[?2004;1$y");
+    expect_reply(vt, "\x1b[?2026$p", "\x1b[?2026;1$y");
+    feed(vt, "\x1b[?2026l");
+    cfr_free(vt);
+}
+
+/* Modes whose behaviour is fixed, and modes coffer accepts without
+ * enforcing. ?2027 (grapheme clustering) and ?1070 (private sixel color
+ * registers) are permanently set because the behaviour is unconditional;
+ * ?69 (DECSLRM) and ?1034 (meta) are permanently reset because setting
+ * them changes nothing. */
+static void test_decrqm_dec_fixed_modes(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    expect_reply(vt, "\x1b[?2027$p", "\x1b[?2027;3$y");
+    expect_reply(vt, "\x1b[?1070$p", "\x1b[?1070;3$y");
+    expect_reply(vt, "\x1b[?69$p", "\x1b[?69;4$y");
+    feed(vt, "\x1b[?69h");
+    expect_reply(vt, "\x1b[?69$p", "\x1b[?69;4$y");
+    expect_reply(vt, "\x1b[?1034$p", "\x1b[?1034;4$y");
+    expect_reply(vt, "\x1b[?9999$p", "\x1b[?9999;0$y");
+    cfr_free(vt);
+}
+
+/* All three alt-screen entry points share the one screen state. */
+static void test_decrqm_altscreen(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    expect_reply(vt, "\x1b[?1049$p", "\x1b[?1049;2$y");
+    feed(vt, "\x1b[?1049h");
+    expect_reply(vt, "\x1b[?1049$p", "\x1b[?1049;1$y");
+    feed(vt, "\x1b[?1049l");
+    expect_reply(vt, "\x1b[?1049$p", "\x1b[?1049;2$y");
+    feed(vt, "\x1b[?47h");
+    expect_reply(vt, "\x1b[?47$p", "\x1b[?47;1$y");
+    feed(vt, "\x1b[?47l");
+    expect_reply(vt, "\x1b[?47$p", "\x1b[?47;2$y");
+    cfr_free(vt);
+}
+
 /* XTWINOPS pixel reports are LOGICAL pixels, not the physical cell size.
  *
  * Every pixel dimension a client hands the engine (a sixel raster, kitty
@@ -2434,6 +2549,13 @@ int main(int argc, char *argv[])
     RUN_TEST(test_cf_byte_replay);
     RUN_TEST(test_brick_inline_setup);
     RUN_TEST(test_da1);
+    RUN_TEST(test_da2_secondary);
+    RUN_TEST(test_da3_tertiary);
+    RUN_TEST(test_da_unknown_intermediate_ignored);
+    RUN_TEST(test_decrqm_ansi_modes);
+    RUN_TEST(test_decrqm_dec_modes);
+    RUN_TEST(test_decrqm_dec_fixed_modes);
+    RUN_TEST(test_decrqm_altscreen);
     RUN_TEST(test_xtwinops_logical_pixels);
     RUN_TEST(test_cfr_px_logical);
     RUN_TEST(test_altscreen_save_restore);

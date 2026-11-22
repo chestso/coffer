@@ -429,6 +429,93 @@ static void decscusr(CfrTerm *vt, int ps)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Mode reporting (DECRQM)                                             */
+/* ------------------------------------------------------------------ */
+
+/* ECMA-48 states for the `Pm` parameter of the DECRQM reply:
+ * 0 not recognized, 1 set, 2 reset, 3 permanently set, 4 permanently
+ * reset. A `3`/`4` mode is one whose behaviour cannot be changed by
+ * DECSET/DECRST. coffer has no keyboard-lock or local-echo/monitor
+ * behaviour (KAM, SRM) and never lets LF imply CR (LNM); it always
+ * clusters graphemes (?2027) and always gives each sixel a fresh palette
+ * (?1070); and `?69`/`?1034` are only stored, so a probe must learn that
+ * DECSLRM and meta mode cannot be relied on. */
+static int ansi_mode_report(const CfrTerm *vt, uint32_t m)
+{
+    switch (m) {
+    case 2:  /* KAM — keyboard action mode */
+    case 12: /* SRM — send/receive mode */
+    case 20: /* LNM — line feed/new line mode */
+        return 4;
+    case 4: /* IRM — insert/replace mode */
+        return vt->insert_mode ? 1 : 2;
+    default:
+        return 0;
+    }
+}
+
+static int dec_mode_report(const CfrTerm *vt, uint32_t m)
+{
+    switch (m) {
+    case 1: /* DECCKM */
+        return vt->decckm ? 1 : 2;
+    case 5: /* DECSCNM */
+        return vt->modes[CFR_MODE_REVERSE_VIDEO] ? 1 : 2;
+    case 6: /* DECOM */
+        return vt->decom ? 1 : 2;
+    case 7: /* DECAWM */
+        return vt->modes[CFR_MODE_DECAWM] ? 1 : 2;
+    case 12: /* AT&T 610 cursor blink */
+        return vt->modes[CFR_MODE_CURSOR_BLINK] ? 1 : 2;
+    case 25: /* DECTCEM */
+        return vt->modes[CFR_MODE_CURSOR_VISIBLE] ? 1 : 2;
+    case 69: /* DECLRMM — accepted, margins not enforced */
+        return 4;
+    case 80: /* DECSDM */
+        return vt->modes[CFR_MODE_SIXEL_SCROLLING] ? 1 : 2;
+    case 1000: /* mouse button events */
+        return vt->modes[CFR_MODE_MOUSE_BTN_EVENT] ? 1 : 2;
+    case 1002: /* mouse drag events */
+        return vt->modes[CFR_MODE_MOUSE_DRAG] ? 1 : 2;
+    case 1003: /* mouse any-event */
+        return vt->modes[CFR_MODE_MOUSE_ANY_EVENT] ? 1 : 2;
+    case 1006: /* SGR mouse encoding */
+        return vt->modes[CFR_MODE_MOUSE_SGR] ? 1 : 2;
+    case 1034: /* meta key mode — accepted, not enforced */
+        return 4;
+    case 1070: /* sixel private color registers — always on */
+        return 3;
+    case 2004: /* bracketed paste */
+        return vt->modes[CFR_MODE_BRACKETED_PASTE] ? 1 : 2;
+    case 2026: /* synchronized output */
+        return vt->modes[CFR_MODE_SYNC_OUTPUT] ? 1 : 2;
+    case 2027: /* grapheme clustering — always on */
+        return 3;
+    case 8452: /* cursor to the right of a sixel */
+        return vt->modes[CFR_MODE_SIXEL_CURSOR_RIGHT] ? 1 : 2;
+    /* The three alt-screen entry points share one screen state. */
+    case 47:
+    case 1047:
+    case 1049:
+        return vt->in_altscreen ? 1 : 2;
+    default:
+        return 0;
+    }
+}
+
+/* Reply to a DECRQM query: `CSI Ps ; Pm $ y`, with the `?` private
+ * marker echoed for a DEC private mode. */
+static void report_mode(CfrTerm *vt, bool dec, uint32_t ps)
+{
+    int pm = dec ? dec_mode_report(vt, ps) : ansi_mode_report(vt, ps);
+    char buf[40];
+    int n = snprintf(buf, sizeof(buf), "\x1b[%s%u;%d$y", dec ? "?" : "",
+                     (unsigned)ps, pm);
+    if (n > 0)
+        cfr_emit_bytes(vt, (const uint8_t *)buf, (size_t)n);
+}
+
 void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
 {
     cfr_flush_cluster(vt); /* commit any pending cluster before state-changing op */
@@ -703,15 +790,35 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
         break;
     }
 
-    case 'c': /* Primary Device Attributes. */
-        if (!has_intermediate(vt, '>')) {
-            /* VT220, with ANSI colors (22) and sixel graphics (4). The
-             * `4` is what sixel-probing apps (img2sixel, lsix, chafa)
-             * look for before emitting sixel. */
+    case 'p': /* DECRQM — Report Mode. `CSI Ps $ p` asks about an ANSI
+               * mode, `CSI ? Ps $ p` about a DEC private one. Other uses
+               * of this final byte (`CSI ! p` / DECSTR) stay
+               * unimplemented. */
+        if (has_intermediate(vt, '$')) {
+            bool dec = has_intermediate(vt, '?');
+            /* The private form carries two intermediates (`?` then `$`);
+             * anything else is malformed and gets no reply. */
+            if (p->intermediate_count != (dec ? 2 : 1))
+                break;
+            uint32_t ps = (p->param_count > 0) ? p->params[0] : 0;
+            report_mode(vt, dec, ps);
+        }
+        break;
+
+    case 'c': /* Device Attributes. */
+        if (p->intermediate_count == 0) {
+            /* Primary DA: VT220, with ANSI colors (22) and sixel
+             * graphics (4). The `4` is what sixel-probing apps
+             * (img2sixel, lsix, chafa) look for before emitting sixel. */
             cfr_emit_bytes(vt, (const uint8_t *)"\x1b[?62;4;22c", 11);
-        } else {
+        } else if (p->intermediate_count == 1 && has_intermediate(vt, '>')) {
             /* Secondary DA: identify as coffer with version 0. */
             cfr_emit_bytes(vt, (const uint8_t *)"\x1b[>1;0;0c", 9);
+        } else if (p->intermediate_count == 1 && has_intermediate(vt, '=')) {
+            /* Tertiary DA (`CSI = c`): the DCS reply carrying the unit
+             * ID, as xterm answers. It must not fall through to the
+             * primary reply, which would claim to be a DA1 response. */
+            cfr_emit_bytes(vt, (const uint8_t *)"\x1bP!|00000000\x1b\\", 14);
         }
         break;
 
@@ -754,8 +861,7 @@ void cfr_csi_dispatch(CfrTerm *vt, uint8_t final)
         break;
     }
     default:
-        /* TODO: DA3, DECRQM, etc. */
-        break;
+        break; /* unknown or unimplemented final byte */
     }
     (void)p;
 }
