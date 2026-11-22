@@ -22,10 +22,17 @@ on. Order is roughly priority, not strict dependency.
 - **Wrapped-line behavioral spec + differential fuzz.** The spec is
   `docs/wrapped-lines-spec.md` (policy knobs, edit/severance table, text
   extraction) and the oracle is `tests/test_cfr_wrap_fuzz.c` (random op
-  stream vs. a naive row model, checked after every op). What the fuzzer
-  does not model: resize/reflow, altscreen, partial scroll regions, and
-  presentation-selector/ZWJ clusters — those stay covered by the targeted
-  tests. Extend the model when reflow gains one. The accepted
+  stream vs. a naive row model, checked after every op). The model now
+  covers resize/reflow (per-row widths, the scrollback/grid boundary,
+  `CFR_REFLOW_PREFIX_ROWS`), partial scroll regions (DECSTBM), altscreen
+  1049 and raw 47/1047, and selector/ZWJ clusters printed as one write.
+  Still not modeled, and covered by targeted tests: the clamp-only resize
+  path (`reflow = false`, or a resize on the alt screen), DECOM, and
+  stray-joiner re-attachment across writes (`test_cfr_wrap_width`). The
+  model extension found and pinned two engine fixes in
+  `test_cfr_wrap_erase`: the ASCII run fast path wrote one cell past the
+  row after a failed wrap commit, and ED 0/1 indexed rows out of bounds
+  after a DECRC restored a pre-shrink cursor. The accepted
   DL-inside-one-wrapped-line over-join (spec §7) remains: wrong text,
   never wrong structure.
 

@@ -705,6 +705,27 @@ static void test_reflow_joins_scrollback_fragment(void)
     cfr_free(vt);
 }
 
+/* A wrap at a partial region's bottom scrolls only that region, leaves
+ * the rows outside it alone, and does not push to scrollback (the region
+ * is not the full screen). */
+static void test_partial_region_wrap_scrolls_region_only(void)
+{
+    CfrTerm *vt = make_term(4, 6, false);
+    feed(vt, "\x1b[1;2r"); /* region rows 0..1 */
+    feed(vt, "\x1b[1;1HAAAAAA");
+    feed(vt, "\x1b[2;1HBBBBBB");
+    feed(vt, "\x1b[2;6HXY"); /* X overwrites the margin, Y wraps */
+
+    ASSERT_EQ(cfr_get_scrollback_lines(vt), 0);
+    char buf[16];
+    cfr_row_text(vt, 0, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "BBBBBX");
+    cfr_row_text(vt, 1, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "Y");
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    cfr_free(vt);
+}
+
 int main(int argc, char *argv[])
 {
     test_parse_args(argc, argv);
@@ -730,5 +751,6 @@ int main(int argc, char *argv[])
     RUN_TEST(test_resize_announces_nothing);
     RUN_TEST(test_reflow_prefix_is_capped);
     RUN_TEST(test_reflow_without_scrollback);
+    RUN_TEST(test_partial_region_wrap_scrolls_region_only);
     TEST_SUMMARY();
 }

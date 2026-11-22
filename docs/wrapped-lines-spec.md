@@ -259,17 +259,35 @@ a naive model and the engine and compares state after **every** op:
 - the whole-buffer text extraction (`cfr_selection_get_text` over all
   rows).
 
-The model is an array of rows plus two row fields, `wrap` (the margin
-edge) and `line` (lineage). It implements §3–§6 directly, not the engine's
-page/cell/interning machinery; it relies on the §5.6 invariant that the
-edge exists only on the margin. Ops: printable ASCII runs, a wide
-ideograph, CR/LF/BS/HT/RI, CUP/CHA/VPA, SU/SD, IL/DL, ICH/DCH/ECH,
-EL 0–2, ED 0–2, DECAWM and IRM toggles, DECSC/DECRC. Configurations cover
-short and long rows, wide and narrow grids, evicting scrollback, and
-scrollback disabled.
+The model is an array of rows, each with a width, `wrap` (the margin
+edge) and `line` (lineage). Cells own their UTF-8 bytes, so the model can
+distinguish a plain ASCII byte from a selector cluster or a ZWJ sequence
+without reusing the engine's intern tables. It implements §3–§6 directly,
+not the engine's page/cell/interning machinery; it relies on the §5.6
+invariant that the edge exists only on the margin.
+
+Ops: printable ASCII runs, a wide ideograph, and selector/ZWJ clusters
+(VS16, VS15 with and without a text glyph, a combining mark, a ZWJ
+sequence); CR/LF/BS/HT/RI; CUP/CHA/VPA; SU/SD, IL/DL, ICH/DCH/ECH;
+EL 0–2, ED 0–3; DECAWM and IRM toggles; DECSC/DECRC; DECSTBM (including
+partial regions and invalid regions); altscreen 1049 and raw 47/1047;
+and `cfr_resize()` with reflow enabled. The resize op is skipped while
+the alt screen is active: that path clamps in the engine and the model
+does not carry the alt screen's second geometry.
+
+The model's resize replays `cfr_reflow()` phase for phase: collect the
+logical line straddling the top scrollback edge (bounded by
+`CFR_REFLOW_PREFIX_ROWS`), collect the grid, group rows by the join
+predicate, trim blank trailing lines not hosting the cursor, rewrap at
+the new width, and install — the oldest rows to scrollback, the newest in
+the grid. Rows keep the width they were written at, so the text
+extraction bounds every walk by the row's own width. The clamp-only
+resize (`reflow = false`, or a resize on the alt screen) stays covered by
+`test_cfr_lines` and `test_cfr_altscreen`.
 
 Each run starts with ED 2 so the lazily allocated grid exists; the model
-starts from the same erased screen.
+starts from the same erased screen. Scrollback pages written at a
+different width are modeled as per-row widths.
 
 Knobs (environment): `COFFER_FUZZ_ITERS` (default 150),
 `COFFER_FUZZ_SEED` (base seed), `COFFER_FUZZ_ONLY`
@@ -277,11 +295,15 @@ Knobs (environment): `COFFER_FUZZ_ITERS` (default 150),
 exact lineage ids and margin bits — a debugging oracle; ids are an
 implementation detail), `COFFER_FUZZ_TRACE=N` (dump both grids from op N).
 
-Not modeled, covered by targeted tests instead: resize/reflow
-(`test_cfr_lines`, `test_cfr_wrap_width`), altscreen, partial scroll
-regions (DECSTBM), presentation-selector clusters and ZWJ sequences
-(`test_cfr_wrap_width`, `test_cfr_zwj`), and scrollback pages written at
-a different width.
+Not modeled, covered by targeted tests instead: the clamp-only resize
+path (`reflow = false`, resize on the alt screen), DECOM, and stray-joiner
+re-attachment (§3.4) — the cluster ops print a base and its selectors in
+one write, so `commit_cluster()`'s one-shot path is what the model mirrors;
+`test_cfr_wrap_width` covers the split-write re-attachment path. The
+extension found two engine bugs now pinned by `test_cfr_wrap_erase`: the
+ASCII run fast path wrote one cell past the row after a failed wrap
+commit, and ED 0/1 indexed rows out of bounds when DECRC had restored a
+cursor saved before a shrink.
 
 ## 9. Normative test references
 

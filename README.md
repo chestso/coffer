@@ -282,21 +282,21 @@ selectively:
 make check TESTS='test_cfr_parser test_cfr_keys test_cfr_sixel test_cfr_osc_1337'
 ```
 
-| Binary                 | Scope                                                                                                                     |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `test_cfr_parser`      | CSI/OSC/ESC/DCS dispatch, cursor, scroll, charsets, DEC modes, DECSC/DECRC, tabs (TBC), OSC 8 hyperlinks, ambiguous-width |
-| `test_cfr_palette`     | OSC 4/104 palette overrides, query replies, damage on change, indexed-style repaint                                       |
-| `test_cfr_keys`        | Kitty keyboard protocol (flags 0x1, 0x8), push/pop/set/query                                                              |
-| `test_cfr_pty`         | Integration: spawns child on real PTY, pipes output through engine                                                        |
-| `test_cfr_sixel`       | Sixel decode, color registers, RLE, placement, scrolling                                                                  |
-| `test_cfr_lottie`      | Lottie APC command parsing (load/place/play/pause/stop/seek/delete)                                                       |
-| `test_cfr_osc_1337`    | iTerm2 inline images: File= parsing, base64 PNG decode, multipart, scaling, TIFF fallback, Capabilities/ReportCellSize    |
-| `test_cfr_image_store` | Shared image store: record lifecycle, buffer pool, eviction, scroll/clear, source enum                                    |
-| `test_cfr_graphics`    | Kitty graphics protocol: APC routing, query, transmit (RGBA/RGB/PNG), place, delete, zlib/chunked, animation              |
-| `test_cfr_altscreen`   | Altscreen enter/exit, cursor save/restore, content isolation                                                              |
-| `test_cfr_sgr`         | SGR styling: bold, italic, underline variants, SGR 21, overline, truecolor, indexed                                       |
-| `test_cfr_sync_output` | Synchronized output (2026): damage hold, coalesced frame, cursor fold, cancel/reset escapes                               |
-| `test_cfr_wrap_fuzz`   | Differential fuzz for soft wraps: random ops vs. a naive row model, joins + text after every op                           |
+| Binary                 | Scope                                                                                                                      |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `test_cfr_parser`      | CSI/OSC/ESC/DCS dispatch, cursor, scroll, charsets, DEC modes, DECSC/DECRC, tabs (TBC), OSC 8 hyperlinks, ambiguous-width  |
+| `test_cfr_palette`     | OSC 4/104 palette overrides, query replies, damage on change, indexed-style repaint                                        |
+| `test_cfr_keys`        | Kitty keyboard protocol (flags 0x1, 0x8), push/pop/set/query                                                               |
+| `test_cfr_pty`         | Integration: spawns child on real PTY, pipes output through engine                                                         |
+| `test_cfr_sixel`       | Sixel decode, color registers, RLE, placement, scrolling                                                                   |
+| `test_cfr_lottie`      | Lottie APC command parsing (load/place/play/pause/stop/seek/delete)                                                        |
+| `test_cfr_osc_1337`    | iTerm2 inline images: File= parsing, base64 PNG decode, multipart, scaling, TIFF fallback, Capabilities/ReportCellSize     |
+| `test_cfr_image_store` | Shared image store: record lifecycle, buffer pool, eviction, scroll/clear, source enum                                     |
+| `test_cfr_graphics`    | Kitty graphics protocol: APC routing, query, transmit (RGBA/RGB/PNG), place, delete, zlib/chunked, animation               |
+| `test_cfr_altscreen`   | Altscreen enter/exit, cursor save/restore, content isolation                                                               |
+| `test_cfr_sgr`         | SGR styling: bold, italic, underline variants, SGR 21, overline, truecolor, indexed                                        |
+| `test_cfr_sync_output` | Synchronized output (2026): damage hold, coalesced frame, cursor fold, cancel/reset escapes                                |
+| `test_cfr_wrap_fuzz`   | Differential fuzz for soft wraps: random ops (regions, alt screen, resize/reflow, selector clusters) vs. a naive row model |
 
 `test_cfr_pty` is skipped on CI (GitHub runners lack a real PTY). All other
 tests run on every push via GitHub Actions. Tags matching `v*` trigger a
