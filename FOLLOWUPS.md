@@ -36,6 +36,16 @@ on. Order is roughly priority, not strict dependency.
   DL-inside-one-wrapped-line over-join (spec §7) remains: wrong text,
   never wrong structure.
 
+- **Stray joiner on a parked margin cell.** The ASCII run fast path
+  commits an ASCII base before a following selector arrives, so
+  `"a"` then VS16 (two writes) reaches `attach_stray_joiners()`. It looks
+  at `col - 1`, which is the cell before the base when DECAWM is off and
+  the cursor is parked on the margin; the selector is dropped instead of
+  widening the margin cell. Same-write clusters and the DECAWM-on phantom
+  path are unaffected. The fuzzer's cluster fixtures use non-ASCII bases
+  for this reason (spec §8); fix the attach lookup if split-write
+  selectors at the margin matter to a consumer.
+
 ## Not yet implemented
 
 ### Kitty keyboard protocol — remaining flags
