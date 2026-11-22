@@ -18,10 +18,11 @@
  * model has no pages, no cell interning and no scrollback ring).
  *
  * Coverage includes partial scroll regions (DECSTBM), DECOM origin mode,
- * altscreen 1049 and raw 47/1047, resize with reflow on and clamp-only
+ * altscreen 1049 and raw 47/1047 (including resizes while it is active
+ * and the exit-time catch-up), resize with reflow on and clamp-only
  * resize with reflow off, and VS16/VS15/combining/ZWJ clusters printed
- * as one write. Not modeled: a resize on the alt screen, and
- * stray-joiner re-attachment across writes (see spec §8).
+ * as one write. Not modeled: stray-joiner re-attachment across writes
+ * (see spec §8).
  *
  * The run is deterministic. Set COFFER_FUZZ_ITERS to run longer and
  * COFFER_FUZZ_SEED to start from another base seed; a failure prints the
@@ -88,7 +89,12 @@ typedef struct
 
 typedef struct
 {
-    int rows, cols;
+    int rows, cols; /* current terminal geometry (vt->rows/cols) */
+    /* Page allocation dims. The active screen's pair always equals
+     * rows/cols; the inactive screen can be stale (a resize on the alt
+     * screen leaves the main page at its old size until exit). */
+    int main_rows, main_cols;
+    int alt_rows, alt_cols;
     int sb_cap;
     MRow grid[ROWS_MAX];
     MRow altgrid[ROWS_MAX];
@@ -892,6 +898,11 @@ static void m_swap_grids(Model *m)
     memcpy(m->altgrid, tmp, sizeof(tmp));
 }
 
+static void m_reflow(Model *m, int old_rows, int old_cols, int new_rows,
+                     int new_cols);
+static void m_clamp_grid(Model *m, int old_rows, int old_cols,
+                         int new_rows, int new_cols);
+
 /* DECSET/DECRST 1049 (save cursor + fresh alt screen + home) and
  * 47/1047 (raw alt: no save, no home). Both enter on a brand-new page,
  * so the alt grid is blank every time; the main grid and the shared
@@ -907,15 +918,28 @@ static void m_set_altscreen(Model *m, bool on, bool save_cursor)
         }
         for (int r = 0; r < m->rows; ++r)
             m_clear_holes(&m->altgrid[r], m->cols);
+        m->alt_rows = m->rows;
+        m->alt_cols = m->cols;
         m_swap_grids(m);
         m->in_alt = true;
-        if (save_cursor) {
-            m->row = 0;
-            m->col = 0;
-        }
+        if (save_cursor)
+            m_cursor_set(m, 0, 0);
     } else {
         m_swap_grids(m);
         m->in_alt = false;
+        /* The main page kept its dimensions while the alt screen was
+         * resized. modes.c rolls vt->rows/cols back to the page's dims
+         * and runs the normal resize path at the current size, using the
+         * alt cursor, before restoring the 1049 register. */
+        if (m->main_rows != m->rows || m->main_cols != m->cols) {
+            if (m->reflow_on)
+                m_reflow(m, m->main_rows, m->main_cols, m->rows, m->cols);
+            else
+                m_clamp_grid(m, m->main_rows, m->main_cols, m->rows,
+                             m->cols);
+        }
+        m->main_rows = m->rows;
+        m->main_cols = m->cols;
         if (save_cursor) {
             m->row = m->saved_row[0];
             m->col = m->saved_col[0];
@@ -1019,16 +1043,12 @@ static void m_layout_row(const MReflow *R, const MFlatRow *fr, MRow *dst,
  * at the new width, and install -- oldest rows to scrollback, newest in
  * the grid. Mirrors cfr_reflow() phase for phase; the model still has
  * no pages and no intern tables. */
-static void m_reflow(Model *m, int new_rows, int new_cols)
+static void m_reflow(Model *m, int old_rows, int old_cols, int new_rows,
+                     int new_cols)
 {
     if (new_rows <= 0 || new_cols <= 0)
         return;
-    if (new_rows == m->rows && new_cols == m->cols)
-        return;
-    /* Resizes are not generated on the alt screen: cfr_reflow() falls
-     * back to a clamp there, and the model would need a second set of
-     * per-row widths and an exit-time reflow of the main grid. */
-    if (m->in_alt)
+    if (new_rows == old_rows && new_cols == old_cols)
         return;
 
     MReflow *R = calloc(1, sizeof(*R));
@@ -1036,8 +1056,12 @@ static void m_reflow(Model *m, int new_rows, int new_cols)
         return;
     R->cursor_offset = -1;
     R->cursor_line = -1;
-    int old_rows = m->rows;
-    int old_cols = m->cols;
+    /* Collection walks the active page at its own dimensions. On an
+     * alt-screen exit the old main page can be smaller or wider than the
+     * terminal's current geometry, and m_row()/m_continues() must bound
+     * positive rows by the page, not by vt->rows/cols. */
+    m->rows = old_rows;
+    m->cols = old_cols;
 
     /* Phase 1a: the history rows of the line that straddles the top
      * edge. The chain is checked with the same unified-row predicate
@@ -1398,20 +1422,25 @@ static bool run_op(CfrTerm *vt, Model *m, uint64_t *rng, char *op,
             snprintf(op, op_cap, "reflow %s", m->reflow_on ? "on" : "off");
             return true;
         }
-        /* On the alt screen the engine clamps and the model has no
-         * alt-screen geometry yet, so skip the op there instead of
-         * desynchronizing. */
-        if (m->in_alt) {
-            snprintf(op, op_cap, "resize (skipped: alt)");
-            return true;
-        }
         int nr = 1 + (int)rng_below(rng, ROWS_MAX);
         int nc = 1 + (int)rng_below(rng, COLS_MAX);
         snprintf(op, op_cap, "resize %dx%d", nr, nc);
-        if (m->reflow_on)
-            m_reflow(m, nr, nc);
-        else
+        if (m->in_alt) {
+            /* cfr_reflow() clamps on the alt screen regardless of the
+             * reflow setting; the main page keeps its old dimensions
+             * until the exit-time catch-up. */
             m_clamp_grid(m, m->rows, m->cols, nr, nc);
+            m->alt_rows = nr;
+            m->alt_cols = nc;
+        } else if (m->reflow_on) {
+            m_reflow(m, m->rows, m->cols, nr, nc);
+            m->main_rows = nr;
+            m->main_cols = nc;
+        } else {
+            m_clamp_grid(m, m->rows, m->cols, nr, nc);
+            m->main_rows = nr;
+            m->main_cols = nc;
+        }
         cfr_resize(vt, nr, nc);
         return true;
     }
@@ -1487,6 +1516,8 @@ static bool fuzz_run(int rows, int cols, int sb_cap, bool reflow,
     memset(&m, 0, sizeof(m));
     m.rows = rows;
     m.cols = cols;
+    m.main_rows = rows;
+    m.main_cols = cols;
     m.sb_cap = sb_cap;
     m.decawm = true;
     m.reflow_on = reflow;
