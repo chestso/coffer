@@ -262,12 +262,12 @@ a naive model and the engine and compares state after **every** op:
   rows).
 
 The model is an array of rows, each with a width, `wrap` (the margin
-edge) and `line` (lineage), plus the page dimensions of both screens.
-Cells own their UTF-8 bytes, so the model can distinguish a plain ASCII
-byte from a selector cluster or a ZWJ sequence without reusing the
-engine's intern tables. It implements §3–§6 directly, not the engine's
-page/cell/interning machinery; it relies on the §5.6 invariant that the
-edge exists only on the margin.
+edge) and `line` (lineage), plus the main page's dimensions while the alt
+screen is active. Cells own their UTF-8 bytes, so the model can
+distinguish a plain ASCII byte from a selector cluster or a ZWJ sequence
+without reusing the engine's intern tables. It implements §3–§6 directly,
+not the engine's page/cell/interning machinery; it relies on the §5.6
+invariant that the edge exists only on the margin.
 
 Ops: printable ASCII runs, a wide ideograph, and selector/ZWJ clusters
 (VS16, VS15 with and without a text glyph, a combining mark, a ZWJ

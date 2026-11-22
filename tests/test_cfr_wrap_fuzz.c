@@ -90,11 +90,11 @@ typedef struct
 typedef struct
 {
     int rows, cols; /* current terminal geometry (vt->rows/cols) */
-    /* Page allocation dims. The active screen's pair always equals
-     * rows/cols; the inactive screen can be stale (a resize on the alt
-     * screen leaves the main page at its old size until exit). */
+    /* The main page's allocation dims. Equal to rows/cols while the main
+     * screen is active; stale while the alt screen is active after a
+     * resize. The alt page is recreated on every entry, so its dims
+     * always match the terminal's. */
     int main_rows, main_cols;
-    int alt_rows, alt_cols;
     int sb_cap;
     MRow grid[ROWS_MAX];
     MRow altgrid[ROWS_MAX];
@@ -918,8 +918,6 @@ static void m_set_altscreen(Model *m, bool on, bool save_cursor)
         }
         for (int r = 0; r < m->rows; ++r)
             m_clear_holes(&m->altgrid[r], m->cols);
-        m->alt_rows = m->rows;
-        m->alt_cols = m->cols;
         m_swap_grids(m);
         m->in_alt = true;
         if (save_cursor)
@@ -1430,8 +1428,6 @@ static bool run_op(CfrTerm *vt, Model *m, uint64_t *rng, char *op,
              * reflow setting; the main page keeps its old dimensions
              * until the exit-time catch-up. */
             m_clamp_grid(m, m->rows, m->cols, nr, nc);
-            m->alt_rows = nr;
-            m->alt_cols = nc;
         } else if (m->reflow_on) {
             m_reflow(m, m->rows, m->cols, nr, nc);
             m->main_rows = nr;
