@@ -160,6 +160,14 @@ void cfr_resize_clamp(CfrTerm *vt, int new_rows, int new_cols)
         for (int r = 0; r < copy_rows; ++r) {
             for (int c = 0; c < copy_cols; ++c) {
                 CfrCell src = old_grid->cells[(size_t)r * (size_t)vt->cols + (size_t)c];
+                /* The wrap edge is only meaningful on the margin cell.
+                 * A width change copies the old margin cell to an
+                 * interior column (or drops it), so let a join survive
+                 * only when the new margin is the old margin. Leaving
+                 * the bit on an interior cell would let a later clamp
+                 * back to the old width resurrect a severed join. */
+                if (c != new_cols - 1)
+                    src.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
                 CfrCell *dst = &new_grid->cells[(size_t)r * (size_t)new_cols + (size_t)c];
                 /* Cannot preserve an attribute: abandon the resize with
                  * the old geometry and content intact. */

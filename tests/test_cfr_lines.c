@@ -641,6 +641,34 @@ static void test_reflow_joins_scrollback_fragment(void)
     cfr_free(vt);
 }
 
+/* Clamp-only resize (reflow disabled) keeps a join across a height-only
+ * resize, but a width change moves the wrap edge off the margin, so the
+ * join is severed. Shrinking back must not resurrect it from the bit the
+ * widened page carried in an interior cell. */
+static void test_clamp_resize_join_rules(void)
+{
+    CfrTerm *vt = make_term(4, 4, false);
+    feed(vt, "AAAAAAAA"); /* one logical line over two 4-col rows */
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+
+    cfr_resize(vt, 5, 4); /* height only: the margin cell survives */
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+
+    cfr_resize(vt, 5, 6); /* wider: the edge is no longer on a margin */
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
+
+    cfr_resize(vt, 5, 4); /* back to the old width: still severed */
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 1));
+
+    /* The rows themselves survive the clamp; only the join is gone. */
+    char buf[8];
+    cfr_row_text(vt, 0, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "AAAA");
+    cfr_row_text(vt, 1, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "AAAA");
+    cfr_free(vt);
+}
+
 /* A wrap at a partial region's bottom scrolls only that region, leaves
  * the rows outside it alone, and does not push to scrollback (the region
  * is not the full screen). */
@@ -683,6 +711,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_resize_announces_nothing);
     RUN_TEST(test_reflow_prefix_is_capped);
     RUN_TEST(test_reflow_without_scrollback);
+    RUN_TEST(test_clamp_resize_join_rules);
     RUN_TEST(test_partial_region_wrap_scrolls_region_only);
     TEST_SUMMARY();
 }
