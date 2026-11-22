@@ -130,7 +130,13 @@ compositing. See the portty README for renderer-side details.
   The `coffer` CLI therefore loads the pinned
   `Microsoft.Windows.Console.ConPTY` bundle (`conpty.dll` +
   `OpenConsole.exe`) when it is available. OpenConsole's VtEngine passes
-  DCS, APC and unknown OSC through unmodified. `PSEUDOCONSOLE_PASSTHROUGH_MODE`
+  DCS, APC and unknown OSC through unmodified. OSC 4 and OSC 104 are among
+  the sequences that survive: both the bundle and system conhost hand
+  palette overrides to coffer untouched, in stream order, and keep indexed
+  SGR as an index rather than baking it to RGB, so palette overrides behave
+  behind ConPTY exactly as they do on the POSIX path (`test_cfr_palette`
+  covers the engine side, `test_conpty_palette` the PTY round trip).
+  `PSEUDOCONSOLE_PASSTHROUGH_MODE`
   (`0x8`) is no longer the mechanism: in the 1.25 package that bit means
   `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES`; passthrough is the default with
   OpenConsole. When the bundle is absent the CLI falls back to system
@@ -298,9 +304,11 @@ make check TESTS='test_cfr_parser test_cfr_keys test_cfr_sixel test_cfr_osc_1337
 | `test_cfr_sync_output` | Synchronized output (2026): damage hold, coalesced frame, cursor fold, cancel/reset escapes                                |
 | `test_cfr_wrap_fuzz`   | Differential fuzz for soft wraps: random ops (regions, alt screen, resize/reflow, selector clusters) vs. a naive row model |
 
-`test_cfr_pty` is skipped on CI (GitHub runners lack a real PTY). All other
-tests run on every push via GitHub Actions. Tags matching `v*` trigger a
-release job that builds a dist tarball and publishes it via
+`test_cfr_pty` runs on every platform — `forkpty` on POSIX, ConPTY on
+Windows — and the ConPTY-only probes inside it print a skip on POSIX. The
+Windows jobs also re-run it against system conhost. All tests run on every
+push via GitHub Actions. Tags matching `v*` trigger a release job that
+builds a dist tarball and publishes it via
 `softprops/action-gh-release`.
 
 ### Prerequisites

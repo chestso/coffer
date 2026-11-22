@@ -946,6 +946,7 @@ static void test_conpty_palette(void)
     size_t len = capture_mode("--emit-palette-set", raw, sizeof(raw));
     ASSERT_TRUE(len > 0);
     const char *backend = pty_conpty_backend();
+    int bundled = strcmp(backend, "bundled") == 0;
     printf("    palette probe (set): backend=%s bytes=%zu\n", backend, len);
     log_raw(raw, len, 8192);
 
@@ -954,6 +955,17 @@ static void test_conpty_palette(void)
     int rgb_sgr = contains_bytes(raw, len, "38;2;", strlen("38;2;")) != 0;
     printf("    palette probe (set): osc4=%d sgr-indexed=%d sgr-rgb=%d\n",
            osc4, indexed, rgb_sgr);
+
+    if (bundled) {
+        /* The bundle is what the CLI ships, so palette-override parity is
+         * a contract there: the sequence must arrive intact and the
+         * indexed SGR must stay an index, not baked RGB.  System conhost
+         * is only reported — it is outside our control and behaves the
+         * same on today's runners. */
+        ASSERT_EQ(osc4, 1);
+        ASSERT_EQ(indexed, 1);
+        ASSERT_EQ(rgb_sgr, 0);
+    }
 
     CfrTerm *vt = term_from_raw(raw, len);
     ASSERT_NOT_NULL(vt);
@@ -990,6 +1002,11 @@ static void test_conpty_palette(void)
     int osc104 =
         contains_bytes(raw, len, "\x1b]104;", strlen("\x1b]104;")) != 0;
     printf("    palette probe (reset): osc4=%d osc104=%d\n", osc4b, osc104);
+
+    if (bundled) {
+        ASSERT_EQ(osc4b, 1);
+        ASSERT_EQ(osc104, 1);
+    }
 
     vt = term_from_raw(raw, len);
     ASSERT_NOT_NULL(vt);

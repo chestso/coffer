@@ -12,13 +12,6 @@ on. Order is roughly priority, not strict dependency.
   (the child exiting quits the app before the script observes it).
   Neither affects the `coffer` CLI, where both work end to end.
 
-- **OSC 4/104 through ConPTY.** The bundled OpenConsole parses VT itself
-  and re-serialises what reaches coffer; whether it forwards palette
-  changes, consumes them, or rewrites indexed SGR to baked RGB is not
-  covered by any test. Capture a Windows session (pywal or a manual
-  `OSC 4` set) before promising palette-override parity there. The POSIX
-  path and `--feed` are covered by `test_cfr_palette`.
-
 - **Wrapped-line behavioral spec + differential fuzz.** The spec is
   `docs/wrapped-lines-spec.md` (policy knobs, edit/severance table, text
   extraction) and the oracle is `tests/test_cfr_wrap_fuzz.c` (random op
@@ -132,6 +125,13 @@ into `libcofferpty.a`.
   change coffer's grid, and no `--conpty-glyph-width` / `--ambiguous-wide`
   switch is warranted. The test fails if a future OpenConsole starts baking
   widths into the stream, which is the signal to revisit that decision.
+- OSC 4 and OSC 104 pass through ConPTY untouched: verified on the Windows
+  CI runners (x64 and arm64) for both the bundle and system conhost, in
+  stream order, with indexed SGR kept as an index rather than baked to RGB.
+  `test_conpty_palette` runs a child through the selected backend, replays
+  the captured stream, and checks the engine's palette and cell colours; the
+  bundle's behaviour is asserted, the system-conhost observation is only
+  logged. Palette-override parity behind ConPTY matches the POSIX path.
 - The OSC 5555 (input) and 5556 (response) carriers stay. 5555 is emitted by
   the child, which cannot know which backend the CLI selected; 5556 must
   remain usable because `cfr_conpty_create()` can fall back to system
