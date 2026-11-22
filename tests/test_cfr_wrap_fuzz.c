@@ -21,7 +21,10 @@
  * altscreen 1049 and raw 47/1047 (including resizes while it is active
  * and the exit-time catch-up), resize with reflow on and clamp-only
  * resize with reflow off, VS16/VS15/combining/ZWJ clusters printed as
- * one write, and base+joiner pairs split across two writes (§3.4).
+ * one write, and base+joiner pairs split across two writes (§3.4). The
+ * model also reproduces the accepted DL-inside-one-wrapped-line
+ * over-join (spec §7); test_wrap_fuzz_dl_over_join pins it on both
+ * sides.
  *
  * The run is deterministic. Set COFFER_FUZZ_ITERS to run longer and
  * COFFER_FUZZ_SEED to start from another base seed; a failure prints the
@@ -187,6 +190,29 @@ static void m_clear_blanks(MRow *r, int cols)
     r->cols = cols;
     r->line = 0;
     r->wrap = false;
+}
+
+/* The state every run starts from: a fully materialized, erased screen
+ * with the default modes. Shared by fuzz_run() and the targeted
+ * regressions so the model setup cannot drift between them. */
+static void model_init(Model *m, int rows, int cols, int sb_cap,
+                       bool reflow)
+{
+    memset(m, 0, sizeof(*m));
+    m->rows = rows;
+    m->cols = cols;
+    m->main_rows = rows;
+    m->main_cols = cols;
+    m->sb_cap = sb_cap;
+    m->decawm = true;
+    m->reflow_on = reflow;
+    m->scroll_top = 0;
+    m->scroll_bottom = rows - 1;
+    /* cfr_new() seeds both saved-cursor registers from the home cursor. */
+    m->saved_row[0] = m->saved_row[1] = 0;
+    m->saved_col[0] = m->saved_col[1] = 0;
+    for (int r = 0; r < rows; ++r)
+        m_clear_blanks(&m->grid[r], cols);
 }
 
 static void m_hist_push(Model *m, const MRow *row)
@@ -515,6 +541,10 @@ static void m_dl(Model *m, int count)
     m->last_print_row = -1;
     m->last_print_col = -1;
 
+    /* Whole-row moves carry the margin edge and the lineage id with
+     * them, so two non-adjacent fragments of one line that meet here
+     * still join. That is the accepted DL over-join (spec §7), and
+     * test_wrap_fuzz_dl_over_join pins it on both sides. */
     int move = region - count;
     if (move > 0)
         memmove(&m->grid[row], &m->grid[row + count],
@@ -1639,21 +1669,7 @@ static bool fuzz_run(int rows, int cols, int sb_cap, bool reflow,
     cfr_input_write(vt, (const uint8_t *)"\x1b[2J", 4);
 
     Model m;
-    memset(&m, 0, sizeof(m));
-    m.rows = rows;
-    m.cols = cols;
-    m.main_rows = rows;
-    m.main_cols = cols;
-    m.sb_cap = sb_cap;
-    m.decawm = true;
-    m.reflow_on = reflow;
-    m.scroll_top = 0;
-    m.scroll_bottom = rows - 1;
-    /* cfr_new() seeds both saved-cursor registers from the home cursor. */
-    m.saved_row[0] = m.saved_row[1] = 0;
-    m.saved_col[0] = m.saved_col[1] = 0;
-    for (int r = 0; r < rows; ++r)
-        m_clear_blanks(&m.grid[r], cols);
+    model_init(&m, rows, cols, sb_cap, reflow);
 
     /* DECRC with no DECSC restores the initial register, which cfr_new
      * seeds from the home cursor. */
@@ -1730,6 +1746,71 @@ static bool run_config(int rows, int cols, int sb, bool reflow, int seeds)
     return true;
 }
 
+/* The accepted DL-inside-one-wrapped-line over-join (spec §7).
+ *
+ * A wrapped line printed as three fragments, then DL on the middle
+ * fragment: the third fragment slides up under the first. Both carry
+ * the same lineage id and the first fragment's margin edge survives the
+ * shift, so the join predicate cannot tell this apart from a genuine
+ * join. Text extraction stitches the fragments shut ("aaaacccc") — wrong
+ * text, never wrong structure. This pins the accepted answer on both
+ * the model and the engine; if DL learns to sever, this test, the model
+ * and spec §7 must change together. */
+static void test_wrap_fuzz_dl_over_join(void)
+{
+    CfrConfig cfg = CFR_CONFIG_DEFAULTS;
+    cfg.rows = 4;
+    cfg.cols = 4;
+    cfg.cell_w_px = 10;
+    cfg.cell_h_px = 6;
+    cfg.scrollback = 16;
+    cfg.reflow = true;
+    CfrTerm *vt = cfr_new(&cfg);
+    ASSERT_NOT_NULL(vt);
+
+    Model m;
+    model_init(&m, 4, 4, 16, true);
+
+    /* fuzz_run()'s materialization step. */
+    cfr_input_write(vt, (const uint8_t *)"\x1b[2J", 4);
+
+    static const char line[] = "aaaabbbbcccc";
+    for (size_t i = 0; i < sizeof(line) - 1; ++i)
+        m_print_char(&m, line[i]);
+    cfr_input_write(vt, (const uint8_t *)line, sizeof(line) - 1);
+    ASSERT_TRUE(fuzz_verify(vt, &m, "print wrapped thirds"));
+    ASSERT_TRUE(m_continues(&m, 1));
+    ASSERT_TRUE(m_continues(&m, 2));
+
+    /* DL at the middle fragment (unified row 1, CUP row 2). */
+    m_cursor_set(&m, 1, 0);
+    m_dl(&m, 1);
+    cfr_input_write(vt, (const uint8_t *)"\x1b[2;1H\x1b[1M", 10);
+    ASSERT_TRUE(fuzz_verify(vt, &m, "DL inside one wrapped line"));
+
+    /* Row 1 is now the line's third fragment and still continues row 0;
+     * the new blank row 2 does not continue anything. */
+    ASSERT_TRUE(m_continues(&m, 1));
+    ASSERT_TRUE(cfr_row_is_continuation(vt, 1));
+    ASSERT_FALSE(m_continues(&m, 2));
+    ASSERT_FALSE(cfr_row_is_continuation(vt, 2));
+
+    char row[TEXT_CAP];
+    cfr_row_text(vt, 1, row, sizeof(row));
+    ASSERT_STR_EQ(row, "cccc");
+
+    /* The whole-buffer extraction shows the wrong text the over-join
+     * produces: the deleted middle fragment is silently stitched shut. */
+    cfr_selection_start(vt, 0, 0, CFR_SEL_CHAR);
+    cfr_selection_update(vt, 3, 3);
+    char *text = cfr_selection_get_text(vt);
+    ASSERT_NOT_NULL(text);
+    ASSERT_STR_EQ(text, "aaaacccc\n\n");
+    free(text);
+
+    cfr_free(vt);
+}
+
 static void test_wrap_fuzz_small(void)
 {
     ASSERT_TRUE(run_config(4, 3, 16, true, 8));
@@ -1773,6 +1854,9 @@ int main(int argc, char *argv[])
      * run. */
     const char *only = getenv("COFFER_FUZZ_ONLY");
     printf("Running wrapped-line differential fuzz:\n");
+
+    /* Targeted regressions run regardless of COFFER_FUZZ_ONLY. */
+    RUN_TEST(test_wrap_fuzz_dl_over_join);
 
     if (!only || strcmp(only, "small") == 0)
         RUN_TEST(test_wrap_fuzz_small);

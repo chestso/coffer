@@ -383,4 +383,6 @@ or under-join by one row, never corrupt structure. They are now pinned:
   regions, or presentation-selector/ZWJ clusters; those keep their
   targeted tests. Extend the model when reflow gets one.
 - Accepted limitation (spec §7): DL inside one wrapped line still joins
-  two remaining fragments of that line.
+  two remaining fragments of that line. The fuzzer's `m_dl` moves rows
+  with their edge and lineage, so the model reproduces the over-join,
+  and `test_wrap_fuzz_dl_over_join` pins it on both sides.

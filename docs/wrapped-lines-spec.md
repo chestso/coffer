@@ -244,19 +244,19 @@ lines with trailing blanks gone.
 
 ## 7. Decisions (the design doc's §4 knobs)
 
-| Knob                           | Decision                                                                                                                                                                               |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| LF column rule                 | phantom → column 0; otherwise the column is unchanged                                                                                                                                  |
-| Phantom survives LF?           | no; it resolves without committing a wrap                                                                                                                                              |
-| ICH / IRM                      | preserve the edge and lineage (xterm)                                                                                                                                                  |
-| Wide char at the margin        | eager wrap with DECAWM; edge on the row being left; no wrap with DECAWM off                                                                                                            |
-| DECAWM toggled off mid-phantom | the phantom dies, clamped to the margin                                                                                                                                                |
-| DECSC / phantom                | saved and restored natively (logical column)                                                                                                                                           |
-| Narrow print over a wide lead  | blank the stranded continuation (severs if that is the margin)                                                                                                                         |
-| Clamp resize, height only      | join survives (the margin cell is copied unchanged)                                                                                                                                    |
-| Clamp resize, width change     | join severed: the old margin is not the new margin, and copied interior edge bits are cleared                                                                                          |
-| DL inside one wrapped line     | **still joins** — the accepted limitation (design §2.3): two fragments of one line meeting after a shift are indistinguishable from a genuine join. Wrong text, never wrong structure. |
-| Wrap edges on interior cells   | MUST NOT exist; DCH and a width-changing clamp clear the bits they would otherwise shift inward (§5.6)                                                                                 |
+| Knob                           | Decision                                                                                                                                                                                                                                                  |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LF column rule                 | phantom → column 0; otherwise the column is unchanged                                                                                                                                                                                                     |
+| Phantom survives LF?           | no; it resolves without committing a wrap                                                                                                                                                                                                                 |
+| ICH / IRM                      | preserve the edge and lineage (xterm)                                                                                                                                                                                                                     |
+| Wide char at the margin        | eager wrap with DECAWM; edge on the row being left; no wrap with DECAWM off                                                                                                                                                                               |
+| DECAWM toggled off mid-phantom | the phantom dies, clamped to the margin                                                                                                                                                                                                                   |
+| DECSC / phantom                | saved and restored natively (logical column)                                                                                                                                                                                                              |
+| Narrow print over a wide lead  | blank the stranded continuation (severs if that is the margin)                                                                                                                                                                                            |
+| Clamp resize, height only      | join survives (the margin cell is copied unchanged)                                                                                                                                                                                                       |
+| Clamp resize, width change     | join severed: the old margin is not the new margin, and copied interior edge bits are cleared                                                                                                                                                             |
+| DL inside one wrapped line     | **still joins** — the accepted limitation (design §2.3): two fragments of one line meeting after a shift are indistinguishable from a genuine join. Wrong text, never wrong structure. Modeled by the fuzzer and pinned by `test_wrap_fuzz_dl_over_join`. |
+| Wrap edges on interior cells   | MUST NOT exist; DCH and a width-changing clamp clear the bits they would otherwise shift inward (§5.6)                                                                                                                                                    |
 
 ## 8. The differential fuzzer
 
@@ -285,6 +285,14 @@ toggles; DECSC/DECRC; DECSTBM (including partial regions and invalid
 regions); altscreen 1049 and raw 47/1047, including `cfr_resize()` while
 the alt screen is active; and host calls `cfr_resize()` /
 `cfr_set_reflow()`.
+
+The model reproduces the §7 DL-inside-one-wrapped-line over-join: `m_dl`
+moves whole rows, so each fragment's margin edge and lineage id travel
+with it, and two fragments a shift brings together join exactly as in
+the engine. `test_wrap_fuzz_dl_over_join` drives the three-fragment case
+through both sides and pins the resulting text (`aaaacccc` for
+`aaaa`/`bbbb`/`cccc` after deleting the middle row). A future decision
+to sever must update the spec, the model and the engine together.
 
 The model's reflow resize replays `cfr_reflow()` phase for phase: collect
 the logical line straddling the top scrollback edge (bounded by
@@ -321,6 +329,8 @@ compare the exact lineage ids and margin bits — a debugging oracle; ids
 are an implementation detail), `COFFER_FUZZ_TRACE=N` (dump both grids
 from op N). The `clamp` run starts with `reflow = false`; every run
 flips `cfr_set_reflow()` occasionally, so both resize paths interleave.
+The targeted `test_wrap_fuzz_dl_over_join` regression runs regardless of
+`COFFER_FUZZ_ONLY`.
 
 Stray-joiner re-attachment (§3.4) is modeled by split-write ops: the
 model prints a base, then feeds its joiner in a second write and
@@ -346,4 +356,5 @@ both margin cases in `test_cfr_wrap_width`.
 - `test_cfr_wrap_width` — wide/eager wraps, selectors, split clusters,
   narrow-over-wide-lead.
 - `test_cfr_lines` — DL/IL/scroll/scrollback joins, reflow, pushline.
-- `test_cfr_wrap_fuzz` — the differential oracle above.
+- `test_cfr_wrap_fuzz` — the differential oracle above, plus the DL
+  over-join regression.

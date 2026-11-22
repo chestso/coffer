@@ -31,8 +31,9 @@ on. Order is roughly priority, not strict dependency.
   pin the parked-margin attach fix: a stray joiner now re-attaches to
   the recorded last printed cell instead of the cell before the cursor
   (`test_cfr_wrap_width`). The accepted
-  DL-inside-one-wrapped-line over-join (spec §7) remains: wrong text,
-  never wrong structure.
+  DL-inside-one-wrapped-line over-join (spec §7) is modeled by the
+  fuzzer's `m_dl` and pinned by `test_wrap_fuzz_dl_over_join`: wrong
+  text, never wrong structure. No unmodeled wrap behavior remains.
 
 ## Not yet implemented
 
