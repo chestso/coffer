@@ -735,8 +735,10 @@ static void fuzz_dump_join(CfrTerm *vt, Model *m, int u)
 
 static bool fuzz_verify(CfrTerm *vt, Model *m, const char *op)
 {
-    if (strict_check &&
-        (vt->cursor.row != m->row || vt->cursor.col != m->col)) {
+    /* The cursor is user-visible state and every text comparison below
+     * depends on it, so check it on every run (strict mode adds the
+     * implementation-detail fields). */
+    if (vt->cursor.row != m->row || vt->cursor.col != m->col) {
         char mb[32], eb[32];
         snprintf(mb, sizeof(mb), "%d,%d", m->row, m->col);
         snprintf(eb, sizeof(eb), "%d,%d", vt->cursor.row, vt->cursor.col);
