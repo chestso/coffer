@@ -557,6 +557,29 @@ static void test_altscreen_open_link_in_fresh_page(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 7. Cursor restore after the exit-time catch-up                      */
+/*    1049 saves the main cursor, and the exit-time reflow of the stale */
+/*    main page uses the alt cursor; the saved register must still win. */
+/* ------------------------------------------------------------------ */
+
+static void test_altscreen_resize_restores_cursor(void)
+{
+    CfrTerm *vt = make_term(5, 10);
+
+    feed(vt, "main");
+    feed(vt, "\x1b[3;4H"); /* the 1049 register: row 2, col 3 */
+    feed(vt, "\x1b[?1049h");
+    feed(vt, "\x1b[5;6H"); /* the alt cursor the catch-up will use */
+    cfr_resize(vt, 4, 20);
+    feed(vt, "\x1b[?1049l");
+
+    CfrCursor cur = cfr_get_cursor(vt);
+    ASSERT_EQ(cur.row, 2);
+    ASSERT_EQ(cur.col, 3);
+    cfr_free(vt);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -579,6 +602,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_altscreen_restores_cursor_shape);
     RUN_TEST(test_altscreen_tables_restart_each_session);
     RUN_TEST(test_altscreen_open_link_in_fresh_page);
+    RUN_TEST(test_altscreen_resize_restores_cursor);
 
     TEST_SUMMARY();
 }
