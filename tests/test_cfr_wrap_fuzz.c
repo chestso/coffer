@@ -20,9 +20,8 @@
  * Coverage includes partial scroll regions (DECSTBM), DECOM origin mode,
  * altscreen 1049 and raw 47/1047 (including resizes while it is active
  * and the exit-time catch-up), resize with reflow on and clamp-only
- * resize with reflow off, and VS16/VS15/combining/ZWJ clusters printed
- * as one write. Not modeled: stray-joiner re-attachment across writes
- * (see spec §8).
+ * resize with reflow off, VS16/VS15/combining/ZWJ clusters printed as
+ * one write, and base+joiner pairs split across two writes (§3.4).
  *
  * The run is deterministic. Set COFFER_FUZZ_ITERS to run longer and
  * COFFER_FUZZ_SEED to start from another base seed; a failure prints the
@@ -101,6 +100,9 @@ typedef struct
     MRow hist[HIST_MAX];
     int hist_len;
     int row, col; /* col may be cols: the deferred-wrap phantom */
+    /* The lead cell of the last print, for §3.4 stray-joiner
+     * re-attachment. -1 = no print in the current grid. */
+    int last_print_row, last_print_col;
     bool decawm;
     bool irm;
     bool decom;
@@ -215,6 +217,10 @@ static void m_scroll_up(Model *m, int n)
     int height = bot - top + 1;
     if (n > height)
         n = height;
+    /* The rows moved: the recorded last print no longer names the same
+     * cells. */
+    m->last_print_row = -1;
+    m->last_print_col = -1;
     if (top == 0 && bot == m->rows - 1 && !m->in_alt) {
         for (int i = 0; i < n; ++i)
             m_hist_push(m, &m->grid[top + i]);
@@ -239,6 +245,10 @@ static void m_scroll_down(Model *m, int n)
     int height = bot - top + 1;
     if (n > height)
         n = height;
+    /* The rows moved: the recorded last print no longer names the same
+     * cells. */
+    m->last_print_row = -1;
+    m->last_print_col = -1;
     if (n < height)
         memmove(&m->grid[top + n], &m->grid[top],
                 (size_t)(height - n) * sizeof(MRow));
@@ -340,6 +350,10 @@ static void m_ich(Model *m, int count)
     if (count > m->cols - c)
         count = m->cols - c;
 
+    /* ICH shifts the row's cells; the recorded last print moved. */
+    m->last_print_row = -1;
+    m->last_print_col = -1;
+
     MRow *r = &m->grid[m->row];
     bool had_wrap = r->wrap;
     int move = m->cols - c - count;
@@ -364,6 +378,10 @@ static void m_dch(Model *m, int count)
         return;
     if (count > m->cols - c)
         count = m->cols - c;
+
+    /* DCH shifts the row's cells; the recorded last print moved. */
+    m->last_print_row = -1;
+    m->last_print_col = -1;
 
     MRow *r = &m->grid[m->row];
     int move = m->cols - c - count;
@@ -466,6 +484,12 @@ static void m_il(Model *m, int count)
     int region = m->scroll_bottom - row + 1;
     if (count > region)
         count = region;
+
+    /* The rows moved: the recorded last print no longer names the same
+     * cells. */
+    m->last_print_row = -1;
+    m->last_print_col = -1;
+
     int move = region - count;
     if (move > 0)
         memmove(&m->grid[row + count], &m->grid[row],
@@ -485,6 +509,12 @@ static void m_dl(Model *m, int count)
     int region = m->scroll_bottom - row + 1;
     if (count > region)
         count = region;
+
+    /* The rows moved: the recorded last print no longer names the same
+     * cells. */
+    m->last_print_row = -1;
+    m->last_print_col = -1;
+
     int move = region - count;
     if (move > 0)
         memmove(&m->grid[row], &m->grid[row + count],
@@ -562,6 +592,8 @@ static void m_print_cell(Model *m, const char *text, size_t len, int width)
         m_cell_blank(&r->cells[c]);
     else
         m_cell_text(&r->cells[c], text, len, width);
+    m->last_print_row = m->row;
+    m->last_print_col = c;
     if (c == m->cols - 1)
         r->wrap = false;
     if (width == 2 && c + 1 < m->cols) {
@@ -592,6 +624,76 @@ static void m_print_char(Model *m, char ch)
 static void m_print_wide(Model *m)
 {
     m_print_cell(m, WIDE_UTF8, WIDE_UTF8_LEN, 2);
+}
+
+/* Split-write joiner fixtures for §3.4: the base is printed, then the
+ * joiner arrives in a second write and re-attaches to the last printed
+ * cell. `combined_width` is what the engine's width rules give the
+ * re-committed cluster; the model keeps it here because it has no width
+ * tables of its own. */
+typedef struct
+{
+    const char *base;
+    size_t base_len;
+    int base_width;
+    const char *joiner;
+    size_t joiner_len;
+    const char *combined;
+    size_t combined_len;
+    int combined_width;
+    const char *name;
+} SplitFixture;
+
+static const SplitFixture SPLITS[] = {
+    { "\xE2\x9A\xA0", 3, 1, "\xEF\xB8\x8F", 3,
+      "\xE2\x9A\xA0\xEF\xB8\x8F", 6, 2, "warning+VS16" },
+    { "\xE2\x98\xBA", 3, 1, "\xEF\xB8\x8E", 3,
+      "\xE2\x98\xBA\xEF\xB8\x8E", 6, 1, "smile+VS15" },
+    { "\xE2\x9A\xA0", 3, 1, "\xEF\xB8\x8F\xEF\xB8\x8E", 6,
+      "\xE2\x9A\xA0\xEF\xB8\x8F\xEF\xB8\x8E", 9, 1,
+      "warning+VS16+VS15" },
+    { "\xE2\x98\xBA", 3, 1, "\xEF\xB8\x8F", 3,
+      "\xE2\x98\xBA\xEF\xB8\x8F", 6, 2, "smile+VS16" },
+    { "e", 1, 1, "\xCC\x81", 2, "e\xCC\x81", 3, 1, "e+acute" },
+    { "\xF0\x9F\x91\xA9", 4, 2, "\xE2\x80\x8D\xF0\x9F\x91\xA9", 7,
+      "\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA9", 11, 2,
+      "woman+ZWJ+woman" },
+};
+
+/* §3.4: a joiner that arrives in its own write re-attaches to the lead
+ * cell of the last print in this row and re-commits the combined
+ * cluster. Mirrors attach_stray_joiners(), including the drop when the
+ * last print was on another row or its cell is no longer printable. */
+static void m_attach_stray(Model *m, const SplitFixture *sf)
+{
+    if (m->last_print_row != m->row || m->last_print_col < 0 ||
+        m->last_print_col >= m->cols)
+        return;
+    MRow *r = &m->grid[m->row];
+    int lead = m->last_print_col;
+    MCell *lead_cell = &r->cells[lead];
+    if (lead_cell->kind != MC_CELL)
+        return;
+
+    int span = lead_cell->width;
+    if (lead + span > m->cols)
+        span = m->cols - lead;
+    bool had_wrap = (lead + span >= m->cols) && r->wrap &&
+                    sf->combined_width > 0 &&
+                    lead + sf->combined_width <= m->cols;
+
+    for (int i = 0; i < span; ++i)
+        m_cell_blank(&r->cells[lead + i]);
+    if (lead + span >= m->cols)
+        r->wrap = false;
+
+    bool irm = m->irm;
+    m->irm = false; /* an attach overwrites in place */
+    m->col = lead;
+    m_print_cell(m, sf->combined, sf->combined_len, sf->combined_width);
+    m->irm = irm;
+    if (had_wrap)
+        r->wrap = true;
 }
 
 /* The model's join predicate: the two-sided handshake. */
@@ -858,11 +960,11 @@ typedef struct
 } ClusterFixture;
 
 static const ClusterFixture CLUSTERS[] = {
-    /* Non-ASCII bases only: an ASCII base is committed by the ASCII
-     * run fast path before the selector arrives, so the engine's
-     * last-cell re-attachment (§3.4) handles it, not commit_cluster's
-     * one-shot path this model mirrors. Stray joiners stay covered by
-     * test_cfr_wrap_width. */
+    /* Non-ASCII bases only: an ASCII base in one write is committed by
+     * the ASCII run fast path before the selector arrives, so the
+     * engine reaches it through §3.4 rather than commit_cluster's
+     * one-shot path this model mirrors. The split-write op covers that
+     * re-attachment explicitly. */
     { "\xE2\x98\xBA\xEF\xB8\x8F", 6, 2, "smile+VS16" },
     { "\xE2\x98\xBA\xEF\xB8\x8E", 6, 1, "smile+VS15" },
     { WIDE_UTF8 "\xEF\xB8\x8E", 6, 2, "CJK+VS15" },
@@ -945,6 +1047,9 @@ static void m_set_altscreen(Model *m, bool on, bool save_cursor)
             m->col = m->saved_col[0];
         }
     }
+    /* The last print belonged to the screen being left. */
+    m->last_print_row = -1;
+    m->last_print_col = -1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -964,6 +1069,11 @@ static void m_clamp_grid(Model *m, int old_rows, int old_cols,
         return;
     if (new_rows == old_rows && new_cols == old_cols)
         return;
+
+    /* The resize copies/clamps the grid; the tracked last print no
+     * longer reliably names the same content. */
+    m->last_print_row = -1;
+    m->last_print_col = -1;
 
     MRow newgrid[ROWS_MAX];
     memset(newgrid, 0, sizeof(newgrid));
@@ -1050,6 +1160,11 @@ static void m_reflow(Model *m, int old_rows, int old_cols, int new_rows,
         return;
     if (new_rows == old_rows && new_cols == old_cols)
         return;
+
+    /* The reflow rebuilds the grid; the tracked last print no longer
+     * reliably names the same content. */
+    m->last_print_row = -1;
+    m->last_print_col = -1;
 
     MReflow *R = calloc(1, sizeof(*R));
     if (!R)
@@ -1242,7 +1357,7 @@ static bool run_op(CfrTerm *vt, Model *m, uint64_t *rng, char *op,
     unsigned pick = rng_below(rng, 1000);
     char seq[128];
 
-    if (pick < 210) {
+    if (pick < 180) {
         /* Print a run of printable ASCII. */
         int n = 1 + (int)rng_below(rng, 8);
         for (int i = 0; i < n; ++i)
@@ -1255,6 +1370,19 @@ static bool run_op(CfrTerm *vt, Model *m, uint64_t *rng, char *op,
          * grid), so the engine's state is comparable after the write. */
         snprintf(seq + n, sizeof(seq) - (size_t)n, "\x1b[0m");
         cfr_input_write(vt, (const uint8_t *)seq, strlen(seq));
+        return true;
+    }
+    if (pick < 210) {
+        /* A base and its joiner split across two writes: the first
+         * flush commits the base, the second arrives as a stray joiner
+         * and re-attaches (§3.4). */
+        const SplitFixture *sf =
+            &SPLITS[rng_below(rng, sizeof(SPLITS) / sizeof(SPLITS[0]))];
+        m_print_cell(m, sf->base, sf->base_len, sf->base_width);
+        m_attach_stray(m, sf);
+        snprintf(op, op_cap, "print %s then join", sf->name);
+        cfr_input_write(vt, (const uint8_t *)sf->base, sf->base_len);
+        cfr_input_write(vt, (const uint8_t *)sf->joiner, sf->joiner_len);
         return true;
     }
     if (pick < 240) {
