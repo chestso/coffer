@@ -17,10 +17,11 @@
  * (lineage is stamped once per row, the edge is a row field, and the
  * model has no pages, no cell interning and no scrollback ring).
  *
- * Coverage includes partial scroll regions (DECSTBM), altscreen 1049 and
- * raw 47/1047, resize with reflow on, and VS16/VS15/combining/ZWJ
- * clusters printed as one write. Not modeled: clamp-only resize, DECOM,
- * and stray-joiner re-attachment across writes (see spec §8).
+ * Coverage includes partial scroll regions (DECSTBM), DECOM origin mode,
+ * altscreen 1049 and raw 47/1047, resize with reflow on, and
+ * VS16/VS15/combining/ZWJ clusters printed as one write. Not modeled:
+ * clamp-only resize, and stray-joiner re-attachment across writes (see
+ * spec §8).
  *
  * The run is deterministic. Set COFFER_FUZZ_ITERS to run longer and
  * COFFER_FUZZ_SEED to start from another base seed; a failure prints the
@@ -96,6 +97,7 @@ typedef struct
     int row, col; /* col may be cols: the deferred-wrap phantom */
     bool decawm;
     bool irm;
+    bool decom;
     bool in_alt;
     int scroll_top, scroll_bottom;
     /* DECSC/DECRC use the active screen's register (normal = 0, alt = 1);
@@ -286,6 +288,23 @@ static void m_cursor_set(Model *m, int row, int col)
         col = m->cols - 1;
     m->row = row;
     m->col = col;
+}
+
+/* CUP/HVP/VPA destination: with DECOM on, the row is relative to the
+ * scroll region and clamped to its bottom (csi.c cursor_to_origin). The
+ * column is always absolute and clamped by cfr_cursor_set(). */
+static void m_cursor_to_origin(Model *m, int row, int col)
+{
+    if (m->decom) {
+        int top = m->scroll_top;
+        int bot = m->scroll_bottom;
+        if (row < 0)
+            row = 0;
+        row += top;
+        if (row > bot)
+            row = bot;
+    }
+    m_cursor_set(m, row, col);
 }
 
 /* cursor_clamp(): a print clamps the row and lets the column reach
@@ -844,8 +863,8 @@ static const ClusterFixture CLUSTERS[] = {
 };
 
 /* DECSTBM: an invalid region (top >= bottom) is ignored and leaves the
- * cursor alone; a valid one homes the cursor (DECOM is not modelled, so
- * home is row 0). */
+ * cursor alone; a valid one homes the cursor (to the region's top with
+ * DECOM on, to row 0 otherwise). */
 static void m_decstbm(Model *m, int top, int bottom)
 {
     if (top < 0)
@@ -856,8 +875,7 @@ static void m_decstbm(Model *m, int top, int bottom)
         return;
     m->scroll_top = top;
     m->scroll_bottom = bottom;
-    m->row = 0;
-    m->col = 0;
+    m_cursor_set(m, m->decom ? top : 0, 0);
 }
 
 static int m_saved_idx(const Model *m)
@@ -1217,10 +1235,9 @@ static bool run_op(CfrTerm *vt, Model *m, uint64_t *rng, char *op,
         snprintf(op, op_cap, "RI");
         strcpy(seq, "\x1bM\x1b[0m");
     } else if (pick < 555) {
-        int r = (int)rng_below(rng, (unsigned)m->rows);
+        int r = (int)rng_below(rng, (unsigned)(m->rows * 2));
         int c = (int)rng_below(rng, (unsigned)m->cols);
-        m->row = r;
-        m->col = c;
+        m_cursor_to_origin(m, r, c);
         snprintf(op, op_cap, "CUP %d;%d", r + 1, c + 1);
         snprintf(seq, sizeof(seq), "\x1b[%d;%dH\x1b[0m", r + 1, c + 1);
     } else if (pick < 585) {
@@ -1229,12 +1246,10 @@ static bool run_op(CfrTerm *vt, Model *m, uint64_t *rng, char *op,
         snprintf(op, op_cap, "CHA %d", c + 1);
         snprintf(seq, sizeof(seq), "\x1b[%dG\x1b[0m", c + 1);
     } else if (pick < 615) {
-        int r = (int)rng_below(rng, (unsigned)m->rows);
-        m->row = r;
+        int r = (int)rng_below(rng, (unsigned)(m->rows * 2));
         /* VPA is an explicit cursor move: the column, including a
          * pending phantom, is clamped like CUP's. */
-        if (m->col >= m->cols)
-            m->col = m->cols - 1;
+        m_cursor_to_origin(m, r, m->col);
         snprintf(op, op_cap, "VPA %d", r + 1);
         snprintf(seq, sizeof(seq), "\x1b[%dd\x1b[0m", r + 1);
     } else if (pick < 645) {
@@ -1295,7 +1310,12 @@ static bool run_op(CfrTerm *vt, Model *m, uint64_t *rng, char *op,
         snprintf(op, op_cap, "DECSTBM %d;%d", top + 1, bottom + 1);
         snprintf(seq, sizeof(seq), "\x1b[%d;%dr\x1b[0m", top + 1,
                  bottom + 1);
-    } else if (pick < 885) {
+    } else if (pick < 880) {
+        m->decom = !m->decom;
+        m_cursor_set(m, m->decom ? m->scroll_top : 0, 0);
+        snprintf(op, op_cap, "DECOM %s", m->decom ? "on" : "off");
+        strcpy(seq, m->decom ? "\x1b[?6h\x1b[0m" : "\x1b[?6l\x1b[0m");
+    } else if (pick < 890) {
         m->decawm = !m->decawm;
         if (!m->decawm && m->col >= m->cols)
             m->col = m->cols - 1;
