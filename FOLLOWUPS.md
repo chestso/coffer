@@ -27,27 +27,19 @@ on. Order is roughly priority, not strict dependency.
   `CFR_REFLOW_PREFIX_ROWS`), the clamp-only resize path (`reflow =
   false`, resize on the alt screen, and the exit-time catch-up of the
   stale main page), DECOM, partial scroll regions (DECSTBM), altscreen
-  1049 and raw 47/1047, and selector/ZWJ clusters printed as one write.
-  Still not modeled: stray-joiner re-attachment across writes
-  (`test_cfr_wrap_width` covers it). The model extension found and
+  1049 and raw 47/1047, selector/ZWJ clusters printed as one write, and
+  split-write base+joiner pairs (§3.4). The model extension found and
   pinned three engine fixes: the ASCII run fast path wrote one cell past
   the row after a failed wrap commit and ED 0/1 indexed rows out of
   bounds after a DECRC restored a pre-shrink cursor (both in
   `test_cfr_wrap_erase`), and a width-changing clamp carried the margin
   WRAPLINE bit onto an interior cell, where a later resize could
-  resurrect a severed join (`test_cfr_lines`). The accepted
+  resurrect a severed join (`test_cfr_lines`). The split-write ops also
+  pin the parked-margin attach fix: a stray joiner now re-attaches to
+  the recorded last printed cell instead of the cell before the cursor
+  (`test_cfr_wrap_width`). The accepted
   DL-inside-one-wrapped-line over-join (spec §7) remains: wrong text,
   never wrong structure.
-
-- **Stray joiner on a parked margin cell.** The ASCII run fast path
-  commits an ASCII base before a following selector arrives, so
-  `"a"` then VS16 (two writes) reaches `attach_stray_joiners()`. It looks
-  at `col - 1`, which is the cell before the base when DECAWM is off and
-  the cursor is parked on the margin; the selector is dropped instead of
-  widening the margin cell. Same-write clusters and the DECAWM-on phantom
-  path are unaffected. The fuzzer's cluster fixtures use non-ASCII bases
-  for this reason (spec §8); fix the attach lookup if split-write
-  selectors at the margin matter to a consumer.
 
 ## Not yet implemented
 

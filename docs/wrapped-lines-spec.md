@@ -91,10 +91,17 @@ by IL/DL/scroll carries the incoming row's lineage.
 
 A combining mark, variation selector or ZWJ that reaches a flush with no
 base in the pending cluster (a write boundary or a control sequence split
-it from its base) re-attaches to the last printed cell **in the same
-row**, re-commits the combined cluster, and recomputes its width and any
-wrap it now forces. Cross-row re-attachment is a drop: the modifier is
-discarded there.
+it from its base) re-attaches to the **lead cell of the last print in the
+current row** — the cell recorded at print time, not the cell before the
+cursor — re-commits the combined cluster, and recomputes its width and
+any wrap it now forces. Recording the cell is what makes the margin case
+work: with DECAWM off a print in the margin parks the cursor on that
+cell, and the cell before it is the wrong target. A cursor move between
+the base and the joiner does not change the target. Cross-row
+re-attachment is a drop: the modifier is discarded there. So is an attach
+whose recorded cell has since been erased, overwritten with a blank, or
+moved/invalidated by a scroll, line/character insert or delete, resize,
+or screen switch.
 
 Cluster width follows UAX #11 plus UTS #51 presentation selectors:
 VS16 widens to 2; VS15 narrows only where the base has a text-presentation
@@ -114,8 +121,9 @@ Called only from a print (`commit_cluster` / the ASCII fast path):
 6. The cursor lands on column 0 of the destination row.
 
 If the cursor is on the bottom row but outside the scroll region, no wrap
-is possible; the print path returns without writing. (The fuzzer keeps a
-full-screen region, so this branch is not exercised there.)
+is possible: the print overwrites the margin cell without creating a join
+(and without scrolling). Partial scroll regions are exercised by the
+fuzzer.
 
 ## 5. Cursor motion, edits and the phantom
 
@@ -269,13 +277,14 @@ without reusing the engine's intern tables. It implements §3–§6 directly,
 not the engine's page/cell/interning machinery; it relies on the §5.6
 invariant that the edge exists only on the margin.
 
-Ops: printable ASCII runs, a wide ideograph, and selector/ZWJ clusters
+Ops: printable ASCII runs, a wide ideograph, selector/ZWJ clusters
 (VS16, VS15 with and without a text glyph, a combining mark, a ZWJ
-sequence); CR/LF/BS/HT/RI; CUP/CHA/VPA; SU/SD, IL/DL, ICH/DCH/ECH;
-EL 0–2, ED 0–3; DECAWM, IRM and DECOM toggles; DECSC/DECRC; DECSTBM
-(including partial regions and invalid regions); altscreen 1049 and raw
-47/1047, including `cfr_resize()` while the alt screen is active; and
-host calls `cfr_resize()` / `cfr_set_reflow()`.
+sequence), split-write base+joiner pairs; CR/LF/BS/HT/RI; CUP/CHA/VPA;
+SU/SD, IL/DL, ICH/DCH/ECH; EL 0–2, ED 0–3; DECAWM, IRM and DECOM
+toggles; DECSC/DECRC; DECSTBM (including partial regions and invalid
+regions); altscreen 1049 and raw 47/1047, including `cfr_resize()` while
+the alt screen is active; and host calls `cfr_resize()` /
+`cfr_set_reflow()`.
 
 The model's reflow resize replays `cfr_reflow()` phase for phase: collect
 the logical line straddling the top scrollback edge (bounded by
@@ -313,16 +322,22 @@ are an implementation detail), `COFFER_FUZZ_TRACE=N` (dump both grids
 from op N). The `clamp` run starts with `reflow = false`; every run
 flips `cfr_set_reflow()` occasionally, so both resize paths interleave.
 
-Not modeled: stray-joiner re-attachment (§3.4). The cluster ops print a
-base and its selectors in one write, so `commit_cluster()`'s one-shot
-path is what the model mirrors; `test_cfr_wrap_width` covers the
-split-write re-attachment path. The extension found three engine bugs:
-the ASCII run fast path wrote one cell past the row after a failed wrap
-commit and ED 0/1 indexed rows out of bounds when DECRC had restored a
-cursor saved before a shrink (both pinned by `test_cfr_wrap_erase`); a
-width-changing clamp could move the margin WRAPLINE bit to an interior
-cell and later restore a severed join (pinned by
-`test_cfr_lines`'s `test_clamp_resize_join_rules`).
+Stray-joiner re-attachment (§3.4) is modeled by split-write ops: the
+model prints a base, then feeds its joiner in a second write and
+re-attaches it to the recorded last printed cell. The one-shot cluster
+ops keep non-ASCII bases, since an ASCII base in one write is committed
+by the ASCII run fast path before the selector arrives, so the engine
+reaches it through the attach path rather than `commit_cluster()`'s
+one-shot path the model mirrors there. The extension found three engine
+bugs: the ASCII run fast path wrote one cell past the row after a failed
+wrap commit and ED 0/1 indexed rows out of bounds when DECRC had
+restored a cursor saved before a shrink (both pinned by
+`test_cfr_wrap_erase`); a width-changing clamp could move the margin
+WRAPLINE bit to an interior cell and later restore a severed join
+(pinned by `test_cfr_lines`'s `test_clamp_resize_join_rules`). The
+split-write work fixed the parked-margin attach (a base printed in the
+margin with DECAWM off was looked up one cell to the left) and pinned
+both margin cases in `test_cfr_wrap_width`.
 
 ## 9. Normative test references
 
