@@ -97,6 +97,51 @@ OSC 4 and OSC 10/11/12 accept the XParseColor RGB forms (`rgb:R/G/B`,
 …) are not looked up: they are ignored, and logged once as an unparseable
 specification. Applications that care can send the `rgb:` form.
 
+### Mode and device-attribute queries (DECRQM, DA3)
+
+Mode queries are not answered. `CSI Ps $ p` (ANSI mode) and
+`CSI ? Ps $ p` (DEC private mode) fall through the CSI dispatcher's
+`default:` branch and emit nothing. xterm replies
+`CSI Ps ; Pm $ y` (private: `CSI ? Ps ; Pm $ y`) with `Pm` = 1 set,
+2 reset, 0 not recognized, 3 permanently set, 4 permanently reset. Most
+of the state already exists behind `cfr_get_mode()` and the mode table,
+so the reply is plumbing plus a decision per mode between settable and
+permanently set/reset.
+
+DA3 is worse than missing: `CSI = c` (tertiary DA) reaches the same
+`case 'c'` handler as primary DA, which tests only for a `>`
+intermediate, so `CSI = c` is answered with the primary reply
+`CSI ? 62;4;22 c`. The sequence should either be ignored or answered
+with a tertiary response (`DCS ! | 00000000 ST`, as xterm does).
+
+**Benefit:** Clients that probe for a mode before relying on it
+(notably DECRQM) get a wrong answer today; DA3 gets an actively wrong
+one. Coverage belongs in `tests/test_cfr_stubs.c` or
+`tests/test_cfr_parser.c`, including an unrecognized mode's `0` reply.
+
+### Left/right margins (DECSLRM, DECSET ?69)
+
+`?69` is accepted and stored as `CFR_MODE_LEFT_RIGHT_MARGINS` (the
+warning says "accepted but not enforced"), but margins have no effect:
+cursor movement, printing/autowrap, erasing and editing still span the
+full row. `cfr_get_mode()` reports the flag as set while output ignores
+it, so a consumer cannot tell the difference from the mode alone.
+
+`CSI Pl ; Pr s` (DECSLRM) shares its final byte with `CSI s` (save
+cursor). `case 's'` checks only that there is no intermediate and
+therefore ignores the parameters, so a DECSLRM silently saves the
+cursor — and keeps doing so when `?69` is reset, where xterm ignores
+the sequence. At minimum the parameterized form must stop being a
+save-cursor alias before margins are implemented.
+
+Implementing margins means bounding print/wrap and cursor motion by the
+left/right margins, deciding which editing operations (ICH/DCH/ECH at
+minimum) respect them, homing the cursor as DECSLRM specifies, and
+resetting the margins to full width when `?69` is reset. DECSTBM stays
+orthogonal (it owns the vertical region). No known consumer of the
+engine sends DECSLRM; implement when one does or when strict VT420
+conformance becomes a goal.
+
 ### OSC 8 inside DCS / SOS-PM-APC strings
 
 Not implemented. Standard OSC parsing only; no support for OSC sequences
