@@ -320,12 +320,12 @@ PtyCtx *pty_spawn(int rows, int cols, char *const argv[], char *const env[],
         }
 
         MultiByteToWideChar(CP_UTF8, 0, argv[0], -1, p,
-                            (MAX_PATH * 2) - (p - cmdline));
+                            (int)((MAX_PATH * 2) - (p - cmdline)));
         p += wcslen(p);
         for (int i = 1; argv[i]; i++) {
             *p++ = L' ';
             MultiByteToWideChar(CP_UTF8, 0, argv[i], -1, p,
-                                (MAX_PATH * 2) - (p - cmdline));
+                                (int)((MAX_PATH * 2) - (p - cmdline)));
             p += wcslen(p);
         }
     } else {

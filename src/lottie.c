@@ -643,7 +643,7 @@ static size_t lt_base64_decode(const uint8_t *in, size_t in_len,
         int8_t v = b64_table[in[i]];
         if (v < 0)
             continue;
-        accum = (accum << 6) | (uint32_t)v;
+        accum = (accum << 6) | (uint32_t)(uint8_t)v;
         bits += 6;
         if (bits >= 8) {
             bits -= 8;
@@ -1085,7 +1085,8 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     if (!lt_tvg_init(vt, rec)) {
         uint8_t *rgba = lt_rgba(vt, rec->img_handle);
         if (rgba)
-            memset(rgba, 0, (size_t)rec->px_w * rec->px_h * 4);
+            memset(rgba, 0,
+                   (size_t)rec->px_w * (size_t)rec->px_h * 4);
     }
 #else
     (void)vt;

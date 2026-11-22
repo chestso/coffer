@@ -1011,18 +1011,18 @@ static int parse_report(uint64_t *out_id, int *out_row, int *out_col,
                     int8_t v = -1;
                     char c = b64_start[i++];
                     if (c >= 'A' && c <= 'Z')
-                        v = c - 'A';
+                        v = (int8_t)(c - 'A');
                     else if (c >= 'a' && c <= 'z')
-                        v = c - 'a' + 26;
+                        v = (int8_t)(c - 'a' + 26);
                     else if (c >= '0' && c <= '9')
-                        v = c - '0' + 52;
+                        v = (int8_t)(c - '0' + 52);
                     else if (c == '+')
                         v = 62;
                     else if (c == '/')
                         v = 63;
                     else
                         continue;
-                    accum = (accum << 6) | (uint32_t)v;
+                    accum = (accum << 6) | (uint32_t)(uint8_t)v;
                     bits += 6;
                     if (bits >= 8) {
                         bits -= 8;
@@ -1044,7 +1044,7 @@ static int parse_report(uint64_t *out_id, int *out_row, int *out_col,
             val += 5;
             *out_id = 0;
             while (*val >= '0' && *val <= '9') {
-                *out_id = *out_id * 10 + (*val - '0');
+                *out_id = *out_id * 10 + (uint64_t)(*val - '0');
                 val++;
             }
 

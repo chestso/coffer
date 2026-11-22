@@ -87,7 +87,7 @@ CfrTerm *cfr_new_with_allocator(const CfrConfig *cfg, const CfrAllocator *alloc)
     vt->scroll_bottom = cfg->rows - 1;
     vt->sb_capacity = cfg->scrollback >= 0 ? cfg->scrollback : CFR_DEFAULT_SCROLLBACK;
     vt->sb_bytes_cap = cfg->scrollback_bytes < 0
-                           ? CFR_DEFAULT_SCROLLBACK_BYTES
+                           ? (uint64_t)CFR_DEFAULT_SCROLLBACK_BYTES
                            : (uint64_t)cfg->scrollback_bytes;
     vt->reflow_enabled = cfg->reflow;
     vt->ambiguous_wide = cfg->ambiguous_wide;
@@ -331,7 +331,8 @@ static const CfrCell *locate_cell(const CfrTerm *vt, int row, int col,
     if (!page || col < 0 || col >= page->cols)
         return NULL;
     *out_page = page;
-    return &page->cells[(size_t)row_in_page * page->cols + col];
+    return &page->cells[(size_t)row_in_page * (size_t)page->cols +
+                        (size_t)col];
 }
 
 const CfrStyle *cfr_cell_style(const CfrTerm *vt, int row, int col)

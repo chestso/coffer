@@ -123,7 +123,7 @@ static void feed(CfrTerm *vt, const char *s)
 /* Make a tiny 2x2 RGBA buffer. */
 static uint8_t *make_rgba(int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
-    uint8_t *buf = malloc((size_t)w * h * 4);
+    uint8_t *buf = malloc((size_t)w * (size_t)h * 4);
     for (int i = 0; i < w * h; i++) {
         buf[i * 4 + 0] = r;
         buf[i * 4 + 1] = g;
@@ -828,9 +828,9 @@ static void test_chunked_transmit_capacity_boundary(void)
          * need several 4096-byte chunks. */
         const int dim = 32;
         uint8_t *rgba = make_rgba(dim, dim, 10, 20, 30, 255);
-        char *b64 = malloc((size_t)dim * dim * 4 * 2);
+        char *b64 = malloc((size_t)dim * (size_t)dim * 4 * 2);
         ASSERT_NOT_NULL(b64);
-        b64_encode(rgba, (size_t)dim * dim * 4, b64);
+        b64_encode(rgba, (size_t)dim * (size_t)dim * 4, b64);
         size_t b64_len = strlen(b64);
         ASSERT_TRUE(b64_len > chunk);
 

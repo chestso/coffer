@@ -194,6 +194,16 @@ elif test "x$user_cflags_set" = "x"; then
   fi
 fi
 
+dnl Conversion warnings are part of the build, not an optional lint. The
+dnl engine moves cell, damage and image indices between int and size_t
+dnl constantly; an implicit narrowing or sign flip there is a bug. The
+dnl vendored stb_image.h is included with -isystem so third-party code is
+dnl not held to these flags.
+CONVERSION_WARNINGS="-Wconversion -Wsign-conversion"
+CONVERSION_WERROR="-Werror=conversion -Werror=sign-conversion"
+CFLAGS="$CFLAGS $CONVERSION_WARNINGS $CONVERSION_WERROR"
+AC_MSG_NOTICE([Conversion warnings are errors: $CONVERSION_WARNINGS])
+
 dnl Headers / types
 AC_CHECK_HEADERS([stdlib.h string.h])
 AC_TYPE_SIZE_T

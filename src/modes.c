@@ -319,7 +319,7 @@ void cfr_reset(CfrTerm *vt)
     /* Clear the visible grid. */
     if (vt->grid) {
         memset(vt->grid->cells, 0,
-               (size_t)vt->rows * vt->cols * sizeof(CfrCell));
+               (size_t)vt->rows * (size_t)vt->cols * sizeof(CfrCell));
         memset(vt->grid->lineage, 0, (size_t)vt->rows * sizeof(uint32_t));
     }
 

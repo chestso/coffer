@@ -407,6 +407,11 @@ Build mode flags for `./configure` (all platforms):
 | `--enable-debug`   | Unsanitized debug (`-O0 -g3`)                                         |
 | `--enable-release` | Optimized (`-O3 -DNDEBUG`)                                            |
 
+Every mode adds `-Wconversion -Wsign-conversion` with the matching
+`-Werror=` flags, so an implicit narrowing or sign conversion fails the
+build (and therefore `make check`). The vendored
+`third_party/stb/stb_image.h` is included with `-isystem` and is exempt.
+
 Optional targets:
 
 ```sh

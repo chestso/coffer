@@ -118,7 +118,8 @@ bool cfr_wrap_commit(CfrTerm *vt)
 
     /* The wrap edge lives on the margin cell, so erases and overwrites
      * of that cell sever the join with no explicit clear-call. */
-    CfrCell *margin = &vt->grid->cells[(size_t)src * cols + (cols - 1)];
+    CfrCell *margin =
+        &vt->grid->cells[(size_t)src * (size_t)cols + (size_t)(cols - 1)];
     margin->flags |= CFR_CELL_WRAPLINE;
 
     int dst;

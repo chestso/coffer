@@ -335,8 +335,8 @@ static void k_placement_cells(CfrTerm *vt, const KittyParams *p,
         cols = (int)ceil(width_px / (double)cell_w);
     } else if (cols <= 0 && rows <= 0) {
         /* Neither: the image's natural size, as close as it fits. */
-        cols = ((int)(src_w * scale) + cell_w - 1) / cell_w;
-        rows = ((int)(src_h * scale) + cell_h - 1) / cell_h;
+        cols = ((int)((float)src_w * scale) + cell_w - 1) / cell_w;
+        rows = ((int)((float)src_h * scale) + cell_h - 1) / cell_h;
     }
     if (cols < 1)
         cols = 1;
@@ -447,7 +447,7 @@ static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
             *h = dh;
         }
     } else if (format == 32) {
-        size_t need = (size_t)*w * *h * 4;
+        size_t need = (size_t)*w * (size_t)*h * 4;
         if (data_len < need) {
             free(data);
             return NULL;
@@ -456,12 +456,12 @@ static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
         if (rgba)
             memcpy(rgba, data, need);
     } else if (format == 24) {
-        size_t need = (size_t)*w * *h * 3;
+        size_t need = (size_t)*w * (size_t)*h * 3;
         if (data_len < need) {
             free(data);
             return NULL;
         }
-        rgba = malloc((size_t)*w * *h * 4);
+        rgba = malloc((size_t)*w * (size_t)*h * 4);
         if (rgba) {
             for (int i = 0; i < *w * *h; i++) {
                 rgba[i * 4 + 0] = data[i * 3 + 0];

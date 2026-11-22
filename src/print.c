@@ -129,7 +129,7 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
     bool push_to_sb = (top == 0 && bot == vt->rows - 1 && !vt->in_altscreen);
     if (push_to_sb) {
         for (int i = 0; i < lines; ++i) {
-            const CfrCell *row = &vt->grid->cells[(size_t)(top + i) * vt->cols];
+            const CfrCell *row = &vt->grid->cells[(size_t)(top + i) * (size_t)vt->cols];
             uint32_t lineage = vt->grid->lineage[top + i];
             cfr_scrollback_push(vt, vt->grid, row, vt->cols, lineage);
             if (vt->callbacks.sb_pushline)
@@ -149,9 +149,9 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
      * non-join) survives the move without per-site bookkeeping. */
     int move_count = bot - top - lines + 1;
     if (move_count > 0) {
-        memmove(&vt->grid->cells[(size_t)top * vt->cols],
-                &vt->grid->cells[(size_t)(top + lines) * vt->cols],
-                (size_t)move_count * vt->cols * sizeof(CfrCell));
+        memmove(&vt->grid->cells[(size_t)top * (size_t)vt->cols],
+                &vt->grid->cells[(size_t)(top + lines) * (size_t)vt->cols],
+                (size_t)move_count * (size_t)vt->cols * sizeof(CfrCell));
         memmove(&vt->grid->lineage[top],
                 &vt->grid->lineage[top + lines],
                 (size_t)move_count * sizeof(uint32_t));
@@ -164,7 +164,7 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
      * erase commands (EL/ED) should use BCE. */
     int clear_start = bot - lines + 1;
     for (int i = 0; i < lines; ++i) {
-        CfrCell *row_cells = &vt->grid->cells[(size_t)(clear_start + i) * vt->cols];
+        CfrCell *row_cells = &vt->grid->cells[(size_t)(clear_start + i) * (size_t)vt->cols];
         memset(row_cells, 0, (size_t)vt->cols * sizeof(CfrCell));
     }
     memset(&vt->grid->lineage[clear_start], 0, (size_t)lines * sizeof(uint32_t));
@@ -190,9 +190,9 @@ void cfr_scroll_down(CfrTerm *vt, int lines)
 
     int move_count = bot - top - lines + 1;
     if (move_count > 0) {
-        memmove(&vt->grid->cells[(size_t)(top + lines) * vt->cols],
-                &vt->grid->cells[(size_t)top * vt->cols],
-                (size_t)move_count * vt->cols * sizeof(CfrCell));
+        memmove(&vt->grid->cells[(size_t)(top + lines) * (size_t)vt->cols],
+                &vt->grid->cells[(size_t)top * (size_t)vt->cols],
+                (size_t)move_count * (size_t)vt->cols * sizeof(CfrCell));
         memmove(&vt->grid->lineage[top + lines],
                 &vt->grid->lineage[top],
                 (size_t)move_count * sizeof(uint32_t));
@@ -200,7 +200,7 @@ void cfr_scroll_down(CfrTerm *vt, int lines)
     }
     for (int i = 0; i < lines; ++i)
         erase_cells(vt,
-                    &vt->grid->cells[(size_t)(top + i) * vt->cols],
+                    &vt->grid->cells[(size_t)(top + i) * (size_t)vt->cols],
                     vt->cols);
     memset(&vt->grid->lineage[top], 0, (size_t)lines * sizeof(uint32_t));
 
@@ -368,9 +368,9 @@ static void attach_stray_joiners(CfrTerm *vt, const uint32_t *cps, uint32_t len)
         return; /* start of row: the previous content is another row */
 
     CfrCell *cells = vt->grid->cells;
-    while (lead > 0 && cells[(size_t)row * vt->cols + lead].width == 0)
+    while (lead > 0 && cells[(size_t)row * (size_t)vt->cols + (size_t)lead].width == 0)
         lead--; /* step off a continuation onto its lead cell */
-    CfrCell *lead_cell = &cells[(size_t)row * vt->cols + lead];
+    CfrCell *lead_cell = &cells[(size_t)row * (size_t)vt->cols + (size_t)lead];
     if (lead_cell->width == 0 || lead_cell->cp == 0u || lead_cell->cp == 0x20u)
         return; /* never printed, or an erase blank — nothing to attach to */
 
@@ -400,7 +400,7 @@ static void attach_stray_joiners(CfrTerm *vt, const uint32_t *cps, uint32_t len)
      * the attach is invisible to the join predicate. Only when the
      * combined cluster lands back over the old span: if it wraps away,
      * cfr_wrap_commit() re-stamps the edge itself. */
-    CfrCell *margin = &cells[(size_t)row * vt->cols + (vt->cols - 1)];
+    CfrCell *margin = &cells[(size_t)row * (size_t)vt->cols + (size_t)(vt->cols - 1)];
     bool had_wrap = (lead + span >= vt->cols) &&
                     ((margin->flags & CFR_CELL_WRAPLINE) != 0u) &&
                     (new_w > 0) && (lead + new_w <= vt->cols);
@@ -408,7 +408,7 @@ static void attach_stray_joiners(CfrTerm *vt, const uint32_t *cps, uint32_t len)
     bool insert_mode = vt->insert_mode;
     vt->insert_mode = false; /* an attach overwrites in place */
 
-    erase_cells(vt, &cells[(size_t)row * vt->cols + lead], span);
+    erase_cells(vt, &cells[(size_t)row * (size_t)vt->cols + (size_t)lead], span);
     for (int i = 0; i < span; ++i)
         cfr_damage_cell(vt, row, lead + i);
 
@@ -468,7 +468,7 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
      * into a row that already has one keeps it. */
     cfr_lineage_stamp(vt, vt->cursor.row);
 
-    CfrCell *cell = &vt->grid->cells[(size_t)vt->cursor.row * vt->cols + vt->cursor.col];
+    CfrCell *cell = &vt->grid->cells[(size_t)vt->cursor.row * (size_t)vt->cols + (size_t)vt->cursor.col];
     /* Width of the cluster this print replaces: a width-2 lead leaves a
      * continuation behind when a narrow cluster overwrites it. */
     int old_width = cell->width;
@@ -488,7 +488,7 @@ static void commit_cluster(CfrTerm *vt, const uint32_t *cps, uint32_t len)
     vt->last_char = cps[0];
 
     if (width == 2 && vt->cursor.col + 1 < vt->cols) {
-        CfrCell *cont = &vt->grid->cells[(size_t)vt->cursor.row * vt->cols + vt->cursor.col + 1];
+        CfrCell *cont = &vt->grid->cells[(size_t)vt->cursor.row * (size_t)vt->cols + (size_t)vt->cursor.col + 1];
         cont->cp = 0;
         cont->grapheme_id = 0;
         cont->style_id = cell->style_id;
@@ -699,7 +699,7 @@ size_t cfr_print_ascii_run(CfrTerm *vt, const uint8_t *bytes, size_t len)
             stamped_row = row;
         }
 
-        CfrCell *cell = &cells[(size_t)row * cols + col];
+        CfrCell *cell = &cells[(size_t)row * (size_t)cols + (size_t)col];
         int old_width = cell->width;
         cell->cp = bytes[k];
         cell->grapheme_id = 0;
@@ -756,7 +756,7 @@ void cfr_erase_in_line(CfrTerm *vt, int mode)
     if (row < 0 || row >= vt->rows)
         return;
     cfr_cursor_kill_phantom(vt);
-    CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
+    CfrCell *line = &vt->grid->cells[(size_t)row * (size_t)vt->cols];
     int from = 0, to = vt->cols;
     switch (mode) {
     case 0:
@@ -801,7 +801,7 @@ void cfr_insert_chars(CfrTerm *vt, int count)
     if (count > vt->cols - col)
         count = vt->cols - col;
 
-    CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
+    CfrCell *line = &vt->grid->cells[(size_t)row * (size_t)vt->cols];
     /* ICH shifts the existing cells (including whatever sits at the
      * margin) to the right rather than removing them, so the row's wrap
      * edge must survive the shift. The margin cell is overwritten by the
@@ -838,7 +838,7 @@ void cfr_delete_chars(CfrTerm *vt, int count)
     if (count > vt->cols - col)
         count = vt->cols - col;
 
-    CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
+    CfrCell *line = &vt->grid->cells[(size_t)row * (size_t)vt->cols];
     int move = vt->cols - col - count;
     if (move > 0) {
         memmove(&line[col], &line[col + count],
@@ -869,7 +869,7 @@ void cfr_erase_chars(CfrTerm *vt, int count)
         return;
     if (count > vt->cols - col)
         count = vt->cols - col;
-    CfrCell *line = &vt->grid->cells[(size_t)row * vt->cols];
+    CfrCell *line = &vt->grid->cells[(size_t)row * (size_t)vt->cols];
     erase_cells(vt, &line[col], count);
     cfr_damage_row(vt, row);
 }
@@ -886,9 +886,9 @@ void cfr_insert_lines(CfrTerm *vt, int count)
         count = region_height;
     int move = region_height - count;
     if (move > 0) {
-        memmove(&vt->grid->cells[(size_t)(row + count) * vt->cols],
-                &vt->grid->cells[(size_t)row * vt->cols],
-                (size_t)move * vt->cols * sizeof(CfrCell));
+        memmove(&vt->grid->cells[(size_t)(row + count) * (size_t)vt->cols],
+                &vt->grid->cells[(size_t)row * (size_t)vt->cols],
+                (size_t)move * (size_t)vt->cols * sizeof(CfrCell));
         memmove(&vt->grid->lineage[row + count],
                 &vt->grid->lineage[row],
                 (size_t)move * sizeof(uint32_t));
@@ -896,7 +896,7 @@ void cfr_insert_lines(CfrTerm *vt, int count)
     }
     for (int i = 0; i < count; ++i)
         erase_cells(vt,
-                    &vt->grid->cells[(size_t)(row + i) * vt->cols],
+                    &vt->grid->cells[(size_t)(row + i) * (size_t)vt->cols],
                     vt->cols);
     memset(&vt->grid->lineage[row], 0, (size_t)count * sizeof(uint32_t));
     cfr_damage_all(vt);
@@ -915,9 +915,9 @@ void cfr_delete_lines(CfrTerm *vt, int count)
         count = region_height;
     int move = region_height - count;
     if (move > 0) {
-        memmove(&vt->grid->cells[(size_t)row * vt->cols],
-                &vt->grid->cells[(size_t)(row + count) * vt->cols],
-                (size_t)move * vt->cols * sizeof(CfrCell));
+        memmove(&vt->grid->cells[(size_t)row * (size_t)vt->cols],
+                &vt->grid->cells[(size_t)(row + count) * (size_t)vt->cols],
+                (size_t)move * (size_t)vt->cols * sizeof(CfrCell));
         memmove(&vt->grid->lineage[row],
                 &vt->grid->lineage[row + count],
                 (size_t)move * sizeof(uint32_t));
@@ -926,7 +926,7 @@ void cfr_delete_lines(CfrTerm *vt, int count)
     int clear_start = vt->scroll_bottom - count + 1;
     for (int i = 0; i < count; ++i)
         erase_cells(vt,
-                    &vt->grid->cells[(size_t)(clear_start + i) * vt->cols],
+                    &vt->grid->cells[(size_t)(clear_start + i) * (size_t)vt->cols],
                     vt->cols);
     memset(&vt->grid->lineage[clear_start], 0, (size_t)count * sizeof(uint32_t));
     cfr_damage_all(vt);
@@ -950,7 +950,7 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
     case 0:
         cfr_erase_in_line(vt, 0);
         for (int r = row + 1; r < vt->rows; ++r) {
-            erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
+            erase_cells(vt, &vt->grid->cells[(size_t)r * (size_t)vt->cols],
                         vt->cols);
             vt->grid->lineage[r] = 0;
         }
@@ -963,7 +963,7 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
     case 1:
         cfr_erase_in_line(vt, 1);
         for (int r = 0; r < row; ++r) {
-            erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
+            erase_cells(vt, &vt->grid->cells[(size_t)r * (size_t)vt->cols],
                         vt->cols);
             vt->grid->lineage[r] = 0;
         }
@@ -974,7 +974,7 @@ void cfr_erase_in_display(CfrTerm *vt, int mode)
         break;
     case 2:
         for (int r = 0; r < vt->rows; ++r)
-            erase_cells(vt, &vt->grid->cells[(size_t)r * vt->cols],
+            erase_cells(vt, &vt->grid->cells[(size_t)r * (size_t)vt->cols],
                         vt->cols);
         memset(vt->grid->lineage, 0, (size_t)vt->rows * sizeof(uint32_t));
         if (vt->images)

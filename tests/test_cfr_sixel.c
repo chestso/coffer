@@ -47,7 +47,7 @@ static void feed(CfrTerm *vt, const char *s)
 /* Pixel accessors over a returned CfrImage. */
 static const uint8_t *px(const CfrImage *s, int x, int y)
 {
-    return s->rgba + ((size_t)y * s->width_px + x) * 4;
+    return s->rgba + ((size_t)y * (size_t)s->width_px + (size_t)x) * 4;
 }
 
 /* ------------------------------------------------------------------ */

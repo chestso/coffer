@@ -66,7 +66,7 @@ static void feed(CfrTerm *vt, const char *s)
 /* Make a small RGBA buffer filled with a solid color. */
 static uint8_t *make_rgba(int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
-    uint8_t *buf = malloc((size_t)w * h * 4);
+    uint8_t *buf = malloc((size_t)w * (size_t)h * 4);
     for (int i = 0; i < w * h; i++) {
         buf[i * 4 + 0] = r;
         buf[i * 4 + 1] = g;

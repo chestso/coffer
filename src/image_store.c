@@ -490,8 +490,8 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     int cell_h = cvt->cell_h_px;
     int cell_w = cvt->cell_w_px;
     float scale = cvt->content_scale > 0.0f ? cvt->content_scale : 1.0f;
-    int scaled_w = (int)(disp_w * scale + 0.5f);
-    int scaled_h = (int)(disp_h * scale + 0.5f);
+    int scaled_w = (int)((float)disp_w * scale + 0.5f);
+    int scaled_h = (int)((float)disp_h * scale + 0.5f);
     int rows_tall = (scaled_h + cell_h - 1) / cell_h;
     int cols_wide = (scaled_w + cell_w - 1) / cell_w;
     if (rows_tall < 1)
@@ -775,8 +775,8 @@ void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
     int cell_h = ((CfrTerm *)vt)->cell_h_px;
     int cell_w = ((CfrTerm *)vt)->cell_w_px;
     float scale = ((CfrTerm *)vt)->content_scale > 0.0f ? ((CfrTerm *)vt)->content_scale : 1.0f;
-    int scaled_h = (int)(h * scale);
-    int scaled_w = (int)(w * scale);
+    int scaled_h = (int)((float)h * scale);
+    int scaled_w = (int)((float)w * scale);
     r->rows_tall = (scaled_h + cell_h - 1) / cell_h;
     r->cols_wide = (scaled_w + cell_w - 1) / cell_w;
     if (r->rows_tall < 1)
@@ -1145,8 +1145,8 @@ const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count)
         v->source = r->source;
         v->row = (int)(r->abs_line - cvt->sixel_abs_top);
         v->col = r->col;
-        v->width_px = (int)(r->w * cscale + 0.5f);
-        v->height_px = (int)(r->h * cscale + 0.5f);
+        v->width_px = (int)((float)r->w * cscale + 0.5f);
+        v->height_px = (int)((float)r->h * cscale + 0.5f);
         v->buf_w = r->buf_w;
         v->buf_h = r->buf_h;
         v->rgba = r->rgba;

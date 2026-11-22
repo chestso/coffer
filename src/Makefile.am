@@ -42,7 +42,11 @@ libcoffer_a_SOURCES = \
     image_store.h \
     unicode_tables.h
 
-libcoffer_a_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src -I$(top_srcdir)/third_party/stb
+# stb_image.h is vendored verbatim. Treat it as a system header so the
+# project's warning gate (-Wconversion) does not hold third-party code to
+# our conversion rules.
+libcoffer_a_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src \
+    -isystem $(top_srcdir)/third_party/stb
 
 # The CLI: a headless PTY inspector that drives the library. It links the
 # static library next door, so `make` in src/ builds both.

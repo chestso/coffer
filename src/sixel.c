@@ -152,8 +152,8 @@ static bool sx_canvas_ensure(CfrTerm *vt, CfrSixelState *st, int need_x,
         memset(nb, 0, need_bytes);
         /* Copy existing rows into the wider canvas. */
         for (int row = 0; row < st->canvas_h && row < nh; ++row)
-            memcpy(nb + (size_t)row * nw * 4,
-                   st->canvas + (size_t)row * st->canvas_w * 4,
+            memcpy(nb + (size_t)row * (size_t)nw * 4,
+                   st->canvas + (size_t)row * (size_t)st->canvas_w * 4,
                    (size_t)st->canvas_w * 4);
         cfr_dealloc(vt, st->canvas);
         st->canvas = nb;
@@ -219,7 +219,7 @@ static void sx_draw(CfrTerm *vt, CfrSixelState *st, uint8_t bits)
         if (bits & (1u << bit)) {
             int py = st->y + bit;
             if (py < st->canvas_h && st->x < st->canvas_w) {
-                size_t off = ((size_t)py * st->canvas_w + st->x) * 4;
+                size_t off = ((size_t)py * (size_t)st->canvas_w + (size_t)st->x) * 4;
                 st->canvas[off + 0] = c.r;
                 st->canvas[off + 1] = c.g;
                 st->canvas[off + 2] = c.b;
@@ -514,8 +514,8 @@ void cfr_sixel_finish(CfrTerm *vt)
     if (!rgba)
         return;
     for (int row = 0; row < h; ++row)
-        memcpy(rgba + (size_t)row * w * 4,
-               st->canvas + (size_t)row * st->canvas_w * 4, (size_t)w * 4);
+        memcpy(rgba + (size_t)row * (size_t)w * 4,
+               st->canvas + (size_t)row * (size_t)st->canvas_w * 4, (size_t)w * 4);
 
     /* Delegate to the shared store: handles buffer pool, eviction,
      * cursor advancement, and damage. */

@@ -516,7 +516,7 @@ static void test_large_single_shot(void)
     ASSERT_EQ(n, (int)seq_len);
 
     CfrTerm *vt = make_term(24, 80);
-    cfr_input_write(vt, (const uint8_t *)seq, n);
+    cfr_input_write(vt, (const uint8_t *)seq, (size_t)n);
 
     int count = 0;
     const CfrImage *imgs = cfr_get_images(vt, &count);

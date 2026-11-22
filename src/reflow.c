@@ -159,8 +159,8 @@ void cfr_resize_clamp(CfrTerm *vt, int new_rows, int new_cols)
         int copy_cols = (new_cols < vt->cols) ? new_cols : vt->cols;
         for (int r = 0; r < copy_rows; ++r) {
             for (int c = 0; c < copy_cols; ++c) {
-                CfrCell src = old_grid->cells[(size_t)r * vt->cols + c];
-                CfrCell *dst = &new_grid->cells[(size_t)r * new_cols + c];
+                CfrCell src = old_grid->cells[(size_t)r * (size_t)vt->cols + (size_t)c];
+                CfrCell *dst = &new_grid->cells[(size_t)r * (size_t)new_cols + (size_t)c];
                 /* Cannot preserve an attribute: abandon the resize with
                  * the old geometry and content intact. */
                 if (!cfr_cell_reintern(vt, new_grid, old_grid, src, dst)) {
@@ -227,7 +227,7 @@ static bool collect_prefix(Reflow *R)
         if (!reserve_cells(R, (uint32_t)page_cols))
             return false;
         for (int col = 0; col < page_cols; ++col) {
-            CfrCell cell = page->cells[(size_t)row_in_page * page_cols + col];
+            CfrCell cell = page->cells[(size_t)row_in_page * (size_t)page_cols + (size_t)col];
             if (cell.width == 0)
                 continue;
             cell.flags &= (uint8_t)~CFR_CELL_WRAPLINE;
@@ -277,7 +277,7 @@ static bool collect_grid(Reflow *R)
         for (int col = 0; col < R->old_cols; ++col) {
             if (r == cursor_row && col == cursor_col)
                 cursor_in_row = (int32_t)(R->cells_count - row_start);
-            CfrCell cell = grid->cells[(size_t)r * R->old_cols + col];
+            CfrCell cell = grid->cells[(size_t)r * (size_t)R->old_cols + (size_t)col];
             if (cell.width == 0)
                 continue;
             /* Wrap edges are re-stamped on the new margin cells; a stale
@@ -470,7 +470,7 @@ static bool install(Reflow *R)
     for (int i = 0; i < visible_count; ++i) {
         const NewRow *nr = &R->rows[sb_count + i];
         layout_row(R, nr, row_buf);
-        CfrCell *dst = &new_grid->cells[(size_t)i * new_cols];
+        CfrCell *dst = &new_grid->cells[(size_t)i * (size_t)new_cols];
         for (int c = 0; c < new_cols; ++c) {
             if (!cfr_cell_reintern(vt, new_grid, R->old_grid, row_buf[c],
                                    &dst[c])) {

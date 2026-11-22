@@ -1028,7 +1028,7 @@ static void m_reflow(Model *m, int new_rows, int new_cols)
             if (id == 0)
                 id = m_next_line(m);
             if (R->lines_count < FLAT_MAX) {
-                R->lines[R->lines_count].end = R->count;
+                R->lines[R->lines_count].end = (uint32_t)R->count;
                 R->lines[R->lines_count].line = id;
                 if (m->row >= line_start && m->row <= r)
                     R->cursor_line = R->lines_count;
@@ -1045,9 +1045,10 @@ static void m_reflow(Model *m, int new_rows, int new_cols)
     /* Trim trailing blank lines that do not host the cursor (the same
      * blank test: a hole or a space). */
     while (R->lines_count > 0) {
-        int end = R->lines[R->lines_count - 1].end;
-        int start =
-            R->lines_count > 1 ? R->lines[R->lines_count - 2].end : 0;
+        int end = (int)R->lines[R->lines_count - 1].end;
+        int start = R->lines_count > 1
+                        ? (int)R->lines[R->lines_count - 2].end
+                        : 0;
         bool content = false;
         for (int k = start; k < end; ++k) {
             if (R->cells[k].kind != MC_HOLE &&
@@ -1109,7 +1110,7 @@ static void m_reflow(Model *m, int new_rows, int new_cols)
                 R->rows_count++;
             }
         } while (i < (int)line->end);
-        line_start = line->end;
+        line_start = (int)line->end;
     }
     if (!placed) {
         R->cursor_row = R->rows_count > 0 ? R->rows_count - 1 : 0;
@@ -1384,10 +1385,11 @@ static void fuzz_dump_grid(CfrTerm *vt, Model *m)
                 fprintf(stderr, " %d:%d", mr->cells[c].kind,
                         (int)mr->cells[c].width);
             fprintf(stderr, "\n           engine cp:  ");
+            const CfrCell *engine_row =
+                &pp->cells[(size_t)pr * (size_t)pp->cols];
             for (int c = 0; c < m->cols; ++c)
-                fprintf(stderr, " %02x/%d",
-                        (unsigned)pp->cells[(size_t)pr * pp->cols + c].cp,
-                        (int)pp->cells[(size_t)pr * pp->cols + c].width);
+                fprintf(stderr, " %02x/%d", (unsigned)engine_row[c].cp,
+                        (int)engine_row[c].width);
             fprintf(stderr, "\n");
         }
     }
@@ -1440,7 +1442,8 @@ static bool fuzz_run(int rows, int cols, int sb_cap, uint64_t seed, int iters)
         ok = false;
 
     for (int i = 0; ok && i < iters; ++i) {
-        uint64_t rng = seed + (uint64_t)i * 0x9E3779B97F4A7C15ULL;
+        uint64_t rng =
+            seed + (uint64_t)i * UINT64_C(0x9E3779B97F4A7C15);
         if (trace_from >= 0 && i == trace_from) {
             fprintf(stderr, "--- before op %d ---\n", i);
             fuzz_dump_grid(vt, &m);
