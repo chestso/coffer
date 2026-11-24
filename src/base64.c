@@ -6,11 +6,13 @@
  * is stripped before decoding so payloads can be line-wrapped by the
  * client. cfr_buf_append backs the chunked-upload accumulators used by
  * the kitty and iTerm2 handlers.
+ *
+ * Everything goes through the terminal's allocator, so a custom
+ * CfrAllocator sees the same traffic the rest of the engine does.
  */
 
 #include "coffer_internal.h"
 
-#include <stdlib.h>
 #include <string.h>
 
 /* Append n bytes to a growing buffer, doubling capacity as needed. One
@@ -19,7 +21,7 @@
  * terminator itself (the payload is still counted in *len, which is
  * what cfr_base64_decode is given). Returns 0 on success, -1 on
  * allocation failure. */
-int cfr_buf_append(uint8_t **buf, size_t *len, size_t *cap,
+int cfr_buf_append(CfrTerm *vt, uint8_t **buf, size_t *len, size_t *cap,
                    const void *data, size_t n)
 {
     /* Zero-byte append is a no-op. Callers may pass a NULL buffer with
@@ -32,7 +34,7 @@ int cfr_buf_append(uint8_t **buf, size_t *len, size_t *cap,
         size_t ncap = *cap ? *cap : 256;
         while (ncap < *len + n + 1)
             ncap *= 2;
-        uint8_t *nb = realloc(*buf, ncap);
+        uint8_t *nb = cfr_realloc(vt, *buf, ncap);
         if (!nb)
             return -1;
         *buf = nb;
@@ -59,10 +61,11 @@ static int b64_val(char c)
     return -1;
 }
 
-uint8_t *cfr_base64_decode(const char *in, size_t in_len, size_t *out_len)
+uint8_t *cfr_base64_decode(CfrTerm *vt, const char *in, size_t in_len,
+                           size_t *out_len)
 {
     size_t clean_len = 0;
-    char *clean = malloc(in_len + 1);
+    char *clean = cfr_alloc(vt, in_len + 1);
     if (!clean)
         return NULL;
     for (size_t i = 0; i < in_len; i++) {
@@ -74,9 +77,9 @@ uint8_t *cfr_base64_decode(const char *in, size_t in_len, size_t *out_len)
     clean[clean_len] = '\0';
 
     size_t cap = (clean_len / 4) * 3 + 3;
-    uint8_t *out = malloc(cap);
+    uint8_t *out = cfr_alloc(vt, cap);
     if (!out) {
-        free(clean);
+        cfr_dealloc(vt, clean);
         return NULL;
     }
 
@@ -87,8 +90,8 @@ uint8_t *cfr_base64_decode(const char *in, size_t in_len, size_t *out_len)
         int c = (clean[i + 2] == '=') ? 0 : b64_val(clean[i + 2]);
         int d = (clean[i + 3] == '=') ? 0 : b64_val(clean[i + 3]);
         if (a < 0 || b < 0 || c < 0 || d < 0) {
-            free(out);
-            free(clean);
+            cfr_dealloc(vt, out);
+            cfr_dealloc(vt, clean);
             return NULL;
         }
         out[pos++] = (uint8_t)((a << 2) | (b >> 4));
@@ -98,7 +101,7 @@ uint8_t *cfr_base64_decode(const char *in, size_t in_len, size_t *out_len)
             out[pos++] = (uint8_t)(((c & 0x3) << 6) | d);
     }
 
-    free(clean);
+    cfr_dealloc(vt, clean);
     *out_len = pos;
     return out;
 }

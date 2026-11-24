@@ -38,10 +38,8 @@ typedef struct
     int quiet;          /* q= (0,1,2) */
     int more;           /* m= (chunked: 1=more, 0=last) */
     int delete_what;    /* d= (for a=d) */
-    int delete_x;       /* x= (for delete ranges/positions) */
-    int delete_y;       /* y= */
-    int src_x;          /* x= (source rect origin, pixels) */
-    int src_y;          /* y= (source rect origin, pixels) */
+    int src_x;          /* x= (source rect origin, pixels; delete cell x) */
+    int src_y;          /* y= (source rect origin, pixels; delete cell y) */
     int src_w;          /* w= (source rect size, pixels) */
     int src_h;          /* h= (source rect size, pixels) */
     int cell_off_x;     /* X= (offset within the first cell, pixels) */
@@ -151,12 +149,10 @@ static void k_parse_params(const char *ctrl, size_t len, KittyParams *p)
                 case 'x':
                     p->has_src_x = 1;
                     p->src_x = atoi(val_buf);
-                    p->delete_x = p->src_x;
                     break;
                 case 'y':
                     p->has_src_y = 1;
                     p->src_y = atoi(val_buf);
-                    p->delete_y = p->src_y;
                     break;
                 case 'w':
                     p->has_src_w = 1;
@@ -377,50 +373,17 @@ static void k_source_rect(const KittyParams *p, int img_w, int img_h,
 /* Action: transmit (a=t, a=T, a=f frame)                            */
 /* ------------------------------------------------------------------ */
 
-/* Chunked-upload accumulator for kitty transmit (m=1 ... m=0).
- * The first chunk carries the full control data (action, format,
- * dimensions, id); continuation chunks repeat only m= and payload, so
- * the accumulated header is stashed here for the final decode. */
-typedef struct
-{
-    char *b64;
-    size_t len;
-    size_t cap;
-    int active;
-    int format;      /* f= from the first chunk */
-    int width;       /* s= from the first chunk */
-    int height;      /* v= from the first chunk */
-    int compression; /* o= from the first chunk */
-    int image_id;    /* i= from the first chunk */
-    int has_image_id;
-    int quiet;
-    int action;    /* a= from the first chunk (t/T/f) */
-    int disp_cols; /* c= from the first chunk (display cols) */
-    int disp_rows; /* r= from the first chunk (display rows) */
-    int has_disp_cols;
-    int has_disp_rows;
-    int z_index; /* z= from the first chunk (placement z-order) */
-    int has_z_index;
-    int no_cursor_move; /* C= from the first chunk (1 = leave cursor) */
-    int has_no_cursor_move;
-    int src_x, src_y, src_w, src_h; /* x=/y=/w=/h= (source rect) */
-    int has_src_x, has_src_y, has_src_w, has_src_h;
-    int cell_off_x, cell_off_y; /* X=/Y= (offset in the first cell) */
-    int has_cell_off_x, has_cell_off_y;
-    int rel_h, rel_v; /* H=/V= (relative placement offset) */
-    int has_rel_h, has_rel_v;
-} KChunk;
-
-static KChunk g_chunk = { 0 };
-
-/* Decode a base64 payload to RGBA (f=32/24/100). Returns malloc'd RGBA
- * and sets *w and *h. On failure returns NULL. If decompress is true, the
- * base64-decoded bytes are first inflated as a zlib stream (o=z). */
-static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
-                              int format, int *w, int *h, bool decompress)
+/* Decode a base64 payload to RGBA (f=32/24/100). Returns a freshly
+ * allocated RGBA buffer (the caller's allocator) and sets *w and *h.
+ * On failure returns NULL. If decompress is true, the base64-decoded
+ * bytes are first inflated as a zlib stream (o=z). */
+static uint8_t *k_decode_rgba(CfrTerm *vt, const uint8_t *payload,
+                              size_t payload_len, int format, int *w, int *h,
+                              bool decompress)
 {
     size_t raw_len = 0;
-    uint8_t *raw = cfr_base64_decode((const char *)payload, payload_len, &raw_len);
+    uint8_t *raw = cfr_base64_decode(vt, (const char *)payload, payload_len,
+                                     &raw_len);
     if (!raw)
         return NULL;
 
@@ -429,8 +392,8 @@ static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
 
     if (decompress) {
         size_t out_len = 0;
-        uint8_t *inf = cfr_zlib_decompress(raw, raw_len, &out_len);
-        free(raw);
+        uint8_t *inf = cfr_zlib_decompress(vt, raw, raw_len, &out_len);
+        cfr_dealloc(vt, raw);
         if (!inf)
             return NULL;
         data = inf;
@@ -441,27 +404,35 @@ static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
 
     if (format == 100) {
         int dw = 0, dh = 0;
-        rgba = cfr_image_decode(data, data_len, &dw, &dh);
-        if (rgba) {
+        /* cfr_image_decode returns C-library memory (stb_image); move
+         * it onto the terminal's allocator like the raw formats, so
+         * the caller frees uniformly. */
+        uint8_t *dec = cfr_image_decode(data, data_len, &dw, &dh);
+        if (dec) {
+            size_t need = (size_t)dw * (size_t)dh * 4u;
+            rgba = cfr_alloc(vt, need);
+            if (rgba)
+                memcpy(rgba, dec, need);
+            free(dec);
             *w = dw;
             *h = dh;
         }
     } else if (format == 32) {
         size_t need = (size_t)*w * (size_t)*h * 4;
         if (data_len < need) {
-            free(data);
+            cfr_dealloc(vt, data);
             return NULL;
         }
-        rgba = malloc(need);
+        rgba = cfr_alloc(vt, need);
         if (rgba)
             memcpy(rgba, data, need);
     } else if (format == 24) {
         size_t need = (size_t)*w * (size_t)*h * 3;
         if (data_len < need) {
-            free(data);
+            cfr_dealloc(vt, data);
             return NULL;
         }
-        rgba = malloc((size_t)*w * (size_t)*h * 4);
+        rgba = cfr_alloc(vt, (size_t)*w * (size_t)*h * 4);
         if (rgba) {
             for (int i = 0; i < *w * *h; i++) {
                 rgba[i * 4 + 0] = data[i * 3 + 0];
@@ -471,7 +442,7 @@ static uint8_t *k_decode_rgba(const uint8_t *payload, size_t payload_len,
             }
         }
     }
-    free(data);
+    cfr_dealloc(vt, data);
     return rgba;
 }
 
@@ -555,15 +526,18 @@ static bool k_needs_dimensions(const KittyParams *p)
 }
 
 static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
+                              const char *ctrl, size_t ctrl_len,
                               const uint8_t *payload, size_t payload_len,
                               bool is_frame, bool place_at_cursor)
 {
-    /* Chunked transfer: m=1 accumulates base64 into a static buffer;
-     * m=0 (or no m flag) finalizes and stores. Continuation chunks
-     * carry no action/format/dimensions, so stash the first chunk's
-     * control data for the final decode. */
+    CfrKChunk *ch = &vt->kchunk;
+
+    /* Chunked transfer: m=1 accumulates base64 into the terminal's
+     * accumulator; m=0 (or no m flag) finalizes and stores. Continuation
+     * chunks carry no action/format/dimensions, so the first chunk's
+     * control data is stashed and re-parsed for the final decode. */
     if (p->has_more && p->more == 1) {
-        if (!g_chunk.active) {
+        if (!ch->active) {
             /* First chunk must carry the metadata for the decode. */
             k_default_format(p);
             if (k_needs_dimensions(p) &&
@@ -572,47 +546,27 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
                     k_emit_error(vt, p->image_id, "EINVAL:missing format/dimensions");
                 return;
             }
-            g_chunk.format = p->format;
-            g_chunk.width = p->width;
-            g_chunk.height = p->height;
-            g_chunk.compression = p->compression;
-            g_chunk.image_id = p->image_id;
-            g_chunk.has_image_id = p->has_image_id;
-            g_chunk.quiet = p->quiet;
-            g_chunk.action = p->action;
-            g_chunk.disp_cols = p->disp_cols;
-            g_chunk.disp_rows = p->disp_rows;
-            g_chunk.has_disp_cols = p->has_disp_cols;
-            g_chunk.has_disp_rows = p->has_disp_rows;
-            g_chunk.z_index = p->z_index;
-            g_chunk.has_z_index = p->has_z_index;
-            g_chunk.no_cursor_move = p->no_cursor_move;
-            g_chunk.has_no_cursor_move = p->has_no_cursor_move;
-            g_chunk.src_x = p->src_x;
-            g_chunk.src_y = p->src_y;
-            g_chunk.src_w = p->src_w;
-            g_chunk.src_h = p->src_h;
-            g_chunk.has_src_x = p->has_src_x;
-            g_chunk.has_src_y = p->has_src_y;
-            g_chunk.has_src_w = p->has_src_w;
-            g_chunk.has_src_h = p->has_src_h;
-            g_chunk.cell_off_x = p->cell_off_x;
-            g_chunk.cell_off_y = p->cell_off_y;
-            g_chunk.has_cell_off_x = p->has_cell_off_x;
-            g_chunk.has_cell_off_y = p->has_cell_off_y;
-            g_chunk.rel_h = p->rel_h;
-            g_chunk.rel_v = p->rel_v;
-            g_chunk.has_rel_h = p->has_rel_h;
-            g_chunk.has_rel_v = p->has_rel_v;
+            if (!ch->ctrl || ch->ctrl_cap < ctrl_len + 1) {
+                size_t ncap = ctrl_len + 1;
+                char *nc = cfr_alloc(vt, ncap);
+                if (!nc)
+                    return;
+                cfr_dealloc(vt, ch->ctrl);
+                ch->ctrl = nc;
+                ch->ctrl_cap = ncap;
+            }
+            memcpy(ch->ctrl, ctrl, ctrl_len);
+            ch->ctrl[ctrl_len] = '\0';
+            ch->ctrl_len = ctrl_len;
         }
-        if (cfr_buf_append((uint8_t **)&g_chunk.b64, &g_chunk.len,
-                           &g_chunk.cap, payload, payload_len) != 0)
+        if (cfr_buf_append(vt, (uint8_t **)&ch->b64, &ch->len,
+                           &ch->cap, payload, payload_len) != 0)
             return;
         /* cfr_buf_append keeps the accumulator NUL-terminated; a first
          * chunk carrying only control data (no ';' — chafa emits
          * "ESC _ G a=T,...,m=1,q=2 ESC \") appends no bytes at all and
          * leaves it unallocated. */
-        g_chunk.active = 1;
+        ch->active = 1;
         return;
     }
 
@@ -622,93 +576,53 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
     char *tmp_b64 = NULL;
 
     /* Continuation chunks carry no action/format/dimensions; recover
-     * them from the first chunk of the transfer. */
-    if (g_chunk.active) {
-        if (!p->has_format) {
-            p->format = g_chunk.format;
-            p->has_format = 1;
-        }
-        if (!p->has_width) {
-            p->width = g_chunk.width;
-            p->has_width = 1;
-        }
-        if (!p->has_height) {
-            p->height = g_chunk.height;
-            p->has_height = 1;
-        }
-        if (!p->has_compression) {
-            p->compression = g_chunk.compression;
-            p->has_compression = 1;
-        }
-        if (!p->has_image_id) {
-            p->image_id = g_chunk.image_id;
-            p->has_image_id = g_chunk.has_image_id;
-        }
+     * them by re-parsing the first chunk's control data, letting keys
+     * the final chunk does set (q=, m=) win. */
+    if (ch->active) {
+        KittyParams first;
+        k_parse_params(ch->ctrl, ch->ctrl_len, &first);
+#define MERGE(val, has)         \
+    do {                        \
+        if (!p->has) {          \
+            p->val = first.val; \
+            p->has = first.has; \
+        }                       \
+    } while (0)
+        MERGE(format, has_format);
+        MERGE(width, has_width);
+        MERGE(height, has_height);
+        MERGE(compression, has_compression);
+        MERGE(image_id, has_image_id);
         if (!p->quiet)
-            p->quiet = g_chunk.quiet;
-        if (!p->has_disp_cols) {
-            p->disp_cols = g_chunk.disp_cols;
-            p->has_disp_cols = g_chunk.has_disp_cols;
-        }
-        if (!p->has_disp_rows) {
-            p->disp_rows = g_chunk.disp_rows;
-            p->has_disp_rows = g_chunk.has_disp_rows;
-        }
-        if (!p->has_z_index) {
-            p->z_index = g_chunk.z_index;
-            p->has_z_index = g_chunk.has_z_index;
-        }
-        if (!p->has_no_cursor_move) {
-            p->no_cursor_move = g_chunk.no_cursor_move;
-            p->has_no_cursor_move = g_chunk.has_no_cursor_move;
-        }
-        if (!p->has_src_x) {
-            p->src_x = g_chunk.src_x;
-            p->has_src_x = g_chunk.has_src_x;
-        }
-        if (!p->has_src_y) {
-            p->src_y = g_chunk.src_y;
-            p->has_src_y = g_chunk.has_src_y;
-        }
-        if (!p->has_src_w) {
-            p->src_w = g_chunk.src_w;
-            p->has_src_w = g_chunk.has_src_w;
-        }
-        if (!p->has_src_h) {
-            p->src_h = g_chunk.src_h;
-            p->has_src_h = g_chunk.has_src_h;
-        }
-        if (!p->has_cell_off_x) {
-            p->cell_off_x = g_chunk.cell_off_x;
-            p->has_cell_off_x = g_chunk.has_cell_off_x;
-        }
-        if (!p->has_cell_off_y) {
-            p->cell_off_y = g_chunk.cell_off_y;
-            p->has_cell_off_y = g_chunk.has_cell_off_y;
-        }
-        if (!p->has_rel_h) {
-            p->rel_h = g_chunk.rel_h;
-            p->has_rel_h = g_chunk.has_rel_h;
-        }
-        if (!p->has_rel_v) {
-            p->rel_v = g_chunk.rel_v;
-            p->has_rel_v = g_chunk.has_rel_v;
-        }
+            p->quiet = first.quiet;
+        MERGE(disp_cols, has_disp_cols);
+        MERGE(disp_rows, has_disp_rows);
+        MERGE(z_index, has_z_index);
+        MERGE(no_cursor_move, has_no_cursor_move);
+        MERGE(src_x, has_src_x);
+        MERGE(src_y, has_src_y);
+        MERGE(src_w, has_src_w);
+        MERGE(src_h, has_src_h);
+        MERGE(cell_off_x, has_cell_off_x);
+        MERGE(cell_off_y, has_cell_off_y);
+        MERGE(rel_h, has_rel_h);
+        MERGE(rel_v, has_rel_v);
+#undef MERGE
 
-        size_t need = g_chunk.len + payload_len + 1;
-        tmp_b64 = malloc(need);
+        size_t need = ch->len + payload_len + 1;
+        tmp_b64 = cfr_alloc(vt, need);
         if (!tmp_b64)
             return;
-        if (g_chunk.len > 0)
-            memcpy(tmp_b64, g_chunk.b64, g_chunk.len);
+        if (ch->len > 0)
+            memcpy(tmp_b64, ch->b64, ch->len);
         if (payload_len > 0)
-            memcpy(tmp_b64 + g_chunk.len, payload, payload_len);
-        tmp_b64[g_chunk.len + payload_len] = '\0';
+            memcpy(tmp_b64 + ch->len, payload, payload_len);
+        tmp_b64[ch->len + payload_len] = '\0';
         data = (const uint8_t *)tmp_b64;
-        data_len = g_chunk.len + payload_len;
+        data_len = ch->len + payload_len;
 
-        free(g_chunk.b64);
-        memset(&g_chunk, 0, sizeof(g_chunk));
+        cfr_dealloc(vt, ch->b64);
+        memset(ch, 0, sizeof(*ch));
     }
 
     /* Single-shot transmit must carry the metadata itself. The format
@@ -723,9 +637,9 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
 
     int w = p->width, h = p->height;
     bool decompress = p->has_compression && p->compression == 'z';
-    uint8_t *rgba = k_decode_rgba(data, data_len, p->format, &w, &h,
+    uint8_t *rgba = k_decode_rgba(vt, data, data_len, p->format, &w, &h,
                                   decompress);
-    free(tmp_b64);
+    cfr_dealloc(vt, tmp_b64);
 
     if (!rgba) {
         if (!p->quiet)
@@ -764,7 +678,7 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
             !(p->has_virtual && p->virtual))
             k_advance_cursor(vt, place_col, cols, rows);
     }
-    free(rgba);
+    cfr_dealloc(vt, rgba);
 }
 
 /* ------------------------------------------------------------------ */
@@ -920,14 +834,16 @@ static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
     case 'P':
         /* Delete a single placement by placement id, on the screen it
          * was sent on: the other buffer's graphics set is not visible
-         * here, and its client-chosen placement ids may collide. */
+         * here, and its client-chosen placement ids may collide. The
+         * store removes the record so its rows are damaged and the
+         * image re-anchors. */
         if (p->has_placement_id) {
             uint64_t pid = (uint64_t)p->placement_id;
             uint8_t active = (uint8_t)vt->in_altscreen;
             for (int i = 0; i < store->place_count; i++) {
                 if (store->places[i].id == pid &&
                     store->places[i].screen == active) {
-                    store->places[i] = store->places[--store->place_count];
+                    cfr_img_remove_placement(vt, store, i);
                     break;
                 }
             }
@@ -991,22 +907,28 @@ void cfr_graphics_apc_dispatch(CfrTerm *vt, const uint8_t *buf, size_t len)
      * also needs the stashed action so a=T (transmit-and-place) still
      * places after the chunked upload completes. */
     if (p.action == 0 && p.has_more) {
-        if (g_chunk.active)
-            p.action = g_chunk.action ? g_chunk.action : 't';
-        else
-            p.action = 't';
+        p.action = 't';
+        if (vt->kchunk.active && vt->kchunk.ctrl) {
+            KittyParams first;
+            k_parse_params(vt->kchunk.ctrl, vt->kchunk.ctrl_len, &first);
+            if (first.action)
+                p.action = first.action;
+        }
     }
 
     switch (p.action) {
     case 't':
-        k_handle_transmit(vt, &p, payload, payload_len, false, false);
+        k_handle_transmit(vt, &p, (const char *)buf, ctrl_len,
+                          payload, payload_len, false, false);
         break;
     case 'T':
-        k_handle_transmit(vt, &p, payload, payload_len, false, true);
+        k_handle_transmit(vt, &p, (const char *)buf, ctrl_len,
+                          payload, payload_len, false, true);
         break;
     case 'f':
         /* a=f: animation frame data (replaces pixels for the id). */
-        k_handle_transmit(vt, &p, payload, payload_len, true, false);
+        k_handle_transmit(vt, &p, (const char *)buf, ctrl_len,
+                          payload, payload_len, true, false);
         break;
     case 'a':
         /* a=a: animation control (frame index is payload-form only in

@@ -251,6 +251,51 @@ typedef struct
 } CfrParser;
 
 /* ------------------------------------------------------------------ */
+/* Image upload accumulators                                           */
+/* ------------------------------------------------------------------ */
+
+/* Kitty graphics chunked-upload state (graphics.c). A chunked transfer
+ * (m=1 … m=0) carries its control data on the FIRST chunk only, so the
+ * accumulator stashes that chunk's key=value string and re-parses it
+ * when the final chunk arrives. Lives in the terminal state: two
+ * terminals in one process upload independently, and a half-finished
+ * upload dies with its terminal. */
+typedef struct
+{
+    char *b64; /* accumulated base64 payload */
+    size_t len;
+    size_t cap;
+    int active; /* a chunked upload is in flight */
+    char *ctrl; /* first chunk's control data, re-parsed at finalize */
+    size_t ctrl_len;
+    size_t ctrl_cap;
+} CfrKChunk;
+
+/* iTerm2 OSC 1337 upload parameters (osc_1337.c). */
+typedef struct
+{
+    int inline_display;
+    int width;  /* display width; 0 = auto */
+    int height; /* display height; 0 = auto */
+    int width_is_px;
+    int height_is_px;
+    int preserve_aspect;
+    int has_width;
+    int has_height;
+} CfrItermParams;
+
+/* iTerm2 OSC 1337 multipart-upload state (osc_1337.c). The same
+ * per-terminal reasoning as CfrKChunk. */
+typedef struct
+{
+    CfrItermParams params;
+    uint8_t *b64_buf;
+    size_t b64_len;
+    size_t b64_cap;
+    int active;
+} CfrItermMultipart;
+
+/* ------------------------------------------------------------------ */
 /* Cursor / pen state                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -452,6 +497,12 @@ struct CfrTerm
     /* Lottie animations (lottie.c). Lazily allocated on first APC.
      * Shares sixel_abs_top for absolute-line anchoring. */
     struct CfrLottieState *lottie;
+
+    /* Chunked-upload accumulators (kitty graphics, iTerm2 multipart).
+     * Per-terminal: two terminals in one process upload independently,
+     * and a half-finished upload dies with its terminal. */
+    CfrKChunk kchunk;
+    CfrItermMultipart iterm_mp;
 
     /* Last printed codepoint for REP (CSI Ps b). 0 = nothing printed yet. */
     uint32_t last_char;
@@ -766,16 +817,23 @@ void cfr_emit_bytes(CfrTerm *vt, const uint8_t *bytes, size_t len);
 /* Image decoding (image_decode.c). Decodes PNG/JPEG/etc. to RGBA. */
 uint8_t *cfr_image_decode(const uint8_t *data, size_t len, int *w, int *h);
 
-/* Zlib decompression (image_decode.c). Inflates a RFC1950 stream. */
-uint8_t *cfr_zlib_decompress(const uint8_t *data, size_t len, size_t *out_len);
+/* Zlib decompression (image_decode.c). Inflates a RFC1950 stream into a
+ * freshly allocated buffer (the caller's allocator). Returns NULL on
+ * failure; sets *out_len. */
+uint8_t *cfr_zlib_decompress(CfrTerm *vt, const uint8_t *data, size_t len,
+                             size_t *out_len);
 
 /* Base64 decode (base64.c). RFC 4648; strips whitespace. Returns a
- * malloc'd buffer (caller frees) and sets *out_len, or NULL on error. */
-uint8_t *cfr_base64_decode(const char *in, size_t in_len, size_t *out_len);
+ * freshly allocated buffer (the caller's allocator) and sets *out_len,
+ * or NULL on error. */
+uint8_t *cfr_base64_decode(CfrTerm *vt, const char *in, size_t in_len,
+                           size_t *out_len);
 
-/* Append n bytes to a growing buffer (base64.c). Doubles capacity as
- * needed; not NUL-terminated. Returns 0 on success, -1 on OOM. */
-int cfr_buf_append(uint8_t **buf, size_t *len, size_t *cap,
+/* Append n bytes to a growing buffer (base64.c, the caller's allocator).
+ * Doubles capacity as needed; one byte past the appended data is kept
+ * and set to '\0' so the accumulator can be read as a C string. Returns
+ * 0 on success, -1 on OOM. */
+int cfr_buf_append(CfrTerm *vt, uint8_t **buf, size_t *len, size_t *cap,
                    const void *data, size_t n);
 
 /* OSC 1337 (iTerm2 inline images, osc_1337.c). */

@@ -14,26 +14,14 @@
 #include "coffer_internal.h"
 #include "image_store.h"
 
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* ------------------------------------------------------------------ */
 /* Parameter parsing                                                  */
 /* ------------------------------------------------------------------ */
 
-typedef struct
-{
-    int inline_display;
-    int width;  /* display width; 0 = auto */
-    int height; /* display height; 0 = auto */
-    int width_is_px;
-    int height_is_px;
-    int preserve_aspect;
-    int has_width;
-    int has_height;
-} ItermParams;
-
-static void parse_params(const char *params, size_t len, ItermParams *p)
+static void parse_params(const char *params, size_t len, CfrItermParams *p)
 {
     memset(p, 0, sizeof(*p));
     p->preserve_aspect = 1;
@@ -86,26 +74,15 @@ static void parse_params(const char *params, size_t len, ItermParams *p)
 }
 
 /* ------------------------------------------------------------------ */
-/* Multipart accumulator (single-threaded, static)                    */
+/* Multipart accumulator (per-terminal state in CfrTerm)             */
 /* ------------------------------------------------------------------ */
-
-typedef struct
-{
-    ItermParams params;
-    uint8_t *b64_buf;
-    size_t b64_len;
-    size_t b64_cap;
-    int active;
-} MultipartState;
-
-static MultipartState g_multipart = { 0 };
 
 /* ------------------------------------------------------------------ */
 /* Process decoded image (shared by single and multipart paths)      */
 /* ------------------------------------------------------------------ */
 
 static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
-                          const ItermParams *params)
+                          const CfrItermParams *params)
 {
     if (!params->inline_display)
         return;
@@ -182,57 +159,55 @@ static void handle_file(CfrTerm *vt, const uint8_t *body, size_t body_len)
     size_t b64_len = body_len - params_len - 1;
     const char *b64 = (const char *)(colon + 1);
 
-    ItermParams params;
+    CfrItermParams params;
     parse_params((const char *)body, params_len, &params);
 
     size_t raw_len = 0;
-    uint8_t *raw = cfr_base64_decode(b64, b64_len, &raw_len);
+    uint8_t *raw = cfr_base64_decode(vt, b64, b64_len, &raw_len);
     if (!raw)
         return;
 
     process_image(vt, raw, raw_len, &params);
-    free(raw);
+    cfr_dealloc(vt, raw);
 }
 
 static void handle_multipart_start(CfrTerm *vt, const uint8_t *body, size_t body_len)
 {
-    (void)vt;
     /* Reset accumulator and parse params */
-    free(g_multipart.b64_buf);
-    memset(&g_multipart, 0, sizeof(g_multipart));
-    parse_params((const char *)body, body_len, &g_multipart.params);
-    g_multipart.active = 1;
+    cfr_dealloc(vt, vt->iterm_mp.b64_buf);
+    memset(&vt->iterm_mp, 0, sizeof(vt->iterm_mp));
+    parse_params((const char *)body, body_len, &vt->iterm_mp.params);
+    vt->iterm_mp.active = 1;
 }
 
 static void handle_multipart_part(CfrTerm *vt, const uint8_t *body, size_t body_len)
 {
-    (void)vt;
-    if (!g_multipart.active)
+    if (!vt->iterm_mp.active)
         return;
 
     /* Append base64 chunk to the accumulator */
-    if (cfr_buf_append(&g_multipart.b64_buf, &g_multipart.b64_len,
-                       &g_multipart.b64_cap, body, body_len) != 0)
+    if (cfr_buf_append(vt, &vt->iterm_mp.b64_buf, &vt->iterm_mp.b64_len,
+                       &vt->iterm_mp.b64_cap, body, body_len) != 0)
         return;
 }
 
 static void handle_multipart_end(CfrTerm *vt)
 {
-    if (!g_multipart.active || !g_multipart.b64_buf)
+    if (!vt->iterm_mp.active || !vt->iterm_mp.b64_buf)
         goto cleanup;
 
     /* Decode accumulated base64 to raw image bytes */
     size_t raw_len = 0;
-    uint8_t *raw = cfr_base64_decode((const char *)g_multipart.b64_buf,
-                                     g_multipart.b64_len, &raw_len);
+    uint8_t *raw = cfr_base64_decode(vt, (const char *)vt->iterm_mp.b64_buf,
+                                     vt->iterm_mp.b64_len, &raw_len);
     if (raw) {
-        process_image(vt, raw, raw_len, &g_multipart.params);
-        free(raw);
+        process_image(vt, raw, raw_len, &vt->iterm_mp.params);
+        cfr_dealloc(vt, raw);
     }
 
 cleanup:
-    free(g_multipart.b64_buf);
-    memset(&g_multipart, 0, sizeof(g_multipart));
+    cfr_dealloc(vt, vt->iterm_mp.b64_buf);
+    memset(&vt->iterm_mp, 0, sizeof(vt->iterm_mp));
 }
 
 static void handle_capabilities(CfrTerm *vt)

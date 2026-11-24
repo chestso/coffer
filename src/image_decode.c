@@ -210,19 +210,33 @@ uint8_t *cfr_image_decode(const uint8_t *data, size_t len,
     return tiff;
 }
 
-/* Decompress a zlib stream (RFC 1950 header) to a malloc'd buffer.
- * Returns NULL on failure; sets *out_len. Used by kitty graphics f=32/24
- * payloads carrying the o=z compression flag. */
-uint8_t *cfr_zlib_decompress(const uint8_t *data, size_t len, size_t *out_len)
+/* Decompress a zlib stream (RFC 1950 header) into a freshly allocated
+ * buffer (the caller's allocator). Returns NULL on failure; sets
+ * *out_len. Used by kitty graphics f=32/24 payloads carrying the o=z
+ * compression flag. */
+uint8_t *cfr_zlib_decompress(CfrTerm *vt, const uint8_t *data, size_t len,
+                             size_t *out_len)
 {
     if (!data || len == 0 || !out_len)
         return NULL;
 
     int n = 0;
     char *out = stbi_zlib_decode_malloc((const char *)data, (int)len, &n);
-    if (!out || n <= 0)
+    if (!out || n <= 0) {
+        stbi_image_free(out);
         return NULL;
+    }
+
+    /* stbi allocates with the C library's malloc; move the bytes onto
+     * the terminal's allocator so the caller can free uniformly. */
+    uint8_t *buf = cfr_alloc(vt, (size_t)n);
+    if (!buf) {
+        stbi_image_free(out);
+        return NULL;
+    }
+    memcpy(buf, out, (size_t)n);
+    stbi_image_free(out);
 
     *out_len = (size_t)n;
-    return (uint8_t *)out;
+    return buf;
 }

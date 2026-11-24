@@ -340,5 +340,13 @@ void cfr_reset(CfrTerm *vt)
     if (vt->images)
         cfr_img_clear_all(vt, vt->images);
 
+    /* Half-finished chunked uploads (kitty, iTerm2) die with the
+     * reset. */
+    cfr_dealloc(vt, vt->kchunk.b64);
+    cfr_dealloc(vt, vt->kchunk.ctrl);
+    memset(&vt->kchunk, 0, sizeof(vt->kchunk));
+    cfr_dealloc(vt, vt->iterm_mp.b64_buf);
+    memset(&vt->iterm_mp, 0, sizeof(vt->iterm_mp));
+
     cfr_damage_all(vt);
 }

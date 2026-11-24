@@ -792,6 +792,45 @@ static void test_img_put_named_null_pixels_is_zeroed(void)
     cfr_free(vt);
 }
 
+/* Replacing a 1:N image's pixels repaints EVERY placement's rows: the
+ * record's (re-anchored) first placement alone is not enough when the
+ * image is drawn at several places (a kitty frame switch hits this). */
+static void test_img_replace_damages_all_placements(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
+    int idx = cfr_img_put_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    free(rgba);
+    ASSERT_TRUE(idx >= 0);
+    uint64_t handle = st->imgs[idx].handle;
+
+    /* Two placements at rows 1 and 5, one column each. */
+    int p1 = cfr_img_add_placement(vt, st, handle, vt->sixel_abs_top + 1, 0,
+                                   1, 1, 0, 255, 0);
+    int p2 = cfr_img_add_placement(vt, st, handle, vt->sixel_abs_top + 5, 0,
+                                   1, 1, 0, 255, 0);
+    ASSERT_TRUE(p1 >= 0);
+    ASSERT_TRUE(p2 >= 0);
+
+    cfr_damage_flush(vt);
+    g_damage_calls = 0;
+
+    uint8_t *green = make_rgba(10, 6, 0, 255, 0, 255);
+    cfr_img_replace(vt, st, idx, green, 10, 6);
+    free(green);
+    cfr_damage_flush(vt);
+
+    /* Both placements' rows must be dirty. */
+    ASSERT_TRUE(g_damage_calls > 0);
+    ASSERT_TRUE(g_damage_min_row <= 1);
+    ASSERT_TRUE(g_damage_max_row >= 5);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
 /* I2: a client-assigned id and an engine-assigned id live in
  * different spaces. A kitty image with the client's id 1 and an
  * engine image with the engine's id 1 are two images, and the
@@ -1024,6 +1063,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_named_image_clear_rows_by_placement);
     RUN_TEST(test_img_kind_is_set_at_creation);
     RUN_TEST(test_img_put_named_null_pixels_is_zeroed);
+    RUN_TEST(test_img_replace_damages_all_placements);
     RUN_TEST(test_img_id_spaces_are_separate);
     RUN_TEST(test_img_evict_takes_the_oldest);
     RUN_TEST(test_img_placement_damages_rows);

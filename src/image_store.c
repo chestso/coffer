@@ -326,6 +326,13 @@ static void place_rec_release(void *vt, CfrImgStore *st, int idx)
     img_damage(vt, screen, abs_line, rows);
 }
 
+void cfr_img_remove_placement(void *vt, CfrImgStore *st, int idx)
+{
+    if (idx < 0 || idx >= st->place_count)
+        return;
+    place_rec_release(vt, st, idx);
+}
+
 /* The anchor of a 1:N image is the anchor of its OLDEST placement: the
  * image record carries no anchor of its own, so the store keeps the
  * minimum over the image's placements. That anchor is what the host's
@@ -487,6 +494,16 @@ static void img_damage(CfrTerm *vt, uint8_t screen, long abs_line,
         b = vt->rows - 1;
     for (int r = a; r <= b; ++r)
         cfr_damage_row(vt, r);
+}
+
+void cfr_img_damage_placements(void *vt, CfrImgStore *st, uint64_t handle)
+{
+    for (int i = 0; i < st->place_count; ++i) {
+        if (st->places[i].image_handle != handle)
+            continue;
+        img_damage(vt, st->places[i].screen, st->places[i].abs_line,
+                   st->places[i].rows);
+    }
 }
 
 int cfr_img_add(void *vt, CfrImgStore *st,
@@ -741,7 +758,13 @@ void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
     if (r->cols_wide < 1)
         r->cols_wide = 1;
 
-    img_damage(vt, r->screen, r->abs_line, r->rows_tall);
+    /* A 1:N image is visible at every placement, so the rows at the
+     * record's anchor alone are not enough: a frame switch or a
+     * re-transmit must repaint each placement's rows. */
+    if (r->kind == IMG_KIND_REFERENCED)
+        cfr_img_damage_placements(vt, st, r->handle);
+    else
+        img_damage(vt, r->screen, r->abs_line, r->rows_tall);
 }
 
 /* ------------------------------------------------------------------ */

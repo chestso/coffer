@@ -265,6 +265,18 @@ int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_handle,
                           long abs_line, int col, int rows, int cols,
                           uint8_t layer, uint8_t opacity, int z_index);
 
+/* Remove one placement record (swap-remove): damages its rows and
+ * re-anchors the image it belonged to. The protocol handlers filter the
+ * records (kitty's a=d predicates); the store does the mutation so the
+ * damage and the re-anchor happen exactly once, here. */
+void cfr_img_remove_placement(void *vt, CfrImgStore *st, int idx);
+
+/* Damage the display rows every placement of one image covers. A pixel
+ * change to a 1:N image is visible at every placement, so damaging the
+ * rows at the record's (re-anchored) first placement alone is not
+ * enough. */
+void cfr_img_damage_placements(void *vt, CfrImgStore *st, uint64_t handle);
+
 /* Evict oldest (lowest abs_line) images until incoming more bytes fit. */
 void img_evict_to_budget(void *vt, CfrImgStore *st, size_t incoming);
 

@@ -645,6 +645,88 @@ static void test_delete_by_id(void)
     cfr_free(vt);
 }
 
+/* Deleting a placement by id goes through the store's removal, which
+ * damages the placement's rows: the host repaints only what the damage
+ * reports, so a silent deletion leaves the image on screen. */
+static void test_delete_placement_reports_damage(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Park the cursor on row 5 and place there. */
+    feed(vt, "\x1b[6;1H");
+    feed(vt, "\x1b_Ga=p,i=7,p=99,U=1\x1b\\");
+
+    cfr_damage_flush(vt);
+    g_damage_calls = 0;
+
+    feed(vt, "\x1b_Ga=d,d=p,p=99\x1b\\");
+    cfr_damage_flush(vt);
+
+    /* Row 5 (the placement's row) must be dirty, and the placement
+     * must be gone. */
+    ASSERT_TRUE(g_damage_calls > 0);
+    ASSERT_TRUE(g_damage_min_row <= 5);
+    ASSERT_TRUE(g_damage_max_row >= 5);
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+
+    cfr_free(vt);
+}
+
+/* Two terminals uploading chunked kitty images interleaved must not
+ * corrupt each other: the accumulator is per-terminal state. The old
+ * file-static accumulator shared one buffer across every terminal in
+ * the process, so the second terminal's m=1 continued the first
+ * terminal's upload. */
+static void test_chunked_upload_is_per_terminal(void)
+{
+    CfrTerm *a = make_term(24, 80);
+    CfrTerm *b = make_term(24, 80);
+
+    uint8_t red[16] = { 255, 0, 0, 255, 255, 0, 0, 255,
+                        255, 0, 0, 255, 255, 0, 0, 255 };
+    uint8_t green[16] = { 0, 255, 0, 255, 0, 255, 0, 255,
+                          0, 255, 0, 255, 0, 255, 0, 255 };
+    char r64[64], g64[64];
+    b64_encode(red, sizeof(red), r64);
+    b64_encode(green, sizeof(green), g64);
+
+    char seq[512];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=2,v=2,i=1,m=1;%s\x1b\\", r64);
+    feed(a, seq);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=2,v=2,i=1,m=1;%s\x1b\\", g64);
+    feed(b, seq);
+    feed(a, "\x1b_Gm=0\x1b\\");
+    feed(b, "\x1b_Gm=0\x1b\\");
+
+    /* Each terminal got its own image with its own pixels. */
+    int na = 0, nb = 0;
+    const CfrImage *ia = cfr_get_images(a, &na);
+    const CfrImage *ib = cfr_get_images(b, &nb);
+    ASSERT_NOT_NULL(ia);
+    ASSERT_NOT_NULL(ib);
+    ASSERT_EQ(na, 1);
+    ASSERT_EQ(nb, 1);
+    ASSERT_EQ(ia[0].rgba[0], 255); /* a: red */
+    ASSERT_EQ(ia[0].rgba[1], 0);
+    ASSERT_EQ(ib[0].rgba[1], 255); /* b: green */
+    ASSERT_EQ(ib[0].rgba[0], 0);
+
+    cfr_free(a);
+    cfr_free(b);
+}
+
 /* --------------------------------------------------------------- */
 /* 10. Outbound response uses the OSC 5556 carrier on Windows      */
 /* --------------------------------------------------------------- */
@@ -2003,11 +2085,13 @@ int main(int argc, char *argv[])
     RUN_TEST(test_place_virtual);
     RUN_TEST(test_place_relative);
     RUN_TEST(test_delete_by_id);
+    RUN_TEST(test_delete_placement_reports_damage);
     RUN_TEST(test_outbound_carrier);
     RUN_TEST(test_chunked_transmit);
     RUN_TEST(test_chunked_transmit_no_action);
     RUN_TEST(test_chunked_transmit_control_only_first);
     RUN_TEST(test_chunked_transmit_capacity_boundary);
+    RUN_TEST(test_chunked_upload_is_per_terminal);
     RUN_TEST(test_animate_put_frame);
     RUN_TEST(test_zlib_transmit);
     RUN_TEST(test_compose_accepted);

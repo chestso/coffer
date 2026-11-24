@@ -144,6 +144,12 @@ void cfr_free(CfrTerm *vt)
     if (vt->images)
         cfr_img_store_free(vt, vt->images);
 
+    /* Half-finished chunked uploads (kitty, iTerm2) die with the
+     * terminal. */
+    cfr_dealloc(vt, vt->kchunk.b64);
+    cfr_dealloc(vt, vt->kchunk.ctrl);
+    cfr_dealloc(vt, vt->iterm_mp.b64_buf);
+
     cfr_dealloc(vt, vt->tabstops);
     cfr_link_release(vt, vt->cursor.link);
     cfr_link_release(vt, vt->saved_cursor[0].link);
