@@ -68,8 +68,9 @@ compositing. See the portty README for renderer-side details.
   transfers, relative/virtual placements, and animation are supported:
   `a=f` stores frames (rect compose, gaps), `a=a` controls playback
   (current frame, stop/loading/run, loops), and the host advances the
-  clock with `cfr_kitty_tick()` / `cfr_kitty_present()`. Placements are
-  exposed to the host via
+  clock with `cfr_kitty_tick()` / `cfr_kitty_present()` and decides
+  pacing from `cfr_kitty_playing_count()`. Placements are exposed to
+  the host via
   `cfr_get_image_placements()` / `cfr_get_image_placements_for()`.
 - **Shared image store** — sixel, iTerm2, kitty, and Lottie all delegate
   storage to one `image_store.c`: dense record array with swap-remove

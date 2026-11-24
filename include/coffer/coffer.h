@@ -949,6 +949,12 @@ bool cfr_kitty_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us);
 /* Point-sample form: cfr_kitty_present(vt, now_us, 0). */
 bool cfr_kitty_tick(CfrTerm *vt, uint64_t now_us);
 
+/* Number of kitty images whose animation clock is running (anim_mode run or
+ * loading). Zero-allocation, side-effect-free: unlike cfr_kitty_tick() this
+ * advances nothing, so a host can call it to decide whether frame pacing
+ * should run. Mirrors cfr_lottie_playing_count(). */
+int cfr_kitty_playing_count(CfrTerm *vt);
+
 /* Number of animations that are currently playing (not paused, stopped, or
  * finished). Zero-allocation. Hosts use it to decide whether frame pacing
  * should run; cfr_lottie_active_count() also counts paused animations. */

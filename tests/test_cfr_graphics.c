@@ -2139,6 +2139,10 @@ static void test_animate_playback_clock(void)
 
     feed(vt, "\x1b_Ga=a,i=7,s=3,v=1\x1b\\");
 
+    /* The playing count reports the running clock (side-effect-free, so
+     * hosts can call it every loop pass for the pacing decision). */
+    ASSERT_EQ(cfr_kitty_playing_count(vt), 1);
+
     /* The first tick starts playback: root (gap 0) → frame 2. */
     ASSERT_TRUE(cfr_kitty_tick(vt, 1000));
     int count = 0;
@@ -2185,6 +2189,7 @@ static void test_animate_stop_loading_gapless(void)
     /* Loading mode: the gapless frame is skipped, then the clock parks
      * at the end and waits. */
     feed(vt, "\x1b_Ga=a,i=7,s=2\x1b\\");
+    ASSERT_EQ(cfr_kitty_playing_count(vt), 1);
     ASSERT_TRUE(cfr_kitty_tick(vt, 0));
     int count = 0;
     const CfrImage *imgs = cfr_get_images(vt, &count);
@@ -2200,8 +2205,9 @@ static void test_animate_stop_loading_gapless(void)
     imgs = cfr_get_images(vt, &count);
     ASSERT_EQ(imgs[0].rgba[2], 255); /* blue shows */
 
-    /* s=1 stops the clock. */
+    /* s=1 stops the clock: nothing plays anymore. */
     feed(vt, "\x1b_Ga=a,i=7,s=1\x1b\\");
+    ASSERT_EQ(cfr_kitty_playing_count(vt), 0);
     ASSERT_TRUE(!cfr_kitty_tick(vt, 2000 + 40 * 1000 + 1));
     imgs = cfr_get_images(vt, &count);
     ASSERT_EQ(imgs[0].rgba[2], 255); /* still blue */

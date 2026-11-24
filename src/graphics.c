@@ -1495,3 +1495,16 @@ bool cfr_kitty_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us)
     (void)hold_us; /* the kitty clock is frame-gap driven, not phase-sampled */
     return cfr_kitty_tick(vt, present_us);
 }
+
+int cfr_kitty_playing_count(CfrTerm *vt)
+{
+    if (!vt || !vt->images)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < vt->images->img_count; i++) {
+        if (vt->images->imgs[i].source == IMG_SRC_KITTY &&
+            vt->images->imgs[i].anim_mode != 0)
+            n++;
+    }
+    return n;
+}
