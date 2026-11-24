@@ -169,10 +169,18 @@ into `libcofferpty.a`.
 
 The core protocol is implemented (`src/graphics.c`, tests in
 `test_cfr_graphics.c`): transmit `a=t`/`a=T`, place `a=p` (absolute,
-`U=1` virtual, `P=`/`Q=` relative-to-parent), delete `a=d` with
-`d=a`/`d=i`/`d=p`, capability query `a=q`, chunked upload (`m=`), zlib
-compression (`o=z`), formats `f=24`/`32`/`100`, cursor advance
-(`c=`/`r=`), z-index, and the ConPTY OSC 5556 carrier workaround.
+`U=1` virtual, `P=`/`Q=` relative-to-parent), delete `a=d` with the
+full kitty delete table (`d=a/c/i/n/p/q/r/x/y/z` and their uppercase
+data-freeing twins), image numbers (`I=`), capability query `a=q`,
+chunked upload (`m=`), zlib compression (`o=z`), formats
+`f=24`/`32`/`100`, cursor advance (`c=`/`r=`), z-index, and the ConPTY
+OSC 5556 carrier workaround. The delete forms follow kitty's semantics
+exactly: the lowercase form removes placements and keeps the image data
+for re-display, the uppercase form also frees the data of matched
+images left without placements, `d=p` means "placements intersecting
+the cell `x=`,`y=`" (placement-by-id is `d=i,i=..,p=..`), and a delete
+aborts a chunked upload in flight. An id-less image's data dies with
+its last placement, as in kitty.
 
 Not yet implemented:
 
@@ -181,18 +189,10 @@ Not yet implemented:
   pixels in place (single-frame), there is no frame store.
 - **Compose (`a=c`)** — no-op acknowledgment; we always render the
   latest frame in every visible placement.
-- **Delete subtypes** — `d=c` (cursor cell/region), `d=n` (image
-  number `I=`), `d=x`/`d=y` (intersecting ranges). The `x=`/`y=` keys
-  are parsed into `delete_x`/`delete_y` but unused by the delete
-  handler. `d=a` is scoped to kitty's own id space: it deletes the
-  kitty images, not the sixels or the Lottie animations. That is the
-  correct reading of the protocol (each source owns its id space),
-  but a client that mixed protocols and expected one "delete all" to
-  clear everything will be surprised.
+- **`d=f`/`d=F` (delete animation frames)** — acknowledged, nothing to
+  delete until the frame store lands.
 - **Unicode placeholders (`q=1`)** — no placeholder-cell rendering or
   cursor-movement-via-placeholder-text.
-- **`I=` image number** — parsed but otherwise ignored; only unique
-  ids (`i=`) are supported.
 
 **Benefit:** Full spec compliance for kitty-native clients (timg,
 chafa, and tools driving kitty animations). Most consumers only need

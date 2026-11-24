@@ -607,6 +607,7 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     r->version = ++st->version_seq;
     r->image_num = 0;
     r->has_image_num = 0;
+    r->has_client_id = 0;
     r->layer = layer;
     r->source = source;
     r->kind = IMG_KIND_ANCHORED;
@@ -676,6 +677,7 @@ int cfr_img_put_named(void *vt, CfrImgStore *st,
          * old record carried is gone. */
         r->image_num = 0;
         r->has_image_num = 0;
+        r->has_client_id = 0;
         return existing;
     }
 
@@ -705,6 +707,7 @@ int cfr_img_put_named(void *vt, CfrImgStore *st,
     r->version = ++st->version_seq;
     r->image_num = 0;
     r->has_image_num = 0;
+    r->has_client_id = 0;
     r->layer = layer;
     r->source = source;
     r->kind = IMG_KIND_REFERENCED;
@@ -1020,24 +1023,6 @@ void cfr_img_screen_switch(void *vt, CfrImgStore *st)
         return;
     for (int i = 0; i < st->img_count;) {
         if (st->imgs[i].screen == IMG_SCREEN_ALT)
-            img_rec_release(vt, st, i);
-        else
-            ++i;
-    }
-}
-
-/* Clear every image of ONE protocol on the ACTIVE screen (kitty's
- * "delete all images" deletes the kitty images — not the sixels and
- * not the Lottie animations, which live in their own id spaces — and
- * only those of the screen it was sent on: the other buffer's graphics
- * set is not the client's to delete from here). */
-void cfr_img_clear_source(void *vt, CfrImgStore *st, uint8_t source)
-{
-    if (!st)
-        return;
-    uint8_t active = (uint8_t)((CfrTerm *)vt)->in_altscreen;
-    for (int i = 0; i < st->img_count;) {
-        if (st->imgs[i].source == source && st->imgs[i].screen == active)
             img_rec_release(vt, st, i);
         else
             ++i;

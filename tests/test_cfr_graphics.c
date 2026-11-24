@@ -281,32 +281,88 @@ static void test_transmit_alpha(void)
 }
 
 /* --------------------------------------------------------------- */
-/* 5. Delete all (a=d,d=a)                                          */
+/* 5. Delete visible placements (a=d, bare and d=a) — soft/free    */
 /* --------------------------------------------------------------- */
 
+/* kitty's delete table: the lowercase form removes placements and
+ * keeps the image data (so the image can be re-displayed without
+ * re-sending); the uppercase form also frees the data. d=a targets
+ * the placements VISIBLE on screen, not the whole set, and a bare
+ * a=d is the same as d=a. */
 static void test_delete_all(void)
 {
     CfrTerm *vt = make_term(24, 80);
 
-    /* First transmit an image */
+    /* Transmit and place (a=T) so there is a visible placement. */
     uint8_t rgba[4] = { 255, 0, 0, 255 };
     char b64[64];
     b64_encode(rgba, sizeof(rgba), b64);
     char seq[256];
     snprintf(seq, sizeof(seq),
-             "\x1b_Ga=t,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
+             "\x1b_Ga=T,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
     feed(vt, seq);
 
     int count = 0;
     cfr_get_images(vt, &count);
     ASSERT_EQ(count, 1);
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
 
-    /* Delete all */
+    /* Bare a=d ≡ d=a: the visible placements go, the data stays. */
     g_output_len = 0;
-    feed(vt, "\x1b_Ga=d,d=a\x1b\\");
+    feed(vt, "\x1b_Ga=d\x1b\\");
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
 
+    /* The image is re-placeable without re-sending. */
+    feed(vt, "\x1b_Ga=p,i=1,U=1\x1b\\");
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+
+    /* The uppercase form frees the data the placement left behind. */
+    feed(vt, "\x1b_Ga=d,d=A\x1b\\");
     cfr_get_images(vt, &count);
     ASSERT_EQ(count, 0);
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+
+    cfr_free(vt);
+}
+
+/* d=a removes only the VISIBLE placements: an image whose placement
+ * scrolled into the scrollback is not on screen and survives, data
+ * and all. */
+static void test_delete_all_keeps_scrolled_placements(void)
+{
+    CfrTerm *vt = make_term(6, 20);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=1,c=2,r=2;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Scroll the placement well out of the viewport. */
+    feed(vt, "\x1b[6;1H");
+    feed(vt, "\n\n\n\n\n\n\n");
+
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+    ASSERT_TRUE(pls[0].row < 0);
+    ASSERT_TRUE(pls[0].row + pls[0].rows - 1 < 0); /* fully off-screen */
+
+    feed(vt, "\x1b_Ga=d,d=a\x1b\\");
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1); /* the scrollback placement stays */
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1); /* and the image data */
 
     cfr_free(vt);
 }
@@ -771,9 +827,13 @@ static void test_place_relative(void)
 }
 
 /* --------------------------------------------------------------- */
-/* 9. Delete by image id (d=i) and placement id (d=p)             */
+/* 9. Delete by image id (d=i) — placement by id is d=i with p=    */
 /* --------------------------------------------------------------- */
 
+/* kitty's table: d=i removes the placements of the named image and
+ * keeps its data (lowercase), d=I also frees the data; adding p=
+ * limits the command to that one placement. d=p is NOT placement-by-id
+ * — it means "placements intersecting the cell x=,y=". */
 static void test_delete_by_id(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -791,26 +851,269 @@ static void test_delete_by_id(void)
     cfr_img_get_placements(vt, vt->images, &count);
     ASSERT_EQ(count, 1);
 
-    /* Delete by placement id */
-    feed(vt, "\x1b_Ga=d,d=p,p=99\x1b\\");
+    /* Delete the placement by its id (image id + placement id). */
+    feed(vt, "\x1b_Ga=d,d=i,i=7,p=99\x1b\\");
     cfr_img_get_placements(vt, vt->images, &count);
     ASSERT_EQ(count, 0);
 
-    /* Image record still lives (pixel data persists) */
+    /* The lowercase delete keeps the image data for re-display. */
     int ic = 0;
     cfr_get_images(vt, &ic);
     ASSERT_EQ(ic, 1);
 
-    /* Delete by image id */
+    /* Re-place from the kept data, then d=i removes the placement. */
+    feed(vt, "\x1b_Ga=p,i=7,U=1\x1b\\");
+    cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_EQ(count, 1);
     feed(vt, "\x1b_Ga=d,d=i,i=7\x1b\\");
+    cfr_img_get_placements(vt, vt->images, &count);
+    ASSERT_EQ(count, 0);
+    cfr_get_images(vt, &ic);
+    ASSERT_EQ(ic, 1); /* soft: the data is still there */
+
+    /* The uppercase form frees the data. */
+    feed(vt, "\x1b_Ga=d,d=I,i=7\x1b\\");
     cfr_get_images(vt, &ic);
     ASSERT_EQ(ic, 0);
 
     cfr_free(vt);
 }
 
-/* Deleting a placement by id goes through the store's removal, which
- * damages the placement's rows: the host repaints only what the damage
+/* d=p intersects the cell named by x=/y= (1-based), not the placement
+ * id. */
+static void test_delete_by_cell(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* A placement at row 5, col 3. */
+    feed(vt, "\x1b[6;4H");
+    feed(vt, "\x1b_Ga=p,i=7,U=1\x1b\\");
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+
+    /* A cell it does not cover leaves it alone. */
+    feed(vt, "\x1b_Ga=d,d=p,x=1,y=1\x1b\\");
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+
+    /* The 1-based cell (4, 6) it sits on removes it. */
+    feed(vt, "\x1b_Ga=d,d=p,x=4,y=6\x1b\\");
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+
+    cfr_free(vt);
+}
+
+/* d=c deletes the placements under the cursor, d=x a column and d=y a
+ * row (all 1-based). */
+static void test_delete_cursor_column_row(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+
+    /* Three placements: i=1 at (row 2, col 2), i=2 at (row 2, col 4),
+     * i=3 at (row 4, col 2), all 1-based. */
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b[2;2H");
+    feed(vt, "\x1b_Ga=p,i=1,U=1\x1b\\");
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,i=2;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b[2;4H");
+    feed(vt, "\x1b_Ga=p,i=2,U=1\x1b\\");
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,i=3;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b[4;2H");
+    feed(vt, "\x1b_Ga=p,i=3,U=1\x1b\\");
+
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 3);
+
+    /* d=x: column 4 takes the i=2 placement. */
+    feed(vt, "\x1b_Ga=d,d=x,x=4\x1b\\");
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 2);
+
+    /* d=y: row 2 takes the i=1 placement. */
+    feed(vt, "\x1b_Ga=d,d=y,y=2\x1b\\");
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+
+    /* d=c: the placement under the cursor (park on it). */
+    feed(vt, "\x1b[4;2H");
+    feed(vt, "\x1b_Ga=d,d=c\x1b\\");
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+
+    cfr_free(vt);
+}
+
+/* d=z picks a z-index; d=q a cell plus z-index. */
+static void test_delete_by_z_index(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+
+    /* Two images stacked on the same cell with different z-index. */
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b_Ga=p,i=1,U=1,z=0\x1b\\");
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,i=2;%s\x1b\\", b64);
+    feed(vt, seq);
+    feed(vt, "\x1b_Ga=p,i=2,U=1,z=2\x1b\\");
+
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 2);
+
+    /* d=z,z=0 removes the ground layer only. */
+    feed(vt, "\x1b_Ga=d,d=z,z=0\x1b\\");
+    pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+    ASSERT_EQ(pls[0].z_index, 2);
+
+    /* d=q with the other z-index at the stacked cell removes the rest. */
+    feed(vt, "\x1b_Ga=d,d=q,x=1,y=1,z=2\x1b\\");
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+
+    cfr_free(vt);
+}
+
+/* d=r deletes the placements of every image whose id lies in the
+ * x=..y= range; d=R frees those images' data as well. */
+static void test_delete_by_id_range(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+
+    int id;
+    for (id = 10; id <= 30; id += 10) {
+        snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,i=%d;%s\x1b\\",
+                 id, b64);
+        feed(vt, seq);
+        snprintf(seq, sizeof(seq), "\x1b_Ga=p,i=%d,U=1\x1b\\", id);
+        feed(vt, seq);
+    }
+
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 3);
+
+    /* The range takes i=20's placement only. */
+    feed(vt, "\x1b_Ga=d,d=r,x=15,y=25\x1b\\");
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 2);
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 3); /* soft: all data stays */
+
+    /* d=R frees the ranged image's data, not the neighbours'. */
+    feed(vt, "\x1b_Ga=d,d=R,x=15,y=25\x1b\\");
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 2);
+
+    cfr_free(vt);
+}
+
+/* d=n deletes the newest image carrying the number; d=N frees its
+ * data. */
+static void test_delete_by_number(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t red[4] = { 255, 0, 0, 255 };
+    uint8_t green[4] = { 0, 255, 0, 255 };
+    char b64[64];
+    char seq[256];
+    b64_encode(red, sizeof(red), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=T,f=32,s=1,v=1,I=13;%s\x1b\\", b64);
+    feed(vt, seq);
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=T,f=32,s=1,v=1,I=13;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 2);
+
+    /* d=n removes the NEWEST image's placements; the older one stays. */
+    feed(vt, "\x1b_Ga=d,d=n,I=13\x1b\\");
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 2);
+    ASSERT_EQ(pls[0].image_handle, imgs[0].handle); /* the red one */
+
+    /* d=N frees the newest image's data. */
+    feed(vt, "\x1b_Ga=d,d=N,I=13\x1b\\");
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].rgba[0], 255); /* red survives */
+
+    cfr_free(vt);
+}
+
+/* A delete command aborts a chunked upload in flight (kitty: "the
+ * partial upload must be aborted"). */
+static void test_delete_aborts_chunked_upload(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[16] = { 255, 0, 0, 255, 255, 0, 0, 255,
+                         255, 0, 0, 255, 255, 0, 0, 255 };
+    char full[64];
+    b64_encode(rgba, sizeof(rgba), full);
+    size_t half = strlen(full) / 2;
+    char first[64], second[64];
+    memcpy(first, full, half);
+    first[half] = '\0';
+    strcpy(second, full + half);
+
+    char seq[512];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=2,v=2,i=7,m=1;%s\x1b\\", first);
+    feed(vt, seq);
+
+    /* The delete aborts the upload before its final chunk arrives. */
+    feed(vt, "\x1b_Ga=d,d=a\x1b\\");
+
+    snprintf(seq, sizeof(seq), "\x1b_Gm=0;%s\x1b\\", second);
+    feed(vt, seq);
+
+    /* The aborted upload never completes into an image. */
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 0);
+
+    cfr_free(vt);
+}
+
+/* Deleting a placement goes through the store's removal, which damages
+ * the placement's rows: the host repaints only what the damage
  * reports, so a silent deletion leaves the image on screen. */
 static void test_delete_placement_reports_damage(void)
 {
@@ -831,7 +1134,7 @@ static void test_delete_placement_reports_damage(void)
     cfr_damage_flush(vt);
     g_damage_calls = 0;
 
-    feed(vt, "\x1b_Ga=d,d=p,p=99\x1b\\");
+    feed(vt, "\x1b_Ga=d,d=i,i=7,p=99\x1b\\");
     cfr_damage_flush(vt);
 
     /* Row 5 (the placement's row) must be dirty, and the placement
@@ -2025,13 +2328,13 @@ static void test_delete_all_is_kitty_only(void)
 {
     CfrTerm *vt = make_term(24, 80);
 
-    /* A kitty image. */
+    /* A kitty image, placed so d=a sees it. */
     uint8_t rgba[4] = { 255, 0, 0, 255 };
     char b64[64];
     b64_encode(rgba, sizeof(rgba), b64);
     char seq[128];
     snprintf(seq, sizeof(seq),
-             "\x1b_Ga=t,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
+             "\x1b_Ga=T,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
     feed(vt, seq);
 
     /* A Lottie animation with the same id, in the same store. */
@@ -2047,8 +2350,19 @@ static void test_delete_all_is_kitty_only(void)
     cfr_get_images(vt, &count);
     ASSERT_EQ(count, 2);
 
+    /* d=a removes the kitty placement only; the Lottie animation and
+     * the kitty's soft-deleted data both survive. */
     feed(vt, "\x1b_Ga=d,d=a\x1b\\");
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 2);
 
+    /* With a visible placement again, the uppercase form frees the
+     * kitty data — not the Lottie. */
+    feed(vt, "\x1b_Ga=p,i=1,U=1\x1b\\");
+    feed(vt, "\x1b_Ga=d,d=A\x1b\\");
     cfr_get_images(vt, &count);
     ASSERT_EQ(count, 1);
     const CfrImage *imgs = cfr_get_images(vt, &count);
@@ -2069,7 +2383,7 @@ static void test_delete_by_id_is_kitty_scoped(void)
     b64_encode(rgba, sizeof(rgba), b64);
     char seq[128];
     snprintf(seq, sizeof(seq),
-             "\x1b_Ga=t,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
+             "\x1b_Ga=T,f=32,s=1,v=1,i=1;%s\x1b\\", b64);
     feed(vt, seq);
 
     CfrImgStore *store = cfr_img_get_store(vt);
@@ -2083,8 +2397,17 @@ static void test_delete_by_id_is_kitty_scoped(void)
     cfr_get_images(vt, &count);
     ASSERT_EQ(count, 2);
 
+    /* d=i removes the kitty image's placements; both records stay (the
+     * lowercase form keeps data). */
     feed(vt, "\x1b_Ga=d,d=i,i=1\x1b\\");
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 2);
 
+    /* d=I frees the kitty image's data — and only that. */
+    feed(vt, "\x1b_Ga=d,d=I,i=1\x1b\\");
     cfr_get_images(vt, &count);
     ASSERT_EQ(count, 1);
     const CfrImage *imgs = cfr_get_images(vt, &count);
@@ -2200,14 +2523,24 @@ static void test_altscreen_delete_is_screen_scoped(void)
     snprintf(seq, sizeof(seq), "\x1b_Ga=T,f=32,s=1,v=1,i=5;%s\x1b\\", b64);
     feed(vt, seq);
 
-    /* Delete-all on the alt screen clears only the alt set. */
+    /* Delete-all on the alt screen clears only the alt placements. */
     feed(vt, "\x1b_Ga=d,d=a\x1b\\");
+    int pc = 0;
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 0);
     int count = -1;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1); /* the alt image's data is soft-deleted */
+
+    /* d=i also leaves the alt data alone; d=I frees it. */
+    feed(vt, "\x1b_Ga=d,d=i,i=5\x1b\\");
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    feed(vt, "\x1b_Ga=d,d=I,i=5\x1b\\");
     cfr_get_images(vt, &count);
     ASSERT_EQ(count, 0);
 
-    /* Still nothing in the alt set, and the main image is untouched. */
-    feed(vt, "\x1b_Ga=d,d=i,i=5\x1b\\");
+    /* The main screen's image and its placement survived the visit. */
     feed(vt, "\x1b[?1049l");
     const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_NOT_NULL(imgs);
@@ -2216,7 +2549,6 @@ static void test_altscreen_delete_is_screen_scoped(void)
     ASSERT_EQ(imgs[0].rgba[0], 255);
     ASSERT_EQ(imgs[0].rgba[1], 0);
 
-    int pc = 0;
     cfr_get_image_placements(vt, &pc);
     ASSERT_EQ(pc, 1); /* the main placement survived too */
 
@@ -2240,6 +2572,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_transmit_rgba);
     RUN_TEST(test_transmit_alpha);
     RUN_TEST(test_delete_all);
+    RUN_TEST(test_delete_all_keeps_scrolled_placements);
     RUN_TEST(test_osc5555_carrier);
     RUN_TEST(test_transmit_client_id);
     RUN_TEST(test_transmit_image_number_assigns_id);
@@ -2254,6 +2587,12 @@ int main(int argc, char *argv[])
     RUN_TEST(test_place_virtual);
     RUN_TEST(test_place_relative);
     RUN_TEST(test_delete_by_id);
+    RUN_TEST(test_delete_by_cell);
+    RUN_TEST(test_delete_cursor_column_row);
+    RUN_TEST(test_delete_by_z_index);
+    RUN_TEST(test_delete_by_id_range);
+    RUN_TEST(test_delete_by_number);
+    RUN_TEST(test_delete_aborts_chunked_upload);
     RUN_TEST(test_delete_placement_reports_damage);
     RUN_TEST(test_outbound_carrier);
     RUN_TEST(test_chunked_transmit);

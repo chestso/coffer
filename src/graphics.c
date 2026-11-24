@@ -537,6 +537,7 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
         int ni = cfr_img_put_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
         if (ni < 0)
             return 0;
+        store->imgs[ni].has_client_id = 1;
         if (!p->quiet)
             k_emit_image_ok(vt, &store->imgs[ni]);
         return store->imgs[ni].handle;
@@ -884,8 +885,63 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
 /* Action: delete (a=d)                                              */
 /* ------------------------------------------------------------------ */
 
+/* Does a placement match one delete predicate? The lowercase/uppercase
+ * pair shares the predicate; the uppercase form additionally frees the
+ * image data of matched images left without placements. x=/y= are
+ * 1-based cells (kitty's rule), so the lookup converts them. */
+static bool k_place_delete_matches(CfrTerm *vt, const KittyParams *p,
+                                   int lower, const CfrPlacement *pl)
+{
+    int prow = (int)(pl->abs_line - vt->sixel_abs_top);
+    switch (lower) {
+    case 'a':
+        /* Visible on screen: the placement's row extent pokes into the
+         * viewport (kitty's clear_filter_func rule). */
+        return prow <= vt->rows - 1 && prow + pl->rows - 1 >= 0;
+    case 'c':
+        return pl->col <= vt->cursor.col &&
+               vt->cursor.col < pl->col + pl->cols &&
+               prow <= vt->cursor.row && vt->cursor.row < prow + pl->rows;
+    case 'p':
+    {
+        int cx = (p->has_src_x ? p->src_x : 1) - 1;
+        int cy = (p->has_src_y ? p->src_y : 1) - 1;
+        return pl->col <= cx && cx < pl->col + pl->cols &&
+               prow <= cy && cy < prow + pl->rows;
+    }
+    case 'q':
+    {
+        int cx = (p->has_src_x ? p->src_x : 1) - 1;
+        int cy = (p->has_src_y ? p->src_y : 1) - 1;
+        return pl->col <= cx && cx < pl->col + pl->cols &&
+               prow <= cy && cy < prow + pl->rows &&
+               pl->z_index == p->z_index;
+    }
+    case 'x':
+    {
+        int cx = (p->has_src_x ? p->src_x : 1) - 1;
+        return pl->col <= cx && cx < pl->col + pl->cols;
+    }
+    case 'y':
+    {
+        int cy = (p->has_src_y ? p->src_y : 1) - 1;
+        return prow <= cy && cy < prow + pl->rows;
+    }
+    case 'z':
+        return pl->z_index == p->z_index;
+    default:
+        return false;
+    }
+}
+
 static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
 {
+    /* A delete aborts a chunked upload in flight: kitty mandates that
+     * "the partial upload must be aborted". */
+    cfr_dealloc(vt, vt->kchunk.b64);
+    cfr_dealloc(vt, vt->kchunk.ctrl);
+    memset(&vt->kchunk, 0, sizeof(vt->kchunk));
+
     CfrImgStore *store = cfr_img_get_store(vt);
     if (!store) {
         if (!p->quiet)
@@ -893,53 +949,161 @@ static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
         return;
     }
 
-    switch (p->delete_what) {
-    case 'a':
-    case 'A':
-        /* Delete all the kitty images. The other protocols' images live
-         * in their own id spaces and are not kitty's to delete. */
-        cfr_img_clear_source(vt, store, IMG_SRC_KITTY);
+    uint8_t screen = (uint8_t)vt->in_altscreen;
+    int what = p->delete_what ? p->delete_what : 'a';
+    int lower = what;
+    bool free_data = false;
+    if (lower >= 'A' && lower <= 'Z') {
+        lower = lower - 'A' + 'a';
+        free_data = true;
+    }
+
+    /* Handles of the images the command matched, for the data-freeing
+     * pass. Bounded by the placement count; a delete is rare, so a
+     * growing list beats a fixed cap that can silently miss victims. */
+    uint64_t *matched = NULL;
+    size_t matched_len = 0, matched_cap = 0;
+
+#define RECORD_MATCH(handle)                                                  \
+    do {                                                                      \
+        if (matched_len == matched_cap) {                                     \
+            size_t ncap = matched_cap ? matched_cap * 2 : 16;                 \
+            uint64_t *nm = cfr_realloc(vt, matched, ncap * sizeof(uint64_t)); \
+            if (!nm)                                                          \
+                goto out;                                                     \
+            matched = nm;                                                     \
+            matched_cap = ncap;                                               \
+        }                                                                     \
+        matched[matched_len++] = (handle);                                    \
+    } while (0)
+
+    /* The image-naming deletes (d=i by id, d=n by number) resolve once;
+     * the geometric ones need no image. */
+    int named_idx = -1;
+    bool named_freed = false;
+    if (lower == 'i' || lower == 'n') {
+        named_idx = k_resolve_image(vt, store, p);
+        if (named_idx < 0)
+            goto out;
+    }
+
+    if (named_idx >= 0 && free_data && !p->has_placement_id) {
+        /* The uppercase form frees a never-placed image outright (kitty
+         * special-cases I/N for images no placement filter can see). */
+        bool placed = false;
+        for (int j = 0; j < store->place_count; j++) {
+            if (store->places[j].image_handle ==
+                store->imgs[named_idx].handle) {
+                placed = true;
+                break;
+            }
+        }
+        if (!placed) {
+            cfr_img_remove(vt, store, named_idx);
+            named_freed = true;
+            goto out;
+        }
+    }
+
+    switch (lower) {
+    case 'i':
+    case 'n':
+        /* All placements of the named image — or, with p=, the one
+         * placement carrying that id (placement-by-id deletion is
+         * d=i,i=..,p=.., not d=p). */
+        for (int i = 0; i < store->place_count;) {
+            if (store->places[i].image_handle !=
+                    store->imgs[named_idx].handle ||
+                (p->has_placement_id &&
+                 store->places[i].id != (uint64_t)p->placement_id)) {
+                i++;
+                continue;
+            }
+            RECORD_MATCH(store->places[i].image_handle);
+            cfr_img_remove_placement(vt, store, i);
+        }
         break;
-    case 'p':
-    case 'P':
-        /* Delete a single placement by placement id, on the screen it
-         * was sent on: the other buffer's graphics set is not visible
-         * here, and its client-chosen placement ids may collide. The
-         * store removes the record so its rows are damaged and the
-         * image re-anchors. */
-        if (p->has_placement_id) {
-            uint64_t pid = (uint64_t)p->placement_id;
-            uint8_t active = (uint8_t)vt->in_altscreen;
-            for (int i = 0; i < store->place_count; i++) {
-                if (store->places[i].id == pid &&
-                    store->places[i].screen == active) {
-                    cfr_img_remove_placement(vt, store, i);
-                    break;
-                }
+    case 'r':
+        /* Every image whose client id lies in the x=..y= range. */
+        for (int i = 0; i < store->img_count; i++) {
+            CfrImg *img = &store->imgs[i];
+            if (img->source != IMG_SRC_KITTY || img->screen != screen ||
+                !img->has_client_id)
+                continue;
+            uint64_t lo = (uint64_t)(p->has_src_x ? p->src_x : 0);
+            uint64_t hi = (uint64_t)(p->has_src_y ? p->src_y : 0);
+            if (img->id < lo || img->id > hi)
+                continue;
+            RECORD_MATCH(img->handle);
+            for (int j = 0; j < store->place_count;) {
+                if (store->places[j].image_handle == img->handle)
+                    cfr_img_remove_placement(vt, store, j);
+                else
+                    j++;
             }
         }
         break;
-    case 'i':
-    case 'I':
-    {
-        /* Delete images (and their placements) by image id. The lookup
-         * is scoped to kitty's id space: a Lottie animation with the
-         * same number is a different image. It is also scoped to the
-         * active screen: `d=i` deletes the image on the screen it was
-         * sent on. */
-        uint64_t iid = (uint64_t)(p->has_image_id ? p->image_id : 0);
-        int idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, iid,
-                                            (uint8_t)vt->in_altscreen);
-        if (idx >= 0)
-            cfr_img_remove(vt, store, idx);
-        break;
-    }
     default:
+        /* The geometric predicates (a, c, p, q, x, y, z) over the
+         * placements of the active screen's kitty set. */
+        for (int i = 0; i < store->place_count;) {
+            CfrPlacement *pl = &store->places[i];
+            if (pl->source != IMG_SRC_KITTY || pl->screen != screen ||
+                !k_place_delete_matches(vt, p, lower, pl)) {
+                i++;
+                continue;
+            }
+            RECORD_MATCH(pl->image_handle);
+            cfr_img_remove_placement(vt, store, i);
+        }
         break;
     }
 
-    if (!p->quiet)
-        k_emit_ok(vt, p->image_id);
+    /* The data-freeing pass: matched images left without placements are
+     * released when the command was uppercase — or when the image has
+     * no client id, since an id-less image can never be named again and
+     * its data dies with its last placement (kitty's rule). */
+    for (int i = 0; i < store->img_count;) {
+        CfrImg *img = &store->imgs[i];
+        if (img->source != IMG_SRC_KITTY || img->screen != screen) {
+            i++;
+            continue;
+        }
+        bool placed = false;
+        for (int j = 0; j < store->place_count; j++) {
+            if (store->places[j].image_handle == img->handle) {
+                placed = true;
+                break;
+            }
+        }
+        if (placed) {
+            i++;
+            continue;
+        }
+        bool was_matched = false;
+        for (size_t m = 0; m < matched_len; m++) {
+            if (matched[m] == img->handle) {
+                was_matched = true;
+                break;
+            }
+        }
+        if (was_matched &&
+            (free_data || (!img->has_client_id && !img->has_image_num)))
+            cfr_img_remove(vt, store, i);
+        else
+            i++;
+    }
+
+out:
+#undef RECORD_MATCH
+    cfr_dealloc(vt, matched);
+
+    if (!p->quiet) {
+        if (named_idx >= 0 && !named_freed)
+            k_emit_image_ok(vt, &store->imgs[named_idx]);
+        else
+            k_emit_ok(vt, p->image_id);
+    }
 }
 
 /* ------------------------------------------------------------------ */

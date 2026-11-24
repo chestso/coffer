@@ -83,22 +83,25 @@ typedef struct
     uint32_t image_num; /* kitty I= image number (non-unique, newest wins);
                          * 0 when the image has none */
     uint8_t has_image_num;
-    uint8_t layer;       /* 0 = foreground, 1 = background */
-    uint8_t source;      /* IMG_SRC_* */
-    uint8_t kind;        /* IMG_KIND_* */
-    uint8_t screen;      /* IMG_SCREEN_* the image was created on */
-    uint8_t ever_placed; /* 1 once a placement referenced this image; an
-                          * image that was transmitted but never placed
-                          * is INVISIBLE, so a screen erase must not
-                          * touch it (kitty's rule) */
-    long abs_line;       /* absolute line index of the image's top row */
-    int col;             /* anchor column */
-    int w, h;            /* logical display pixel dimensions */
-    int buf_w, buf_h;    /* pixel buffer stride (native decoded size) */
-    int rows_tall;       /* cells tall (cached for cull/clear) */
-    int cols_wide;       /* cells wide (cached) */
-    uint8_t *rgba;       /* pixel buffer */
-    size_t cap;          /* allocated bytes of rgba */
+    uint8_t has_client_id; /* kitty: the client chose the id (i=); an
+                            * id-less image's data dies with its last
+                            * placement (kitty's rule) */
+    uint8_t layer;         /* 0 = foreground, 1 = background */
+    uint8_t source;        /* IMG_SRC_* */
+    uint8_t kind;          /* IMG_KIND_* */
+    uint8_t screen;        /* IMG_SCREEN_* the image was created on */
+    uint8_t ever_placed;   /* 1 once a placement referenced this image; an
+                            * image that was transmitted but never placed
+                            * is INVISIBLE, so a screen erase must not
+                            * touch it (kitty's rule) */
+    long abs_line;         /* absolute line index of the image's top row */
+    int col;               /* anchor column */
+    int w, h;              /* logical display pixel dimensions */
+    int buf_w, buf_h;      /* pixel buffer stride (native decoded size) */
+    int rows_tall;         /* cells tall (cached for cull/clear) */
+    int cols_wide;         /* cells wide (cached) */
+    uint8_t *rgba;         /* pixel buffer */
+    size_t cap;            /* allocated bytes of rgba */
 } CfrImg;
 
 /* A retained free buffer (was SxSpare / LtSpare). */
@@ -321,10 +324,6 @@ void cfr_img_clear_anchored(void *vt, CfrImgStore *st);
  * switch implements both directions; the MAIN-tagged records stay, and
  * the public queries hide them while the alt screen is active. */
 void cfr_img_screen_switch(void *vt, CfrImgStore *st);
-
-/* Remove every image of ONE protocol. The protocols' id spaces are
- * their own, so "delete all images" (kitty) means the kitty images. */
-void cfr_img_clear_source(void *vt, CfrImgStore *st, uint8_t source);
 
 /* Remove the foreground placements of ONE protocol in the display row
  * range [top, bot], and the images that die with them. The Lottie
