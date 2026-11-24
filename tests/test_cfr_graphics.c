@@ -1793,7 +1793,7 @@ static void test_delete_all_is_kitty_only(void)
     ASSERT_NOT_NULL(store);
     uint8_t pixels[4 * 4 * 4] = { 0 };
     pixels[0] = 255;
-    int lottie = cfr_img_add_named(vt, store, 1, pixels, 4, 4, 0,
+    int lottie = cfr_img_put_named(vt, store, 1, pixels, 4, 4, 0,
                                    IMG_SRC_LOTTIE);
     ASSERT_TRUE(lottie >= 0);
 
@@ -1829,7 +1829,7 @@ static void test_delete_by_id_is_kitty_scoped(void)
     CfrImgStore *store = cfr_img_get_store(vt);
     uint8_t pixels[4 * 4 * 4] = { 0 };
     pixels[0] = 255;
-    int lottie = cfr_img_add_named(vt, store, 1, pixels, 4, 4, 0,
+    int lottie = cfr_img_put_named(vt, store, 1, pixels, 4, 4, 0,
                                    IMG_SRC_LOTTIE);
     ASSERT_TRUE(lottie >= 0);
 

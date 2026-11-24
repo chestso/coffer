@@ -515,7 +515,7 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
             /* Re-transmit: delete the image and all its placements. */
             cfr_img_remove(vt, store, idx);
         }
-        int ni = cfr_img_add_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
+        int ni = cfr_img_put_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
         if (!p->quiet)
             k_emit_ok(vt, p->image_id);
         return ni >= 0 ? store->imgs[ni].handle : 0;
@@ -525,7 +525,7 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
      * successive id-less transmits (chafa, kitten icat) don't collide
      * on id=0. The engine id is what placements must reference. */
     uint64_t id = store->next_id++;
-    int ni = cfr_img_add_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
+    int ni = cfr_img_put_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
     if (!p->quiet)
         k_emit_ok(vt, p->image_id);
     return ni >= 0 ? store->imgs[ni].handle : 0;

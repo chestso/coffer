@@ -16,6 +16,35 @@
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
+/* Per-source policy                                                  */
+/* ------------------------------------------------------------------ */
+
+/* The lifetime and erase rules of one protocol family. The store's
+ * generic paths (record kind, scroll cull, erase) branch only on this
+ * table; a new protocol is a new row, not a new if-chain. */
+typedef struct
+{
+    uint8_t kind;               /* IMG_KIND_* every record of the source gets */
+    bool dies_with_placements;  /* 1:N: the record dies with its last placement
+                                 * (a Lottie animation IS its placements) */
+    bool rows_erase_placements; /* 1:N: a text erase of the display rows removes
+                                 * the foreground placements in range (Lottie) */
+    bool screen_clear_removes;  /* 1:N: ED 2 removes the image when any placement
+                                 * is visible on screen (kitty's rule) */
+} ImgSourcePolicy;
+
+static const ImgSourcePolicy *img_policy(uint8_t source)
+{
+    static const ImgSourcePolicy policies[] = {
+        [IMG_SRC_SIXEL] = { IMG_KIND_ANCHORED, false, false, false },
+        [IMG_SRC_LOTTIE] = { IMG_KIND_REFERENCED, true, true, false },
+        [IMG_SRC_ITERM] = { IMG_KIND_ANCHORED, false, false, false },
+        [IMG_SRC_KITTY] = { IMG_KIND_REFERENCED, false, false, true },
+    };
+    return source < IMG_SRC_ANY ? &policies[source] : &policies[IMG_SRC_SIXEL];
+}
+
+/* ------------------------------------------------------------------ */
 /* Store lifecycle                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -582,88 +611,9 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     return st->img_count - 1;
 }
 
-int cfr_img_add_named(void *vt, CfrImgStore *st,
+int cfr_img_put_named(void *vt, CfrImgStore *st,
                       uint64_t id, const uint8_t *rgba, int w, int h,
                       uint8_t layer, uint8_t source)
-{
-    if (!rgba || w <= 0 || h <= 0 || w > IMG_MAX_DIM || h > IMG_MAX_DIM)
-        return -1;
-
-    size_t need = (size_t)w * (size_t)h * 4u;
-    if (need == 0 || need > IMG_LIVE_MAX)
-        return -1;
-
-    uint8_t screen = (uint8_t)((CfrTerm *)vt)->in_altscreen;
-    int existing = cfr_img_find_by_source_id(st, source, id, screen);
-    if (existing >= 0) {
-        CfrImg *r = &st->imgs[existing];
-        if (r->cap < need) {
-            st->live_bytes -= r->cap;
-            img_buf_release(vt, st, r->rgba, r->cap);
-            size_t cap = 0;
-            uint8_t *buf = img_buf_alloc(vt, st, need, &cap);
-            if (!buf) {
-                st->imgs[existing] = st->imgs[--st->img_count];
-                return -1;
-            }
-            r->rgba = buf;
-            r->cap = cap;
-            st->live_bytes += cap;
-        }
-        memcpy(r->rgba, rgba, need);
-        r->w = w;
-        r->h = h;
-        r->layer = layer;
-        r->source = source;
-        r->version = ++st->version_seq;
-        return existing;
-    }
-
-    img_evict_for_cap(vt, st);
-    img_evict_to_budget(vt, st, need);
-
-    if (st->img_count >= st->img_cap) {
-        int ncap = st->img_cap ? st->img_cap * 2 : 8;
-        if (ncap > IMG_MAX_IMAGES)
-            ncap = IMG_MAX_IMAGES;
-        CfrImg *nr = cfr_realloc(vt, st->imgs, (size_t)ncap * sizeof(CfrImg));
-        if (!nr)
-            return -1;
-        st->imgs = nr;
-        st->img_cap = ncap;
-    }
-
-    size_t cap = 0;
-    uint8_t *buf = img_buf_alloc(vt, st, need, &cap);
-    if (!buf)
-        return -1;
-
-    CfrImg *r = &st->imgs[st->img_count++];
-    r->id = id;
-    r->handle = st->next_handle++;
-    r->seq = st->next_seq++;
-    r->version = ++st->version_seq;
-    r->layer = layer;
-    r->source = source;
-    r->kind = IMG_KIND_REFERENCED;
-    r->screen = screen;
-    r->abs_line = 0;
-    r->col = 0;
-    r->w = w;
-    r->h = h;
-    r->buf_w = w;
-    r->buf_h = h;
-    r->rows_tall = 1;
-    r->cols_wide = 1;
-    r->rgba = buf;
-    r->cap = cap;
-    st->live_bytes += cap;
-    memcpy(buf, rgba, need);
-    return st->img_count - 1;
-}
-
-int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
-                        int w, int h, uint8_t layer, uint8_t source)
 {
     if (w <= 0 || h <= 0 || w > IMG_MAX_DIM || h > IMG_MAX_DIM)
         return -1;
@@ -689,8 +639,18 @@ int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
             r->cap = cap;
             st->live_bytes += cap;
         }
+        if (rgba) {
+            memcpy(r->rgba, rgba, need);
+            r->version = ++st->version_seq;
+        } else {
+            /* A caller-owned raster target: zeroed, not versioned — the
+             * caller reports the pixel change when it is done. */
+            memset(r->rgba, 0, need);
+        }
         r->w = w;
         r->h = h;
+        r->buf_w = w;
+        r->buf_h = h;
         r->layer = layer;
         r->source = source;
         return existing;
@@ -735,14 +695,11 @@ int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
     r->rgba = buf;
     r->cap = cap;
     st->live_bytes += cap;
+    if (rgba)
+        memcpy(buf, rgba, need);
+    else
+        memset(buf, 0, need);
     return st->img_count - 1;
-}
-
-void cfr_img_mark_dirty(CfrImgStore *st, int idx)
-{
-    if (idx < 0 || idx >= st->img_count)
-        return;
-    st->imgs[idx].version = ++st->version_seq;
 }
 
 void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
@@ -802,41 +759,10 @@ static bool img_has_placements(const CfrImgStore *st, uint64_t handle)
     return false;
 }
 
-/* The lifetime rule of a 1:N image, per source:
- *
- *   - kitty: the image lives until the CLIENT deletes it (a=d), until
- *     the id is re-transmitted, or until the budget evicts it. It does
- *     not die with the screen: kitty's rule is "the other commands to
- *     erase text must have no effect on graphics", and an image whose
- *     placement scrolled away is still a live image (kitty keeps
- *     images until they are deleted).
- *   - Lottie: an animation IS a placement — with its last placement
- *     gone, the animation is over, and its record (the ThorVG
- *     animation, the JSON arena) goes with it.
- *
- * The 1:1 protocols (sixel, iTerm2) are not 1:N; their rule is the
- * screen's own (see cfr_img_clear_display_rows). */
-static bool img_dies_with_placements(uint8_t source)
-{
-    return source == IMG_SRC_LOTTIE;
-}
-
-/* Does an erase of the screen touch this 1:N image?
- *
- *   - kitty: no. "The other commands to erase text must have no effect
- *     on graphics." The one screen-wide clear kitty sanctions is ED 2
- *     ("the clear screen escape code should also clear all images"),
- *     and that one clears the VISIBLE images — an image that was
- *     transmitted but never placed is not on the screen, so it
- *     survives.
- *   - Lottie: yes — an erase removes the foreground placements in the
- *     erased rows (the Lottie spec's clear behaviour). */
-static bool img_erase_affects(uint8_t source, bool full)
-{
-    if (source == IMG_SRC_KITTY)
-        return full;
-    return true;
-}
+/* The per-source lifetime and erase rules live in img_policy() at the
+ * top of this file: the 1:1 protocols (sixel, iTerm2) are the screen's
+ * own, and the 1:N protocols split on kitty's "the client owns the
+ * image" rule vs Lottie's "the animation IS its placement" rule. */
 
 void cfr_img_note_scroll(void *vt, CfrImgStore *st, int lines)
 {
@@ -869,7 +795,8 @@ void cfr_img_note_scroll(void *vt, CfrImgStore *st, int lines)
                 else
                     ++j;
             }
-            if (img_dies_with_placements(source) && st->imgs[i].ever_placed &&
+            if (img_policy(source)->dies_with_placements &&
+                st->imgs[i].ever_placed &&
                 !img_has_placements(st, handle))
                 img_rec_release(vt, st, i);
             else
@@ -887,44 +814,35 @@ void cfr_img_note_scroll(void *vt, CfrImgStore *st, int lines)
     }
 }
 
-/* Remove the placements of ONE image that an erase touches, and the
- * image itself when its source's rule says it dies with them.
+/* How a text erase of the display rows [top, bot] affects one 1:N
+ * image, per the source's policy. `full` marks the screen-wide clear
+ * (ED 2).
  *
- * The rule per source:
- *   - kitty: ED 2 (the screen-wide clear) removes the placements that
- *     are ON the screen; the off-screen ones (a placement that
- *     scrolled into the scrollback) are not visible, so they stay.
- *   - Lottie: the erased rows take their foreground placements with
- *     them (the Lottie spec's clear behaviour).
- *
- * `full` marks the screen-wide clear (ED 2).
+ *   - kitty (screen_clear_removes): ED 2 clears the images that are ON
+ *     the screen; the other erases never touch it. An image with no
+ *     on-screen placement is not visible — it was transmitted but
+ *     never placed, or its placement scrolled into the scrollback — so
+ *     it survives. "On the screen" is the placement's row EXTENT, not
+ *     its first row: kitty's rule is "the image's bottom edge is below
+ *     the top of the screen" (kitty/graphics.c clear_filter_func:
+ *     start_row + effective_num_rows > 0), so a picture that scrolled
+ *     one line up — chafa's label line under a full-height picture
+ *     does exactly that — is still on the screen and must go.
+ *   - Lottie (rows_erase_placements): the erased rows take their
+ *     foreground placements with them, and the record follows its last
+ *     placement when the policy says it dies with them.
  *
  * Returns true when the image itself was released (the dense array
  * swap-removes, so the slot now holds another record — the caller must
  * look at it again). */
-static bool img_clear_placements_for(void *vt, CfrImgStore *st, int i,
+static bool img_clear_referenced_for(void *vt, CfrImgStore *st, int i,
                                      int top, int bot, bool full)
 {
     CfrTerm *cvt = vt;
+    const ImgSourcePolicy *pol = img_policy(st->imgs[i].source);
     uint64_t handle = st->imgs[i].handle;
-    uint8_t source = st->imgs[i].source;
 
-    if (source == IMG_SRC_KITTY) {
-        /* kitty: ED 2 ("the clear screen escape code should also clear
-         * all images") clears the images that are ON the screen. An
-         * image with no on-screen placement is not visible — it was
-         * transmitted but never placed, or its placement scrolled into
-         * the scrollback — so it survives.
-         *
-         * "On the screen" is the placement's row EXTENT, not its first
-         * row: kitty's rule is "the image's bottom edge is below the
-         * top of the screen" (kitty/graphics.c clear_filter_func:
-         * start_row + effective_num_rows > 0), so a picture that
-         * scrolled one line up — chafa's label line under a
-         * full-height picture does exactly that — is still on the
-         * screen and must go. */
-        if (!full)
-            return false;
+    if (pol->screen_clear_removes && full) {
         bool on_screen = false;
         for (int j = 0; j < st->place_count; ++j) {
             if (st->places[j].image_handle != handle)
@@ -939,6 +857,9 @@ static bool img_clear_placements_for(void *vt, CfrImgStore *st, int i,
         img_rec_release(vt, st, i);
         return true;
     }
+
+    if (!pol->rows_erase_placements)
+        return false;
 
     bool removed = false;
     for (int j = 0; j < st->place_count;) {
@@ -960,7 +881,7 @@ static bool img_clear_placements_for(void *vt, CfrImgStore *st, int i,
             ++j;
         }
     }
-    if (removed && img_dies_with_placements(source) &&
+    if (removed && pol->dies_with_placements &&
         !img_has_placements(st, handle)) {
         img_rec_release(vt, st, i);
         return true;
@@ -976,7 +897,6 @@ void cfr_img_clear_display_rows(void *vt, CfrImgStore *st, int top, int bot,
         return;
 
     for (int i = 0; i < st->img_count;) {
-        uint8_t source = st->imgs[i].source;
         /* An erase of the active screen cannot see (or touch) the other
          * screen's graphics set: kitty keeps them apart, and a main
          * image must survive a visit to an editor. */
@@ -1001,12 +921,8 @@ void cfr_img_clear_display_rows(void *vt, CfrImgStore *st, int top, int bot,
             continue;
         }
 
-        /* 1:N (kitty, Lottie). */
-        if (!img_erase_affects(source, full)) {
-            ++i;
-            continue;
-        }
-        if (img_clear_placements_for(vt, st, i, top, bot, full))
+        /* 1:N — the source's policy decides (img_clear_referenced_for). */
+        if (img_clear_referenced_for(vt, st, i, top, bot, full))
             continue; /* the record was released — the slot moved */
         ++i;
     }
@@ -1029,7 +945,7 @@ void cfr_img_clear_source_rows(void *vt, CfrImgStore *st, uint8_t source,
             ++i;
             continue;
         }
-        if (img_clear_placements_for(vt, st, i, top, bot, false))
+        if (img_clear_referenced_for(vt, st, i, top, bot, false))
             continue; /* the record was released — the slot moved */
         ++i;
     }

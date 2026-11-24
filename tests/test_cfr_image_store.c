@@ -287,20 +287,20 @@ static void test_img_replace(void)
 /* Storing new pixels under an existing named id must bump the version,
  * exactly like cfr_img_replace does — hosts key their texture cache on
  * (id, version) and re-upload only when the version changes. */
-static void test_img_add_named_replace_bumps_version(void)
+static void test_img_put_named_replace_bumps_version(void)
 {
     CfrTerm *vt = make_term(24, 80);
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba1 = make_rgba(4, 4, 255, 0, 0, 255);
-    int idx = cfr_img_add_named(vt, st, 42, rgba1, 4, 4, 0, IMG_SRC_KITTY);
+    int idx = cfr_img_put_named(vt, st, 42, rgba1, 4, 4, 0, IMG_SRC_KITTY);
     free(rgba1);
     ASSERT_TRUE(idx >= 0);
     uint32_t v1 = st->imgs[idx].version;
 
     /* Same id, same dimensions, new pixels. */
     uint8_t *rgba2 = make_rgba(4, 4, 0, 255, 0, 255);
-    int idx2 = cfr_img_add_named(vt, st, 42, rgba2, 4, 4, 0, IMG_SRC_KITTY);
+    int idx2 = cfr_img_put_named(vt, st, 42, rgba2, 4, 4, 0, IMG_SRC_KITTY);
     free(rgba2);
     ASSERT_EQ(idx2, idx);
     ASSERT_TRUE(st->imgs[idx].version > v1);
@@ -657,7 +657,7 @@ static void test_named_image_scroll_culls_by_placement(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    int img_idx = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int img_idx = cfr_img_put_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_KITTY);
     free(rgba);
     ASSERT_TRUE(img_idx >= 0);
     uint64_t img_handle = st->imgs[img_idx].handle;
@@ -695,7 +695,7 @@ static void test_named_image_clear_rows_by_placement(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    int img_idx = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_LOTTIE);
+    int img_idx = cfr_img_put_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_LOTTIE);
     free(rgba);
     ASSERT_TRUE(img_idx >= 0);
     uint64_t img_handle = st->imgs[img_idx].handle;
@@ -735,9 +735,9 @@ static void test_img_kind_is_set_at_creation(void)
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
     int anchored = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_SIXEL);
-    int referenced = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0,
+    int referenced = cfr_img_put_named(vt, st, 7, rgba, 10, 6, 0,
                                        IMG_SRC_KITTY);
-    int blanked = cfr_img_blank_named(vt, st, 8, 10, 6, 0, IMG_SRC_KITTY);
+    int blanked = cfr_img_put_named(vt, st, 8, NULL, 10, 6, 0, IMG_SRC_KITTY);
     free(rgba);
     ASSERT_TRUE(anchored >= 0);
     ASSERT_TRUE(referenced >= 0);
@@ -746,6 +746,47 @@ static void test_img_kind_is_set_at_creation(void)
     ASSERT_EQ(st->imgs[anchored].kind, IMG_KIND_ANCHORED);
     ASSERT_EQ(st->imgs[referenced].kind, IMG_KIND_REFERENCED);
     ASSERT_EQ(st->imgs[blanked].kind, IMG_KIND_REFERENCED);
+
+    cfr_img_store_free(vt, st);
+    cfr_free(vt);
+}
+
+/* A NULL pixel pointer hands the caller a ZEROED raster target. The
+ * buffer may come back from the spare pool — where it holds a previous
+ * image's pixels — so the zeroing must happen on every path, and the
+ * buffer dimensions must track the requested size. */
+static void test_img_put_named_null_pixels_is_zeroed(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    CfrImgStore *st = cfr_img_store_new(vt);
+
+    uint8_t *rgba = make_rgba(4, 4, 9, 9, 9, 255);
+    int a = cfr_img_put_named(vt, st, 1, rgba, 4, 4, 0, IMG_SRC_KITTY);
+    free(rgba);
+    ASSERT_TRUE(a >= 0);
+    ASSERT_EQ(st->imgs[a].rgba[0], 9);
+
+    /* Releasing the image returns its buffer to the spare pool; the
+     * next raster target of the same size reuses it and must be
+     * zeroed, or the stale pixels leak into the new image. */
+    cfr_img_remove(vt, st, a);
+    int b = cfr_img_put_named(vt, st, 2, NULL, 4, 4, 0, IMG_SRC_KITTY);
+    ASSERT_TRUE(b >= 0);
+    for (int i = 0; i < 4 * 4 * 4; i++)
+        ASSERT_EQ(st->imgs[b].rgba[i], 0);
+    ASSERT_EQ(st->imgs[b].buf_w, 4);
+    ASSERT_EQ(st->imgs[b].buf_h, 4);
+
+    /* The same-id re-put (replace path) re-zeroes and re-tracks the
+     * dimensions. */
+    uint8_t *rgba2 = make_rgba(4, 4, 7, 7, 7, 255);
+    cfr_img_put_named(vt, st, 2, rgba2, 4, 4, 0, IMG_SRC_KITTY);
+    free(rgba2);
+    cfr_img_put_named(vt, st, 2, NULL, 5, 3, 0, IMG_SRC_KITTY);
+    for (int i = 0; i < 5 * 3 * 4; i++)
+        ASSERT_EQ(st->imgs[b].rgba[i], 0);
+    ASSERT_EQ(st->imgs[b].buf_w, 5);
+    ASSERT_EQ(st->imgs[b].buf_h, 3);
 
     cfr_img_store_free(vt, st);
     cfr_free(vt);
@@ -762,7 +803,7 @@ static void test_img_id_spaces_are_separate(void)
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
     /* The kitty image takes the CLIENT's id (1). */
-    int kitty = cfr_img_add_named(vt, st, 1, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int kitty = cfr_img_put_named(vt, st, 1, rgba, 10, 6, 0, IMG_SRC_KITTY);
     /* The engine's counter also hands out 1 — a different image. */
     int engine = cfr_img_add(vt, st, rgba, 10, 6, 0, 0, 0, IMG_SRC_ITERM);
     free(rgba);
@@ -824,7 +865,7 @@ static void test_img_evict_takes_the_oldest(void)
     uint64_t first_handle = 0;
     uint64_t last_handle = 0;
     for (int i = 0; i < IMG_MAX_IMAGES + 1; i++) {
-        int idx = cfr_img_add_named(vt, st, (uint64_t)(i + 1), rgba, 10, 6, 0,
+        int idx = cfr_img_put_named(vt, st, (uint64_t)(i + 1), rgba, 10, 6, 0,
                                     IMG_SRC_KITTY);
         ASSERT_TRUE(idx >= 0);
         if (i == 0)
@@ -853,7 +894,7 @@ static void test_img_placement_damages_rows(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    int idx = cfr_img_add_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int idx = cfr_img_put_named(vt, st, 7, rgba, 10, 6, 0, IMG_SRC_KITTY);
     free(rgba);
     ASSERT_TRUE(idx >= 0);
     uint64_t handle = st->imgs[idx].handle;
@@ -923,8 +964,8 @@ static void test_img_handle_is_stable(void)
     CfrImgStore *st = cfr_img_store_new(vt);
 
     uint8_t *rgba = make_rgba(10, 6, 255, 0, 0, 255);
-    int a = cfr_img_add_named(vt, st, 1, rgba, 10, 6, 0, IMG_SRC_KITTY);
-    int b = cfr_img_add_named(vt, st, 2, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int a = cfr_img_put_named(vt, st, 1, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int b = cfr_img_put_named(vt, st, 2, rgba, 10, 6, 0, IMG_SRC_KITTY);
     ASSERT_TRUE(a >= 0);
     ASSERT_TRUE(b >= 0);
 
@@ -938,7 +979,7 @@ static void test_img_handle_is_stable(void)
     ASSERT_EQ(st->imgs[b].handle, hb);
 
     /* A new image never reuses a handle. */
-    int c = cfr_img_add_named(vt, st, 3, rgba, 10, 6, 0, IMG_SRC_KITTY);
+    int c = cfr_img_put_named(vt, st, 3, rgba, 10, 6, 0, IMG_SRC_KITTY);
     ASSERT_TRUE(c >= 0);
     ASSERT_TRUE(st->imgs[c].handle != ha);
     ASSERT_TRUE(st->imgs[c].handle != hb);
@@ -965,7 +1006,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_img_add_iterm2_advances_below);
     RUN_TEST(test_img_find_at);
     RUN_TEST(test_img_replace);
-    RUN_TEST(test_img_add_named_replace_bumps_version);
+    RUN_TEST(test_img_put_named_replace_bumps_version);
     RUN_TEST(test_img_evict_oldest_first);
     RUN_TEST(test_img_scroll_cull);
     RUN_TEST(test_img_clear_display_rows);
@@ -982,6 +1023,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_named_image_scroll_culls_by_placement);
     RUN_TEST(test_named_image_clear_rows_by_placement);
     RUN_TEST(test_img_kind_is_set_at_creation);
+    RUN_TEST(test_img_put_named_null_pixels_is_zeroed);
     RUN_TEST(test_img_id_spaces_are_separate);
     RUN_TEST(test_img_evict_takes_the_oldest);
     RUN_TEST(test_img_placement_damages_rows);

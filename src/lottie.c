@@ -989,10 +989,11 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         rec->arena_cap = 0;
 
         /* (Re-)size the shared pixel buffer for this id. If the id already
-         * exists but at a different size, blank_named grows/replaces the
-         * backing buffer in place. */
-        int ii = cfr_img_blank_named(vt, store, id, px_w, px_h,
-                                     layer, IMG_SRC_LOTTIE);
+         * exists but at a different size, put_named grows/replaces the
+         * backing buffer in place. A NULL pixel pointer asks for a zeroed
+         * raster target: the rasterizer writes it and reports the change. */
+        int ii = cfr_img_put_named(vt, store, id, NULL, px_w, px_h,
+                                   layer, IMG_SRC_LOTTIE);
         if (ii < 0)
             return;
         rec->img_handle = store->imgs[ii].handle;
@@ -1019,16 +1020,9 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
         rec->img_handle = 0;
         rec->version = 1;
 
-        /* Store the initial (zeroed) pixel buffer in the shared store. */
-        uint8_t *zero = cfr_alloc(vt, need);
-        if (!zero) {
-            st->rec_count--;
-            return;
-        }
-        memset(zero, 0, need);
-        int ni = cfr_img_add_named(vt, store, id, zero, px_w, px_h,
+        /* Store the initial (zeroed) raster target in the shared store. */
+        int ni = cfr_img_put_named(vt, store, id, NULL, px_w, px_h,
                                    layer, IMG_SRC_LOTTIE);
-        cfr_dealloc(vt, zero);
         if (ni < 0) {
             st->rec_count--;
             return;

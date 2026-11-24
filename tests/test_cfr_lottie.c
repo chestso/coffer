@@ -1553,7 +1553,7 @@ static void test_lottie_and_kitty_ids_do_not_collide(void)
     ASSERT_NOT_NULL(store);
     uint8_t rgba[4 * 4 * 4] = { 0 };
     rgba[0] = 255;
-    int kitty = cfr_img_add_named(vt, store, 1, rgba, 4, 4, 0, IMG_SRC_KITTY);
+    int kitty = cfr_img_put_named(vt, store, 1, rgba, 4, 4, 0, IMG_SRC_KITTY);
     ASSERT_TRUE(kitty >= 0);
 
     /* A Lottie animation with the same id. */

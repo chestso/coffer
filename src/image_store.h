@@ -211,24 +211,19 @@ int cfr_img_add(void *vt, CfrImgStore *st,
                 int disp_w, int disp_h,
                 uint8_t layer, uint8_t source);
 
-/* Store RGBA data keyed by explicit id (lottie animation). Creates or
- * replaces the image with the given id at an explicit anchor without
- * advancing the cursor or damaging (caller handles placement/damage).
+/* Store RGBA data keyed by an explicit id (kitty, lottie). Creates or
+ * replaces the image with the given id at no anchor, without advancing
+ * the cursor or damaging (the caller handles placement/damage).
+ *
+ * `rgba` is copied into the store's buffer, and the image version is
+ * bumped — hosts key their texture cache on (id, version). Pass NULL to
+ * create (or re-size) a ZEROED buffer the caller rasterizes into
+ * directly (the lottie path); the version is then the caller's business.
+ *
  * Returns image index >= 0, or -1 on failure. */
-int cfr_img_add_named(void *vt, CfrImgStore *st,
+int cfr_img_put_named(void *vt, CfrImgStore *st,
                       uint64_t id, const uint8_t *rgba, int w, int h,
                       uint8_t layer, uint8_t source);
-
-/* Ensure a zero-initialised RGBA buffer exists for the given id, sized
- * w*h. Returns the image index (>= 0) or -1. The caller writes pixels
- * directly into st->imgs[idx].rgba (e.g. a software rasterizer target)
- * and then calls cfr_img_mark_dirty(). No copy, no cursor advance. */
-int cfr_img_blank_named(void *vt, CfrImgStore *st, uint64_t id,
-                        int w, int h, uint8_t layer, uint8_t source);
-
-/* Bump the image version after in-place pixel writes (rasterizer wrote
- * directly into the buffer). Damage is the caller's responsibility. */
-void cfr_img_mark_dirty(CfrImgStore *st, int idx);
 
 /* Replace image pixel data (animation / frame update). Bumps version. */
 void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
