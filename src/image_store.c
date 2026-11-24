@@ -605,6 +605,8 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     r->handle = st->next_handle++;
     r->seq = st->next_seq++;
     r->version = ++st->version_seq;
+    r->image_num = 0;
+    r->has_image_num = 0;
     r->layer = layer;
     r->source = source;
     r->kind = IMG_KIND_ANCHORED;
@@ -670,6 +672,10 @@ int cfr_img_put_named(void *vt, CfrImgStore *st,
         r->buf_h = h;
         r->layer = layer;
         r->source = source;
+        /* Re-storing pixels is a new image identity: any I= number the
+         * old record carried is gone. */
+        r->image_num = 0;
+        r->has_image_num = 0;
         return existing;
     }
 
@@ -697,6 +703,8 @@ int cfr_img_put_named(void *vt, CfrImgStore *st,
     r->handle = st->next_handle++;
     r->seq = st->next_seq++;
     r->version = ++st->version_seq;
+    r->image_num = 0;
+    r->has_image_num = 0;
     r->layer = layer;
     r->source = source;
     r->kind = IMG_KIND_REFERENCED;

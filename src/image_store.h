@@ -73,13 +73,16 @@ enum
 /* One stored image (was SxRec in sixel.c). */
 typedef struct
 {
-    uint64_t id;         /* PUBLIC id: the client's i= for 1:N, the engine's
-                          * for 1:1. The host's texture cache keys on it. */
-    uint64_t handle;     /* store-internal identity, never reused, never
-                          * exposed; the placements point at THIS, so a
-                          * client id and an engine id cannot collide. */
-    uint64_t seq;        /* creation order (monotonic); the eviction's order */
-    uint32_t version;    /* pixel generation from version_seq; never repeats */
+    uint64_t id;        /* PUBLIC id: the client's i= for 1:N, the engine's
+                         * for 1:1. The host's texture cache keys on it. */
+    uint64_t handle;    /* store-internal identity, never reused, never
+                         * exposed; the placements point at THIS, so a
+                         * client id and an engine id cannot collide. */
+    uint64_t seq;       /* creation order (monotonic); the eviction's order */
+    uint32_t version;   /* pixel generation from version_seq; never repeats */
+    uint32_t image_num; /* kitty I= image number (non-unique, newest wins);
+                         * 0 when the image has none */
+    uint8_t has_image_num;
     uint8_t layer;       /* 0 = foreground, 1 = background */
     uint8_t source;      /* IMG_SRC_* */
     uint8_t kind;        /* IMG_KIND_* */

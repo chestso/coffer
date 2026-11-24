@@ -357,6 +357,170 @@ static void test_transmit_client_id(void)
 }
 
 /* --------------------------------------------------------------- */
+/* 7a. Image numbers (I=): the terminal assigns the id             */
+/* --------------------------------------------------------------- */
+
+/* "When creating a new image, even if an existing image has the same
+ * number a new one is created. And the terminal will reply with the id
+ * of the newly created image." The I= key is a number the client picks
+ * to avoid waiting for the reply; the engine assigns the real id. */
+static void test_transmit_image_number_assigns_id(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,I=13;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_TRUE(imgs[0].id != 13); /* the id is the terminal's */
+    ASSERT_EQ(vt->images->imgs[0].image_num, 13);
+    ASSERT_EQ(vt->images->imgs[0].has_image_num, 1);
+
+    /* The reply carries both the assigned id and the number. */
+    ASSERT_TRUE(strstr(g_output, "I=13") != NULL);
+    ASSERT_TRUE(strstr(g_output, "OK") != NULL);
+
+    cfr_free(vt);
+}
+
+/* Two transmits under the same number are two images; the number names
+ * the NEWEST one, and a placement resolves to it. */
+static void test_image_number_names_the_newest(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t red[4] = { 255, 0, 0, 255 };
+    uint8_t green[4] = { 0, 255, 0, 255 };
+    char b64[64];
+    char seq[256];
+    b64_encode(red, sizeof(red), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,I=13;%s\x1b\\", b64);
+    feed(vt, seq);
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,I=13;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 2);
+
+    /* The placement by number lands on the second (newest) image. */
+    feed(vt, "\x1b_Ga=p,I=13,U=1\x1b\\");
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+    ASSERT_TRUE(pls[0].image_id == imgs[1].id);
+    ASSERT_EQ(pls[0].image_handle, imgs[1].handle);
+
+    /* The place reply names the resolved id and the number. */
+    ASSERT_TRUE(strstr(g_output, "I=13") != NULL);
+
+    cfr_free(vt);
+}
+
+/* A frame named by number replaces the newest image with that number
+ * in place, keeping its placements. */
+static void test_image_number_frame_replaces_newest(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t red[4] = { 255, 0, 0, 255 };
+    uint8_t blue[4] = { 0, 0, 255, 255 };
+    char b64[64];
+    char seq[256];
+    b64_encode(red, sizeof(red), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=T,f=32,s=1,v=1,I=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* A second image under the same number — the frame must hit this
+     * one, not the first. */
+    uint8_t green[4] = { 0, 255, 0, 255 };
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,I=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 2);
+
+    b64_encode(blue, sizeof(blue), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=f,f=32,s=1,v=1,I=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 2);
+    ASSERT_EQ(imgs[1].rgba[2], 255); /* newest now blue */
+    ASSERT_EQ(imgs[0].rgba[0], 255); /* first untouched */
+
+    cfr_free(vt);
+}
+
+/* Both an image id and an image number in one command is an error, and
+ * nothing is stored. */
+static void test_image_number_with_id_is_error(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t rgba[4] = { 255, 0, 0, 255 };
+    char b64[64];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=1,I=13;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    ASSERT_TRUE(strstr(g_output, "EINVAL") != NULL);
+
+    int count = 0;
+    cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 0);
+
+    cfr_free(vt);
+}
+
+/* The number space is scoped to the screen like the id space: the alt
+ * screen's I=13 does not see the main screen's I=13. */
+static void test_image_number_is_screen_scoped(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t red[4] = { 255, 0, 0, 255 };
+    uint8_t green[4] = { 0, 255, 0, 255 };
+    char b64[64];
+    char seq[256];
+    b64_encode(red, sizeof(red), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,I=13;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    feed(vt, "\x1b[?1049h");
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq), "\x1b_Ga=t,f=32,s=1,v=1,I=13;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* The alt screen's number resolves to the alt image. */
+    feed(vt, "\x1b_Ga=p,I=13,U=1\x1b\\");
+    int pc = 0;
+    const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_TRUE(pls[0].image_handle == imgs[0].handle);
+    ASSERT_EQ(imgs[0].rgba[1], 255); /* the green alt image */
+
+    cfr_free(vt);
+}
+
+/* --------------------------------------------------------------- */
 /* 8. Place (a=p) stores a placement with z-index                 */
 /* --------------------------------------------------------------- */
 
@@ -2078,6 +2242,11 @@ int main(int argc, char *argv[])
     RUN_TEST(test_delete_all);
     RUN_TEST(test_osc5555_carrier);
     RUN_TEST(test_transmit_client_id);
+    RUN_TEST(test_transmit_image_number_assigns_id);
+    RUN_TEST(test_image_number_names_the_newest);
+    RUN_TEST(test_image_number_frame_replaces_newest);
+    RUN_TEST(test_image_number_with_id_is_error);
+    RUN_TEST(test_image_number_is_screen_scoped);
     RUN_TEST(test_place);
     RUN_TEST(test_place_cell_size_from_aspect);
     RUN_TEST(test_natural_size_placement_scales_with_content_scale);

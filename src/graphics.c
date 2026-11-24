@@ -247,6 +247,24 @@ static void k_emit_ok(CfrTerm *vt, int image_id)
         k_emit_response(vt, buf);
 }
 
+/* The success reply for a command that named an image: the image's own
+ * id, plus its I= number when the client addressed it by number, so the
+ * client learns the id the number resolved to. */
+static void k_emit_image_ok(CfrTerm *vt, const CfrImg *img)
+{
+    char buf[96];
+    int n;
+    if (img->has_image_num)
+        n = snprintf(buf, sizeof(buf), "i=%llu,I=%u;OK",
+                     (unsigned long long)img->id,
+                     (unsigned int)img->image_num);
+    else
+        n = snprintf(buf, sizeof(buf), "i=%llu;OK",
+                     (unsigned long long)img->id);
+    if (n > 0)
+        k_emit_response(vt, buf);
+}
+
 static void k_emit_error(CfrTerm *vt, int image_id, const char *err)
 {
     char buf[128];
@@ -458,8 +476,38 @@ static uint8_t *k_decode_rgba(CfrTerm *vt, const uint8_t *payload,
  *    deletes the image *and all its placements*; the new data is not
  *    displayed until a new placement is created.
  *  - No i= key: multiple images with id=0 may exist, so each id-less
- *    transmit must create a *new* image under a fresh engine id.
+ *    transmit must create a *new* image under a fresh engine id. An
+ *    I= key transmits under an image NUMBER: the terminal assigns the
+ *    id and replies with it, and later commands naming that number act
+ *    on its newest image.
  */
+
+/* Resolve the image an i=- or I=-keyed command names, scoped to kitty's
+ * id space and the active screen: the id wins, else the NEWEST record
+ * carrying the number. Returns the store index or -1. */
+static int k_resolve_image(CfrTerm *vt, CfrImgStore *store,
+                           const KittyParams *p)
+{
+    uint8_t screen = (uint8_t)vt->in_altscreen;
+    if (p->has_image_id)
+        return cfr_img_find_by_source_id(store, IMG_SRC_KITTY,
+                                         (uint64_t)p->image_id, screen);
+    if (p->has_image_num) {
+        int best = -1;
+        for (int i = 0; i < store->img_count; i++) {
+            if (store->imgs[i].source != IMG_SRC_KITTY ||
+                store->imgs[i].screen != screen ||
+                !store->imgs[i].has_image_num ||
+                store->imgs[i].image_num != (uint32_t)p->image_num)
+                continue;
+            if (best < 0 || store->imgs[i].seq > store->imgs[best].seq)
+                best = i;
+        }
+        return best;
+    }
+    return -1;
+}
+
 static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
                               uint8_t *rgba, int w, int h, bool is_frame)
 {
@@ -479,7 +527,7 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
             /* Animation frame: replace pixels in place, keep placements. */
             cfr_img_replace(vt, store, idx, rgba, w, h);
             if (!p->quiet)
-                k_emit_ok(vt, p->image_id);
+                k_emit_image_ok(vt, &store->imgs[idx]);
             return store->imgs[idx].handle;
         }
         if (idx >= 0 && !is_frame) {
@@ -487,19 +535,41 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
             cfr_img_remove(vt, store, idx);
         }
         int ni = cfr_img_put_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
+        if (ni < 0)
+            return 0;
         if (!p->quiet)
-            k_emit_ok(vt, p->image_id);
-        return ni >= 0 ? store->imgs[ni].handle : 0;
+            k_emit_image_ok(vt, &store->imgs[ni]);
+        return store->imgs[ni].handle;
+    }
+
+    /* A frame named by number replaces the newest image with that
+     * number, like the id path. */
+    if (is_frame && p->has_image_num) {
+        int idx = k_resolve_image(vt, store, p);
+        if (idx >= 0) {
+            cfr_img_replace(vt, store, idx, rgba, w, h);
+            if (!p->quiet)
+                k_emit_image_ok(vt, &store->imgs[idx]);
+            return store->imgs[idx].handle;
+        }
     }
 
     /* No i= key: always a fresh image under a unique engine id so
      * successive id-less transmits (chafa, kitten icat) don't collide
-     * on id=0. The engine id is what placements must reference. */
+     * on id=0. The engine id is what placements must reference. An
+     * I= transmit is the same, and the reply carries the assigned id
+     * alongside the number. */
     uint64_t id = store->next_id++;
     int ni = cfr_img_put_named(vt, store, id, rgba, w, h, 0, IMG_SRC_KITTY);
+    if (ni < 0)
+        return 0;
+    if (p->has_image_num) {
+        store->imgs[ni].image_num = (uint32_t)p->image_num;
+        store->imgs[ni].has_image_num = 1;
+    }
     if (!p->quiet)
-        k_emit_ok(vt, p->image_id);
-    return ni >= 0 ? store->imgs[ni].handle : 0;
+        k_emit_image_ok(vt, &store->imgs[ni]);
+    return store->imgs[ni].handle;
 }
 
 /* An omitted f= key is not "unknown format": kitty's default is 32
@@ -593,6 +663,7 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         MERGE(height, has_height);
         MERGE(compression, has_compression);
         MERGE(image_id, has_image_id);
+        MERGE(image_num, has_image_num);
         if (!p->quiet)
             p->quiet = first.quiet;
         MERGE(disp_cols, has_disp_cols);
@@ -717,12 +788,11 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
     if (!store)
         return;
 
-    uint64_t image_id = (uint64_t)(p->has_image_id ? p->image_id : 0);
     /* The lookup is scoped to kitty's id space (a Lottie animation with
      * the same number is a different image) and to the active screen
-     * (the two buffers have separate graphics sets). */
-    int img_idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, image_id,
-                                            (uint8_t)vt->in_altscreen);
+     * (the two buffers have separate graphics sets). An I= number names
+     * the newest image carrying it. */
+    int img_idx = k_resolve_image(vt, store, p);
     if (img_idx < 0) {
         if (!p->quiet)
             k_emit_error(vt, p->image_id, "ENOENT:unknown image id");
@@ -807,7 +877,7 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
         k_advance_cursor(vt, col, cols, rows);
 
     if (!p->quiet)
-        k_emit_ok(vt, p->image_id);
+        k_emit_image_ok(vt, img);
 }
 
 /* ------------------------------------------------------------------ */
@@ -899,6 +969,15 @@ void cfr_graphics_apc_dispatch(CfrTerm *vt, const uint8_t *buf, size_t len)
 
     KittyParams p;
     k_parse_params((const char *)buf, ctrl_len, &p);
+
+    /* Specifying both an image id and an image number in any command is
+     * an error (kitty's rule). */
+    if (p.has_image_id && p.has_image_num) {
+        if (!p.quiet)
+            k_emit_error(vt, p.image_id,
+                         "EINVAL:must not specify both image id and image number");
+        return;
+    }
 
     /* Continuation chunks (m=1/m=0) carry no action key; they inherit
      * the action from the first chunk of the transfer. Without this
