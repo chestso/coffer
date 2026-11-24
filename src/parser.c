@@ -472,7 +472,7 @@ static void osc_put(CfrParser *p, uint8_t b)
             p->osc_truncated = true;
             return;
         }
-        uint8_t *nb = realloc(p->osc_buf, ncap);
+        uint8_t *nb = p->alloc.realloc(p->osc_buf, ncap, p->alloc.user);
         if (!nb) {
             p->osc_truncated = true;
             return;
@@ -879,7 +879,7 @@ static void apc_put(CfrParser *p, uint8_t b)
             p->apc_truncated = true;
             return;
         }
-        uint8_t *nb = realloc(p->apc_buf, ncap);
+        uint8_t *nb = p->alloc.realloc(p->apc_buf, ncap, p->alloc.user);
         if (!nb) {
             p->apc_truncated = true;
             return;

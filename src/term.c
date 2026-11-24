@@ -110,6 +110,7 @@ CfrTerm *cfr_new_with_allocator(const CfrConfig *cfg, const CfrAllocator *alloc)
     cfr_dyn_color_init(vt, cfg);
     cfr_palette_init(vt);
     cfr_parser_init(&vt->parser);
+    vt->parser.alloc = vt->alloc;
 
     /* Tab stops every 8 columns by default. */
     vt->tabstops = vt->alloc.alloc((size_t)cfg->cols, vt->alloc.user);

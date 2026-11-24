@@ -48,6 +48,12 @@ static const ImgSourcePolicy *img_policy(uint8_t source)
 /* Store lifecycle                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Per-image animation state release, defined below (after the buffer
+ * pool they return bytes to); declared here because the store teardown
+ * calls them. */
+static void img_frames_release(void *vt, CfrImgStore *st, CfrImg *r);
+static void img_root_release(void *vt, CfrImgStore *st, CfrImg *r);
+
 CfrImgStore *cfr_img_store_new(void *vt)
 {
     CfrTerm *cvt = vt;
@@ -81,8 +87,15 @@ void cfr_img_store_free(void *vt, CfrImgStore *st)
     CfrTerm *cvt = vt;
     if (!st)
         return;
-    for (int i = 0; i < st->img_count; i++)
+    /* Every image's animation state dies with the store: the frames
+     * array and the frozen root copy are per-image allocations outside
+     * the buffer pool, so they must be released here, not just the
+     * display buffer. */
+    for (int i = 0; i < st->img_count; i++) {
+        img_frames_release(cvt, st, &st->imgs[i]);
+        img_root_release(cvt, st, &st->imgs[i]);
         cfr_dealloc(cvt, st->imgs[i].rgba);
+    }
     for (int i = 0; i < st->spare_count; i++)
         cfr_dealloc(cvt, st->spares[i].ptr);
     cfr_dealloc(cvt, st->imgs);

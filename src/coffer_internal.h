@@ -220,6 +220,11 @@ typedef enum
 typedef struct
 {
     CfrParserState state;
+    /* The terminal's allocator: the OSC/APC accumulators grow through
+     * it, so a host-installed allocator (e.g. a hardened wrapper) sees
+     * every byte the parser owns and the matching free in cfr_free()
+     * stays balanced. */
+    CfrAllocator alloc;
     uint32_t params[CFR_CSI_PARAM_MAX];
     /* Bit i set ⇒ params[i] was introduced by ':' (a subparam of the
      * preceding param), not by ';'. Used to distinguish e.g. SGR 4:3

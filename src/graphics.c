@@ -722,6 +722,7 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         data_len = ch->len + payload_len;
 
         cfr_dealloc(vt, ch->b64);
+        cfr_dealloc(vt, ch->ctrl);
         memset(ch, 0, sizeof(*ch));
     }
 

@@ -221,4 +221,5 @@ the transmit/place/delete paths, which already work.
   caller's allocator, but `osc_1337.c` still frees the decoded buffer
   with plain `free()`. Route it through the allocator (or document the
   boundary) before anyone relies on custom allocators for iTerm2
-  images.
+  images. The parser's OSC/APC accumulators grow through the
+  terminal's allocator already.
