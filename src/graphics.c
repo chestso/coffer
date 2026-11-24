@@ -27,33 +27,34 @@
 
 typedef struct
 {
-    int action;         /* a= (t,T,q,p,d,f,a,c) */
-    int image_id;       /* i= (0 = unassigned) */
-    int image_num;      /* I= (non-unique) */
-    int placement_id;   /* p= */
-    int format;         /* f= (32=RGBA, 24=RGB, 100=PNG) */
-    int width;          /* s= (pixel width) */
-    int height;         /* v= (pixel height) */
-    int z_index;        /* z= */
-    int quiet;          /* q= (0,1,2) */
-    int more;           /* m= (chunked: 1=more, 0=last) */
-    int delete_what;    /* d= (for a=d) */
-    int src_x;          /* x= (source rect origin, pixels; delete cell x) */
-    int src_y;          /* y= (source rect origin, pixels; delete cell y) */
-    int src_w;          /* w= (source rect size, pixels) */
-    int src_h;          /* h= (source rect size, pixels) */
-    int cell_off_x;     /* X= (offset within the first cell, pixels) */
-    int cell_off_y;     /* Y= (offset within the first cell, pixels) */
-    uint32_t bg_rgba;   /* Y= (a=f frame canvas background, 32-bit RGBA) */
-    int rel_h;          /* H= (relative placement offset, cells) */
-    int rel_v;          /* V= */
-    int disp_cols;      /* c= (display cols; placement cell width) */
-    int disp_rows;      /* r= (display rows; placement cell height) */
-    int no_cursor_move; /* C= (1 = leave the cursor where it is) */
-    int compression;    /* o= (z=zlib, else none) */
-    int virtual;        /* U= (1 = virtual placement, no cursor move) */
-    int parent_place;   /* P= (parent placement id) */
-    int parent_img;     /* Q= (parent image id) */
+    int action;           /* a= (t,T,q,p,d,f,a,c) */
+    int report_supported; /* e= (feature query: report keys for this action) */
+    int image_id;         /* i= (0 = unassigned) */
+    int image_num;        /* I= (non-unique) */
+    int placement_id;     /* p= */
+    int format;           /* f= (32=RGBA, 24=RGB, 100=PNG) */
+    int width;            /* s= (pixel width) */
+    int height;           /* v= (pixel height) */
+    int z_index;          /* z= */
+    int quiet;            /* q= (0,1,2) */
+    int more;             /* m= (chunked: 1=more, 0=last) */
+    int delete_what;      /* d= (for a=d) */
+    int src_x;            /* x= (source rect origin, pixels; delete cell x) */
+    int src_y;            /* y= (source rect origin, pixels; delete cell y) */
+    int src_w;            /* w= (source rect size, pixels) */
+    int src_h;            /* h= (source rect size, pixels) */
+    int cell_off_x;       /* X= (offset within the first cell, pixels) */
+    int cell_off_y;       /* Y= (offset within the first cell, pixels) */
+    uint32_t bg_rgba;     /* Y= (a=f frame canvas background, 32-bit RGBA) */
+    int rel_h;            /* H= (relative placement offset, cells) */
+    int rel_v;            /* V= */
+    int disp_cols;        /* c= (display cols; placement cell width) */
+    int disp_rows;        /* r= (display rows; placement cell height) */
+    int no_cursor_move;   /* C= (1 = leave the cursor where it is) */
+    int compression;      /* o= (z=zlib, else none) */
+    int virtual;          /* U= (1 = virtual placement, no cursor move) */
+    int parent_place;     /* P= (parent placement id) */
+    int parent_img;       /* Q= (parent image id) */
     int has_image_id;
     int has_image_num;
     int has_placement_id;
@@ -109,6 +110,9 @@ static void k_parse_params(const char *ctrl, size_t len, KittyParams *p)
                 switch (start[0]) {
                 case 'a':
                     p->action = val_buf[0];
+                    break;
+                case 'e':
+                    p->report_supported = val_buf[0];
                     break;
                 case 'i':
                     p->has_image_id = 1;
@@ -782,6 +786,148 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
 /* Action: query (a=q)                                                */
 /* ------------------------------------------------------------------ */
 
+/* A feature query (a=q with e=<action>): echo the queried action plus
+ * every non-default key we support for it, so clients can detect
+ * features. Keys we do not implement are omitted — the reply is the
+ * capability list, never a promise. */
+static void k_handle_feature_query(CfrTerm *vt, const KittyParams *p)
+{
+    char buf[512];
+    size_t pos = 0;
+
+#define ECHO(...)                                                 \
+    do {                                                          \
+        if (sizeof(buf) - 1 > pos)                                \
+            pos += (size_t)snprintf(buf + pos, sizeof(buf) - pos, \
+                                    __VA_ARGS__);                 \
+    } while (0)
+
+    ECHO(",e=%c", p->report_supported);
+    switch (p->report_supported) {
+    case 't':
+    case 'q':
+        if (p->has_format && (p->format == 32 || p->format == 24 ||
+                              p->format == 100))
+            ECHO(",f=%d", p->format);
+        if (p->has_compression && p->compression == 'z')
+            ECHO(",o=z");
+        if (p->has_width)
+            ECHO(",s=%d", p->width);
+        if (p->has_height)
+            ECHO(",v=%d", p->height);
+        break;
+    case 'T':
+        if (p->has_format && (p->format == 32 || p->format == 24 ||
+                              p->format == 100))
+            ECHO(",f=%d", p->format);
+        if (p->has_compression && p->compression == 'z')
+            ECHO(",o=z");
+        if (p->has_width)
+            ECHO(",s=%d", p->width);
+        if (p->has_height)
+            ECHO(",v=%d", p->height);
+        if (p->has_no_cursor_move)
+            ECHO(",C=%d", p->no_cursor_move);
+        /* U= is deliberately NOT echoed: Unicode placeholders are not
+         * implemented, and advertising them would break clients. */
+        break;
+    case 'f':
+        if (p->has_format && (p->format == 32 || p->format == 24 ||
+                              p->format == 100))
+            ECHO(",f=%d", p->format);
+        if (p->has_compression && p->compression == 'z')
+            ECHO(",o=z");
+        if (p->has_width)
+            ECHO(",s=%d", p->width);
+        if (p->has_height)
+            ECHO(",v=%d", p->height);
+        if (p->has_src_x)
+            ECHO(",x=%d", p->src_x);
+        if (p->has_src_y)
+            ECHO(",y=%d", p->src_y);
+        if (p->has_disp_cols)
+            ECHO(",c=%d", p->disp_cols);
+        if (p->has_disp_rows)
+            ECHO(",r=%d", p->disp_rows);
+        if (p->has_z_index)
+            ECHO(",z=%d", p->z_index);
+        if (p->has_cell_off_x)
+            ECHO(",X=%d", p->cell_off_x);
+        if (p->has_bg_rgba)
+            ECHO(",Y=%u", p->bg_rgba);
+        break;
+    case 'p':
+        if (p->has_src_x)
+            ECHO(",x=%d", p->src_x);
+        if (p->has_src_y)
+            ECHO(",y=%d", p->src_y);
+        if (p->has_src_w)
+            ECHO(",w=%d", p->src_w);
+        if (p->has_src_h)
+            ECHO(",h=%d", p->src_h);
+        if (p->has_cell_off_x)
+            ECHO(",X=%d", p->cell_off_x);
+        if (p->has_cell_off_y)
+            ECHO(",Y=%d", p->cell_off_y);
+        if (p->has_disp_cols)
+            ECHO(",c=%d", p->disp_cols);
+        if (p->has_disp_rows)
+            ECHO(",r=%d", p->disp_rows);
+        if (p->has_z_index)
+            ECHO(",z=%d", p->z_index);
+        if (p->has_no_cursor_move)
+            ECHO(",C=%d", p->no_cursor_move);
+        /* U= is deliberately NOT echoed: Unicode placeholders are not
+         * implemented, and advertising them would break clients. */
+        break;
+    case 'a':
+        if (p->has_disp_cols)
+            ECHO(",c=%d", p->disp_cols);
+        if (p->has_disp_rows)
+            ECHO(",r=%d", p->disp_rows);
+        if (p->has_z_index)
+            ECHO(",z=%d", p->z_index);
+        if (p->has_width)
+            ECHO(",s=%d", p->width);
+        if (p->has_height)
+            ECHO(",v=%d", p->height);
+        break;
+    case 'c':
+        if (p->has_disp_rows)
+            ECHO(",r=%d", p->disp_rows);
+        if (p->has_disp_cols)
+            ECHO(",c=%d", p->disp_cols);
+        if (p->has_src_x)
+            ECHO(",x=%d", p->src_x);
+        if (p->has_src_y)
+            ECHO(",y=%d", p->src_y);
+        if (p->has_src_w)
+            ECHO(",w=%d", p->src_w);
+        if (p->has_src_h)
+            ECHO(",h=%d", p->src_h);
+        if (p->has_cell_off_x)
+            ECHO(",X=%d", p->cell_off_x);
+        if (p->has_cell_off_y)
+            ECHO(",Y=%d", p->cell_off_y);
+        if (p->has_no_cursor_move)
+            ECHO(",C=%d", p->no_cursor_move);
+        break;
+    case 'd':
+        if (p->delete_what &&
+            strchr("aAcCfFiInNpPqQrRxXyYzZ", p->delete_what))
+            ECHO(",d=%c", p->delete_what);
+        break;
+    default:
+        break;
+    }
+#undef ECHO
+
+    char full[640];
+    int n = snprintf(full, sizeof(full), "i=%d%s;OK", p->image_id, buf);
+    if (n > 0)
+        k_emit_response(vt, full);
+}
+
 static void k_handle_query(CfrTerm *vt, const KittyParams *p)
 {
     if (p->quiet)
@@ -797,6 +943,14 @@ static void k_handle_query(CfrTerm *vt, const KittyParams *p)
             /* Reject non-null terminated — k_emit_response wraps it. */
             k_emit_response(vt, buf);
         }
+        return;
+    }
+
+    /* A feature query (e=) reports exactly what we implement. */
+    if (p->report_supported) {
+        if (!p->has_image_id)
+            return; /* the spec requires the query to name an id */
+        k_handle_feature_query(vt, p);
         return;
     }
 

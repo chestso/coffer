@@ -184,20 +184,21 @@ its last placement, as in kitty.
 
 Not yet implemented:
 
-- **Compose (`a=c`)** — no-op acknowledgment; we always render the
-  latest frame in every visible placement.
 - **Unicode placeholders (`q=1`)** — no placeholder-cell rendering or
-  cursor-movement-via-placeholder-text.
+  cursor-movement-via-placeholder-text. The `e=` feature queries report
+  this honestly: `e=T,U=1` replies without `U=1`.
 
 The animation model: `a=f` stores frames (partial-rect compose onto a
 base frame with `X=`/`Y=`/`c=`/`r=`, gaps via `z=` incl. gapless
 negatives), `a=a` drives it (`c=` current frame, `s=1/2/3` stop /
-loading / run, `v=` loops, `r=`+`z=` per-frame gaps), and `d=f` deletes
-frames. The host advances playback with `cfr_kitty_tick()` /
-`cfr_kitty_present()`; a frame switch copies the frame into the image's
-pixels (version bump + damage), so the renderer is unchanged. Frame
-memory counts into the store's live-byte budget and evicts with the
-image.
+loading / run, `v=` loops, `r=`+`z=` per-frame gaps), `a=c` composes
+rectangles between frames (C=1 overwrite, EINVAL on bounds and
+self-overlap, ENOENT on unknown frames), and `d=f` deletes frames. The
+host advances playback with `cfr_kitty_tick()` / `cfr_kitty_present()`;
+a frame switch copies the frame into the image's pixels (version bump +
+damage), so the renderer is unchanged. Frame memory counts into the
+store's live-byte budget and evicts with the image. Feature queries
+(`e=`) answer with exactly the supported keys per action.
 
 **Benefit:** Full spec compliance for kitty-native clients (timg,
 chafa, and tools driving kitty animations). Most consumers only need

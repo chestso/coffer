@@ -215,6 +215,50 @@ static void test_query_quiet(void)
     cfr_free(vt);
 }
 
+/* Feature queries (e=) echo exactly the keys we support. U=1 is NOT
+ * echoed: Unicode placeholders are not implemented, and advertising
+ * them would break clients that rely on the reply. */
+static void test_feature_queries(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    g_output_len = 0;
+    feed(vt, "\x1b_Ga=q,i=31,e=T,U=1,C=1\x1b\\");
+    ASSERT_TRUE(strstr(g_output, "e=T") != NULL);
+    ASSERT_TRUE(strstr(g_output, "C=1") != NULL);
+    ASSERT_TRUE(strstr(g_output, "U=1") == NULL);
+
+    g_output_len = 0;
+    feed(vt, "\x1b_Ga=q,i=32,e=f,r=1,X=1\x1b\\");
+    ASSERT_TRUE(strstr(g_output, "e=f") != NULL);
+    ASSERT_TRUE(strstr(g_output, "r=1") != NULL);
+    ASSERT_TRUE(strstr(g_output, "X=1") != NULL);
+
+    g_output_len = 0;
+    feed(vt, "\x1b_Ga=q,i=33,e=a,s=3,v=1\x1b\\");
+    ASSERT_TRUE(strstr(g_output, "e=a") != NULL);
+    ASSERT_TRUE(strstr(g_output, "s=3") != NULL);
+    ASSERT_TRUE(strstr(g_output, "v=1") != NULL);
+
+    g_output_len = 0;
+    feed(vt, "\x1b_Ga=q,i=34,e=c,r=2,c=3\x1b\\");
+    ASSERT_TRUE(strstr(g_output, "e=c") != NULL);
+    ASSERT_TRUE(strstr(g_output, "r=2") != NULL);
+    ASSERT_TRUE(strstr(g_output, "c=3") != NULL);
+
+    g_output_len = 0;
+    feed(vt, "\x1b_Ga=q,i=35,e=d,d=a\x1b\\");
+    ASSERT_TRUE(strstr(g_output, "e=d") != NULL);
+    ASSERT_TRUE(strstr(g_output, "d=a") != NULL);
+
+    /* The delete echo never claims an unsupported key. */
+    g_output_len = 0;
+    feed(vt, "\x1b_Ga=q,i=36,e=d,d=g\x1b\\");
+    ASSERT_TRUE(strstr(g_output, "d=g") == NULL);
+
+    cfr_free(vt);
+}
+
 /* --------------------------------------------------------------- */
 /* 3. Transmit (a=t) — RGBA stored with IMG_SRC_KITTY             */
 /* --------------------------------------------------------------- */
@@ -2811,6 +2855,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_query);
     RUN_TEST(test_query_capabilities);
     RUN_TEST(test_query_quiet);
+    RUN_TEST(test_feature_queries);
     RUN_TEST(test_transmit_rgba);
     RUN_TEST(test_transmit_alpha);
     RUN_TEST(test_delete_all);
