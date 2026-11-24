@@ -203,3 +203,22 @@ store's live-byte budget and evicts with the image. Feature queries
 **Benefit:** Full spec compliance for kitty-native clients (timg,
 chafa, and tools driving kitty animations). Most consumers only need
 the transmit/place/delete paths, which already work.
+
+#### Follow-ups from the spec work
+
+- **Real-client smoke test.** The tests feed synthetic APC streams; a
+  pass with a real client (chafa slideshow with `--clear`, timg, `kitten
+  icat --animate`) through the coffer CLI or a PTY harness would catch
+  wire-format divergences the unit tests cannot. Worth doing once before
+  relying on the animation paths in a front end.
+- **One animation clock (optional).** The store's `cfr_img_tick` drives
+  kitty frames; Lottie keeps its own ThorVG clock. A per-source
+  `advance` hook on the policy table would let one host call drive both,
+  with `cfr_lottie_present/tick` as wrappers. Don't hold anything on it —
+  only if the host side wants a single scheduler call.
+- **`cfr_image_decode` allocator boundary.** stb_image allocates with
+  the C library's malloc. The kitty f=100 and zlib paths copy onto the
+  caller's allocator, but `osc_1337.c` still frees the decoded buffer
+  with plain `free()`. Route it through the allocator (or document the
+  boundary) before anyone relies on custom allocators for iTerm2
+  images.
