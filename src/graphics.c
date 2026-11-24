@@ -945,6 +945,55 @@ static void k_handle_place(CfrTerm *vt, const KittyParams *p)
 }
 
 /* ------------------------------------------------------------------ */
+/* Action: compose (a=c)                                             */
+/* ------------------------------------------------------------------ */
+
+static void k_handle_compose(CfrTerm *vt, const KittyParams *p)
+{
+    CfrImgStore *store = cfr_img_get_store(vt);
+    if (!store) {
+        if (!p->quiet)
+            k_emit_ok(vt, p->image_id);
+        return;
+    }
+    int idx = k_resolve_image(vt, store, p);
+    if (idx < 0) {
+        if (!p->quiet)
+            k_emit_error(vt, p->image_id, "ENOENT:no image for compose");
+        return;
+    }
+    CfrImg *img = &store->imgs[idx];
+
+    /* r= is the source frame, c= the destination; x=/y= the destination
+     * rect origin, X=/Y= the source's; w=/h= the rect size (defaulting
+     * to the full image); C=1 overwrites instead of blending. */
+    int src_n = p->has_disp_rows ? p->disp_rows : 0;
+    int dst_n = p->has_disp_cols ? p->disp_cols : 0;
+    if (src_n < 1 || src_n > img->frame_count + 1 ||
+        dst_n < 1 || dst_n > img->frame_count + 1) {
+        if (!p->quiet)
+            k_emit_error(vt, p->image_id, "ENOENT:unknown frame");
+        return;
+    }
+    int sx = (p->has_cell_off_x && p->cell_off_x > 0) ? p->cell_off_x : 0;
+    int sy = (p->has_cell_off_y && p->cell_off_y > 0) ? p->cell_off_y : 0;
+    int dx = (p->has_src_x && p->src_x > 0) ? p->src_x : 0;
+    int dy = (p->has_src_y && p->src_y > 0) ? p->src_y : 0;
+    int w = p->has_src_w ? p->src_w : 0;
+    int h = p->has_src_h ? p->src_h : 0;
+    bool overwrite = p->has_no_cursor_move && p->no_cursor_move == 1;
+
+    if (!cfr_img_frame_compose(vt, store, idx, src_n, dst_n, sx, sy,
+                               dx, dy, w, h, overwrite)) {
+        if (!p->quiet)
+            k_emit_error(vt, p->image_id, "EINVAL:compose rejected");
+        return;
+    }
+    if (!p->quiet)
+        k_emit_image_ok(vt, img);
+}
+
+/* ------------------------------------------------------------------ */
 /* Action: delete (a=d)                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1247,10 +1296,8 @@ void cfr_graphics_apc_dispatch(CfrTerm *vt, const uint8_t *buf, size_t len)
         k_handle_animate(vt, &p);
         break;
     case 'c':
-        /* a=c: compose (frame visibility). We render the latest frame in
-         * every visible placement, so compose is a no-op; acknowledge. */
-        if (!p.quiet)
-            k_emit_ok(vt, p.image_id);
+        /* a=c: compose pixels from one frame onto another. */
+        k_handle_compose(vt, &p);
         break;
     case 'q':
         k_handle_query(vt, &p);

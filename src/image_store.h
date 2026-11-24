@@ -297,6 +297,16 @@ bool cfr_img_frame_set_gap(CfrImgStore *st, int idx, int frame_n,
 /* Delete one extra frame (1-based; 0 = all frames). */
 void cfr_img_frames_delete(void *vt, CfrImgStore *st, int idx, int frame_n);
 
+/* Compose a rectangle from one frame onto another (kitty a=c): the
+ * rect at (sx, sy) in the source frame lands at (dx, dy) in the
+ * destination, w/h defaulting to the full image. `overwrite` (C=1)
+ * replaces pixels instead of alpha blending. Frame 1 names the root
+ * image. Returns false on EINVAL (out of bounds, or the same frame
+ * with overlapping rects). */
+bool cfr_img_frame_compose(void *vt, CfrImgStore *st, int idx,
+                           int src_n, int dst_n, int sx, int sy,
+                           int dx, int dy, int w, int h, bool overwrite);
+
 /* Set the playback state: mode 1 = stop, 2 = loading (run and wait for
  * more frames), 3 = run. `loops` 0 = unchanged, 1 = infinite, n > 1 =
  * n - 1 loops. */

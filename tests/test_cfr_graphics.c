@@ -1510,11 +1510,55 @@ static void test_compose_accepted(void)
 {
     CfrTerm *vt = make_term(24, 80);
 
-    /* Compose should reply OK, not error. */
+    /* A 2x2 red image and a green frame 2. */
+    uint8_t rgba[2 * 2 * 4];
+    for (int i = 0; i < 4; i++) {
+        rgba[i * 4 + 0] = 255;
+        rgba[i * 4 + 1] = 0;
+        rgba[i * 4 + 2] = 0;
+        rgba[i * 4 + 3] = 255;
+    }
+    char b64[128];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[512];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=2,v=2,i=1;%s\x1b\\", b64);
+    feed(vt, seq);
+    uint8_t green[2 * 2 * 4];
+    for (int i = 0; i < 4; i++) {
+        green[i * 4 + 0] = 0;
+        green[i * 4 + 1] = 255;
+        green[i * 4 + 2] = 0;
+        green[i * 4 + 3] = 255;
+    }
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=f,f=32,s=2,v=2,i=1;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* C=1 overwrite: frame 2's pixels land on the root. */
     g_output_len = 0;
-    feed(vt, "\x1b_Ga=c,i=1,r=1\x1b\\");
+    feed(vt, "\x1b_Ga=c,i=1,r=2,c=1,C=1\x1b\\");
     ASSERT_TRUE(strstr(g_output, "OK") != NULL);
     ASSERT_TRUE(strstr(g_output, "EINVAL") == NULL);
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].rgba[1], 255); /* green now */
+
+    /* Out-of-bounds rect is EINVAL. */
+    g_output_len = 0;
+    feed(vt, "\x1b_Ga=c,i=1,r=2,c=1,w=3,h=1\x1b\\");
+    ASSERT_TRUE(strstr(g_output, "EINVAL") != NULL);
+
+    /* Same frame with overlapping rects is EINVAL. */
+    g_output_len = 0;
+    feed(vt, "\x1b_Ga=c,i=1,r=2,c=2,x=1,y=1,X=0,Y=0,w=2,h=2\x1b\\");
+    ASSERT_TRUE(strstr(g_output, "EINVAL") != NULL);
+
+    /* An unknown frame is ENOENT. */
+    g_output_len = 0;
+    feed(vt, "\x1b_Ga=c,i=1,r=9,c=1\x1b\\");
+    ASSERT_TRUE(strstr(g_output, "ENOENT") != NULL);
 
     cfr_free(vt);
 }

@@ -1057,6 +1057,69 @@ void cfr_img_frames_delete(void *vt, CfrImgStore *st, int idx, int frame_n)
         cfr_img_frame_set_current(vt, st, idx, img->current_frame);
 }
 
+/* The pixel buffer of one frame by its 1-based number (1 = root). */
+static const uint8_t *img_frame_pixels(const CfrImg *img, int frame_n)
+{
+    if (frame_n == 1)
+        return img->root_rgba ? img->root_rgba : img->rgba;
+    return img->frames[frame_n - 2].rgba;
+}
+
+bool cfr_img_frame_compose(void *vt, CfrImgStore *st, int idx,
+                           int src_n, int dst_n, int sx, int sy,
+                           int dx, int dy, int w, int h, bool overwrite)
+{
+    if (idx < 0 || idx >= st->img_count || src_n < 1 || dst_n < 1)
+        return false;
+    CfrImg *img = &st->imgs[idx];
+    if (src_n > img->frame_count + 1 || dst_n > img->frame_count + 1)
+        return false;
+
+    int img_w = img->buf_w > 0 ? img->buf_w : img->w;
+    int img_h = img->buf_h > 0 ? img->buf_h : img->h;
+    if (w <= 0)
+        w = img_w;
+    if (h <= 0)
+        h = img_h;
+    if (sx < 0 || sy < 0 || dx < 0 || dy < 0 ||
+        sx + w > img_w || sy + h > img_h ||
+        dx + w > img_w || dy + h > img_h)
+        return false;
+    if (src_n == dst_n && sx + w > dx && dx + w > sx &&
+        sy + h > dy && dy + h > sy)
+        return false; /* same frame, overlapping rects */
+
+    const uint8_t *src = img_frame_pixels(img, src_n);
+    uint8_t *dst = dst_n == 1 ? (img->root_rgba ? img->root_rgba
+                                                : img->rgba)
+                              : img->frames[dst_n - 2].rgba;
+    if (!src || !dst)
+        return false;
+
+    for (int y = 0; y < h; y++) {
+        const uint8_t *srow =
+            src + ((size_t)(sy + y) * (size_t)img_w + (size_t)sx) * 4u;
+        uint8_t *drow =
+            dst + ((size_t)(dy + y) * (size_t)img_w + (size_t)dx) * 4u;
+        if (overwrite) {
+            memcpy(drow, srow, (size_t)w * 4u);
+            continue;
+        }
+        for (int x = 0; x < w; x++)
+            img_blend_px(drow + (size_t)x * 4u, srow + (size_t)x * 4u);
+    }
+
+    /* A compose that changes what is displayed must bump the version
+     * and damage the placements; one that changes a stored frame that
+     * is not showing changes nothing visible. */
+    if (dst_n == 1 && img->root_rgba && img->current_frame == 1)
+        cfr_img_replace(vt, st, idx, img->root_rgba, img->buf_w,
+                        img->buf_h);
+    else if (dst_n > 1 && img->current_frame == dst_n)
+        cfr_img_frame_set_current(vt, st, idx, dst_n);
+    return true;
+}
+
 void cfr_img_anim_control(CfrImgStore *st, int idx, int mode, int loops)
 {
     if (idx < 0 || idx >= st->img_count)
