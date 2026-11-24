@@ -507,9 +507,11 @@ static void test_image_number_frame_replaces_newest(void)
     const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_EQ(count, 2);
 
+    /* The frame lands on the newest image; showing it is a=a,c=2. */
     b64_encode(blue, sizeof(blue), b64);
     snprintf(seq, sizeof(seq), "\x1b_Ga=f,f=32,s=1,v=1,I=7;%s\x1b\\", b64);
     feed(vt, seq);
+    feed(vt, "\x1b_Ga=a,I=7,c=2\x1b\\");
 
     imgs = cfr_get_images(vt, &count);
     ASSERT_EQ(count, 2);
@@ -1441,7 +1443,6 @@ static void test_animate_put_frame(void)
 {
     CfrTerm *vt = make_term(24, 80);
 
-    /* Place an image with z-index in a negative layer. */
     uint8_t rgba[4] = { 255, 0, 0, 255 };
     char b64[64];
     b64_encode(rgba, sizeof(rgba), b64);
@@ -1450,7 +1451,8 @@ static void test_animate_put_frame(void)
              "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
     feed(vt, seq);
 
-    /* a=f frame data with same id reuses/replaces */
+    /* a=f stores a frame; it does not change what is displayed until
+     * a=a,c= makes it current (kitty's rule). */
     uint8_t frame2[4] = { 0, 255, 0, 255 };
     b64_encode(frame2, sizeof(frame2), b64);
     snprintf(seq, sizeof(seq),
@@ -1462,7 +1464,11 @@ static void test_animate_put_frame(void)
     ASSERT_NOT_NULL(imgs);
     ASSERT_EQ(count, 1);
     ASSERT_EQ((long long)imgs[0].id, 7);
-    /* rgba replaced with frame2 green pixel */
+    ASSERT_EQ(imgs[0].rgba[0], 255); /* the root frame still shows */
+
+    /* a=a,c=2 makes the stored frame current. */
+    feed(vt, "\x1b_Ga=a,i=7,c=2\x1b\\");
+    imgs = cfr_get_images(vt, &count);
     ASSERT_EQ(imgs[0].rgba[1], 255);
     ASSERT_EQ(imgs[0].rgba[0], 0);
 
@@ -1941,6 +1947,8 @@ static void test_frame_keeps_placements(void)
              "\x1b_Ga=T,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
     feed(vt, seq);
 
+    /* a=f stores a frame; the placements stay alive and keep showing
+     * the root image until the frame becomes current. */
     uint8_t frame2[4] = { 0, 255, 0, 255 };
     b64_encode(frame2, sizeof(frame2), b64);
     snprintf(seq, sizeof(seq),
@@ -1951,12 +1959,202 @@ static void test_frame_keeps_placements(void)
     const CfrImage *imgs = cfr_get_images(vt, &count);
     ASSERT_EQ(count, 1);
     ASSERT_EQ((long long)imgs[0].id, 7);
-    ASSERT_EQ(imgs[0].rgba[1], 255); /* frame pixels replaced */
+    ASSERT_EQ(imgs[0].rgba[0], 255); /* root still shows */
 
     int pc = 0;
     const CfrImagePlacement *pls = cfr_get_image_placements(vt, &pc);
     ASSERT_EQ(pc, 1); /* placement survived */
     ASSERT_EQ(pls[0].image_id, 7);
+
+    /* Switching the frame bumps the version and damages the
+     * placement's rows; the placement itself survives. */
+    uint32_t v0 = imgs[0].version;
+    cfr_damage_flush(vt);
+    g_damage_calls = 0;
+    feed(vt, "\x1b_Ga=a,i=7,c=2\x1b\\");
+    cfr_damage_flush(vt);
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].rgba[1], 255); /* the frame shows now */
+    ASSERT_TRUE(imgs[0].version > v0);
+    ASSERT_TRUE(g_damage_calls > 0);
+    cfr_get_image_placements(vt, &pc);
+    ASSERT_EQ(pc, 1);
+
+    cfr_free(vt);
+}
+
+/* A partial-rect frame composes onto its base: c=1 names the root
+ * frame as the base, so the stored frame is root pixels plus the rect. */
+static void test_frame_rect_composes_onto_base(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    /* A 2x2 image: red top-left, red elsewhere (uniform red). */
+    uint8_t rgba[2 * 2 * 4];
+    for (int i = 0; i < 4; i++) {
+        rgba[i * 4 + 0] = 255;
+        rgba[i * 4 + 1] = 0;
+        rgba[i * 4 + 2] = 0;
+        rgba[i * 4 + 3] = 255;
+    }
+    char b64[128];
+    b64_encode(rgba, sizeof(rgba), b64);
+    char seq[512];
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=2,v=2,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* A 1x1 green rect at (1,1) composed onto the root base. */
+    uint8_t green[4] = { 0, 255, 0, 255 };
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=f,f=32,s=1,v=1,x=1,y=1,c=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Frame 2 = the root with a green bottom-right pixel. */
+    CfrImgStore *store = cfr_img_get_store(vt);
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(store->imgs[0].frame_count, 1);
+    const CfrFrame *f = &store->imgs[0].frames[0];
+    ASSERT_EQ(f->rgba[0], 255);         /* untouched top-left */
+    ASSERT_EQ(f->rgba[4 * 3 + 1], 255); /* green at (1,1) */
+
+    /* Showing it replaces the root pixels. */
+    feed(vt, "\x1b_Ga=a,i=7,c=2\x1b\\");
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].rgba[4 * 3 + 1], 255);
+    ASSERT_EQ(imgs[0].rgba[4 * 3 + 0], 0);
+
+    cfr_free(vt);
+}
+
+/* The playback clock: s=3 runs, v=1 loops forever, each tick steps one
+ * frame after its gap elapses. */
+static void test_animate_playback_clock(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t red[4] = { 255, 0, 0, 255 };
+    uint8_t green[4] = { 0, 255, 0, 255 };
+    char b64[64];
+    char seq[256];
+    b64_encode(red, sizeof(red), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=T,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+    /* Frame 2: green, gap 50 ms. */
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=f,f=32,s=1,v=1,z=50,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    feed(vt, "\x1b_Ga=a,i=7,s=3,v=1\x1b\\");
+
+    /* The first tick starts playback: root (gap 0) → frame 2. */
+    ASSERT_TRUE(cfr_kitty_tick(vt, 1000));
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].rgba[1], 255); /* green shows */
+
+    /* Before the gap elapses, nothing moves. */
+    cfr_kitty_tick(vt, 1000 + 49 * 1000);
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].rgba[1], 255);
+
+    /* After it: frame 2's gap ran out, the clock wraps to the root. */
+    cfr_kitty_tick(vt, 1000 + 50 * 1000);
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].rgba[0], 255); /* red root shows */
+    ASSERT_EQ(imgs[0].rgba[1], 0);
+
+    /* The animation keeps playing (infinite loop). */
+    ASSERT_TRUE(cfr_kitty_tick(vt, 1000 + 50 * 1000));
+
+    cfr_free(vt);
+}
+
+/* s=1 stops playback; s=2 (loading) parks at the last frame until more
+ * frames arrive; a gapless frame is skipped over without waiting. */
+static void test_animate_stop_loading_gapless(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t red[4] = { 255, 0, 0, 255 };
+    uint8_t green[4] = { 0, 255, 0, 255 };
+    uint8_t blue[4] = { 0, 0, 255, 255 };
+    char b64[64];
+    char seq[256];
+    b64_encode(red, sizeof(red), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=f,f=32,s=1,v=1,z=-1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    /* Loading mode: the gapless frame is skipped, then the clock parks
+     * at the end and waits. */
+    feed(vt, "\x1b_Ga=a,i=7,s=2\x1b\\");
+    ASSERT_TRUE(cfr_kitty_tick(vt, 0));
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].rgba[1], 255);       /* the gapless frame showed */
+    ASSERT_TRUE(cfr_kitty_tick(vt, 1000)); /* parked: nothing more */
+
+    /* A new frame resumes a parked loading animation. */
+    b64_encode(blue, sizeof(blue), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=f,f=32,s=1,v=1,z=40,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+    ASSERT_TRUE(cfr_kitty_tick(vt, 2000));
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].rgba[2], 255); /* blue shows */
+
+    /* s=1 stops the clock. */
+    feed(vt, "\x1b_Ga=a,i=7,s=1\x1b\\");
+    ASSERT_TRUE(!cfr_kitty_tick(vt, 2000 + 40 * 1000 + 1));
+    imgs = cfr_get_images(vt, &count);
+    ASSERT_EQ(imgs[0].rgba[2], 255); /* still blue */
+
+    cfr_free(vt);
+}
+
+/* d=f deletes frames: r= names the frame, no r= clears them all. */
+static void test_delete_frames(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+
+    uint8_t red[4] = { 255, 0, 0, 255 };
+    uint8_t green[4] = { 0, 255, 0, 255 };
+    uint8_t blue[4] = { 0, 0, 255, 255 };
+    char b64[64];
+    char seq[256];
+    b64_encode(red, sizeof(red), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=t,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+    b64_encode(green, sizeof(green), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=f,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+    b64_encode(blue, sizeof(blue), b64);
+    snprintf(seq, sizeof(seq),
+             "\x1b_Ga=f,f=32,s=1,v=1,i=7;%s\x1b\\", b64);
+    feed(vt, seq);
+
+    CfrImgStore *store = cfr_img_get_store(vt);
+    ASSERT_EQ(store->imgs[0].frame_count, 2);
+
+    /* Delete frame 2 by number; frame 3 slides into its slot. */
+    feed(vt, "\x1b_Ga=d,d=f,r=2,i=7\x1b\\");
+    ASSERT_EQ(store->imgs[0].frame_count, 1);
+    ASSERT_EQ(store->imgs[0].frames[0].rgba[2], 255); /* the blue one */
+
+    /* Bare d=f clears every extra frame. */
+    feed(vt, "\x1b_Ga=d,d=f,i=7\x1b\\");
+    ASSERT_EQ(store->imgs[0].frame_count, 0);
 
     cfr_free(vt);
 }
@@ -2614,6 +2812,10 @@ int main(int argc, char *argv[])
     RUN_TEST(test_retransmit_id_drops_placements);
     RUN_TEST(test_retransmit_id_bumps_version);
     RUN_TEST(test_frame_keeps_placements);
+    RUN_TEST(test_frame_rect_composes_onto_base);
+    RUN_TEST(test_animate_playback_clock);
+    RUN_TEST(test_animate_stop_loading_gapless);
+    RUN_TEST(test_delete_frames);
     RUN_TEST(test_clear_on_ed_kitty_only);
     RUN_TEST(test_scroll_culls_kitty_only);
     RUN_TEST(test_png_transmit_without_dimensions);

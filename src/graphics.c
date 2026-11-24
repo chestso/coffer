@@ -43,7 +43,8 @@ typedef struct
     int src_w;          /* w= (source rect size, pixels) */
     int src_h;          /* h= (source rect size, pixels) */
     int cell_off_x;     /* X= (offset within the first cell, pixels) */
-    int cell_off_y;     /* Y= */
+    int cell_off_y;     /* Y= (offset within the first cell, pixels) */
+    uint32_t bg_rgba;   /* Y= (a=f frame canvas background, 32-bit RGBA) */
     int rel_h;          /* H= (relative placement offset, cells) */
     int rel_v;          /* V= */
     int disp_cols;      /* c= (display cols; placement cell width) */
@@ -67,6 +68,7 @@ typedef struct
     int has_src_h;
     int has_cell_off_x;
     int has_cell_off_y;
+    int has_bg_rgba;
     int has_rel_h;
     int has_rel_v;
     int has_disp_cols;
@@ -167,8 +169,12 @@ static void k_parse_params(const char *ctrl, size_t len, KittyParams *p)
                     p->cell_off_x = atoi(val_buf);
                     break;
                 case 'Y':
+                    /* Y= is overloaded: a place reads it as the cell
+                     * offset, a=f as the frame canvas background. */
                     p->has_cell_off_y = 1;
                     p->cell_off_y = atoi(val_buf);
+                    p->has_bg_rgba = 1;
+                    p->bg_rgba = (uint32_t)strtoul(val_buf, NULL, 10);
                     break;
                 case 'H':
                     p->has_rel_h = 1;
@@ -509,7 +515,7 @@ static int k_resolve_image(CfrTerm *vt, CfrImgStore *store,
 }
 
 static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
-                              uint8_t *rgba, int w, int h, bool is_frame)
+                              uint8_t *rgba, int w, int h)
 {
     CfrImgStore *store = cfr_img_get_store(vt);
     if (!store)
@@ -523,14 +529,7 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
          * sets. */
         int idx = cfr_img_find_by_source_id(store, IMG_SRC_KITTY, id,
                                             (uint8_t)vt->in_altscreen);
-        if (idx >= 0 && is_frame) {
-            /* Animation frame: replace pixels in place, keep placements. */
-            cfr_img_replace(vt, store, idx, rgba, w, h);
-            if (!p->quiet)
-                k_emit_image_ok(vt, &store->imgs[idx]);
-            return store->imgs[idx].handle;
-        }
-        if (idx >= 0 && !is_frame) {
+        if (idx >= 0) {
             /* Re-transmit: delete the image and all its placements. */
             cfr_img_remove(vt, store, idx);
         }
@@ -541,18 +540,6 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
         if (!p->quiet)
             k_emit_image_ok(vt, &store->imgs[ni]);
         return store->imgs[ni].handle;
-    }
-
-    /* A frame named by number replaces the newest image with that
-     * number, like the id path. */
-    if (is_frame && p->has_image_num) {
-        int idx = k_resolve_image(vt, store, p);
-        if (idx >= 0) {
-            cfr_img_replace(vt, store, idx, rgba, w, h);
-            if (!p->quiet)
-                k_emit_image_ok(vt, &store->imgs[idx]);
-            return store->imgs[idx].handle;
-        }
     }
 
     /* No i= key: always a fresh image under a unique engine id so
@@ -571,6 +558,42 @@ static uint64_t k_store_image(CfrTerm *vt, const KittyParams *p,
     if (!p->quiet)
         k_emit_image_ok(vt, &store->imgs[ni]);
     return store->imgs[ni].handle;
+}
+
+/* a=f: frame data for an existing image. The rect is x=/y= + the
+ * decoded s=/v=; c= is the base frame, r= the frame edited (0 = append
+ * a new one), X=1 replaces instead of blending, Y= the canvas
+ * background, z= the frame's gap. The frame is stored; showing it is
+ * a=a,c= or the playback clock. */
+static uint64_t k_store_frame(CfrTerm *vt, const KittyParams *p,
+                              uint8_t *rgba, int w, int h)
+{
+    CfrImgStore *store = cfr_img_get_store(vt);
+    if (!store)
+        return 0;
+    int idx = k_resolve_image(vt, store, p);
+    if (idx < 0) {
+        if (!p->quiet)
+            k_emit_error(vt, p->image_id, "ENOENT:no image for frame");
+        return 0;
+    }
+    CfrImg *img = &store->imgs[idx];
+    int fx = (p->has_src_x && p->src_x > 0) ? p->src_x : 0;
+    int fy = (p->has_src_y && p->src_y > 0) ? p->src_y : 0;
+    int base_n = p->has_disp_cols ? p->disp_cols : 0;         /* c= */
+    int edit_n = p->has_disp_rows ? p->disp_rows : 0;         /* r= */
+    bool overwrite = p->has_cell_off_x && p->cell_off_x == 1; /* X= */
+    uint32_t bg = p->has_bg_rgba ? p->bg_rgba : 0u;           /* Y= */
+    int gap = p->has_z_index ? p->z_index : 0;                /* z= */
+    if (cfr_img_frame_put(vt, store, idx, rgba, w, h, fx, fy,
+                          edit_n, base_n, overwrite, bg, gap) < 0) {
+        if (!p->quiet)
+            k_emit_error(vt, p->image_id, "EINVAL:frame data rejected");
+        return 0;
+    }
+    if (!p->quiet)
+        k_emit_image_ok(vt, img);
+    return img->handle;
 }
 
 /* An omitted f= key is not "unknown format": kitty's default is 32
@@ -677,6 +700,7 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         MERGE(src_h, has_src_h);
         MERGE(cell_off_x, has_cell_off_x);
         MERGE(cell_off_y, has_cell_off_y);
+        MERGE(bg_rgba, has_bg_rgba);
         MERGE(rel_h, has_rel_h);
         MERGE(rel_v, has_rel_v);
 #undef MERGE
@@ -719,7 +743,8 @@ static void k_handle_transmit(CfrTerm *vt, KittyParams *p,
         return;
     }
 
-    uint64_t stored_handle = k_store_image(vt, p, rgba, w, h, is_frame);
+    uint64_t stored_handle = is_frame ? k_store_frame(vt, p, rgba, w, h)
+                                      : k_store_image(vt, p, rgba, w, h);
 
     /* a=T also places at the cursor. */
     if (place_at_cursor && stored_handle) {
@@ -777,6 +802,44 @@ static void k_handle_query(CfrTerm *vt, const KittyParams *p)
 
     /* Always respond with OK — we support the protocol */
     k_emit_ok(vt, p->image_id);
+}
+
+/* ------------------------------------------------------------------ */
+/* Action: animation control (a=a)                                   */
+/* ------------------------------------------------------------------ */
+
+static void k_handle_animate(CfrTerm *vt, const KittyParams *p)
+{
+    CfrImgStore *store = cfr_img_get_store(vt);
+    if (!store) {
+        if (!p->quiet)
+            k_emit_ok(vt, p->image_id);
+        return;
+    }
+    int idx = k_resolve_image(vt, store, p);
+    if (idx < 0) {
+        if (!p->quiet)
+            k_emit_error(vt, p->image_id, "ENOENT:no image for animation");
+        return;
+    }
+    CfrImg *img = &store->imgs[idx];
+
+    /* c= makes that frame the current one (client-driven animation). */
+    if (p->has_disp_cols && p->disp_cols >= 1)
+        cfr_img_frame_set_current(vt, store, idx, p->disp_cols);
+
+    /* r= with z= sets one frame's gap (r=1 is the root frame). */
+    if (p->has_disp_rows && p->has_z_index)
+        cfr_img_frame_set_gap(store, idx, p->disp_rows, p->z_index);
+
+    /* s= is the playback state, v= the loop count (1 = infinite). */
+    int mode = p->has_width ? p->width : 0;
+    int loops = p->has_height ? p->height : 0;
+    if (mode >= 1 && mode <= 3)
+        cfr_img_anim_control(store, idx, mode, loops);
+
+    if (!p->quiet)
+        k_emit_image_ok(vt, img);
 }
 
 /* ------------------------------------------------------------------ */
@@ -977,11 +1040,11 @@ static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
         matched[matched_len++] = (handle);                                    \
     } while (0)
 
-    /* The image-naming deletes (d=i by id, d=n by number) resolve once;
-     * the geometric ones need no image. */
+    /* The image-naming deletes (d=i by id, d=n by number, d=f frames)
+     * resolve once; the geometric ones need no image. */
     int named_idx = -1;
     bool named_freed = false;
-    if (lower == 'i' || lower == 'n') {
+    if (lower == 'i' || lower == 'n' || lower == 'f') {
         named_idx = k_resolve_image(vt, store, p);
         if (named_idx < 0)
             goto out;
@@ -1042,6 +1105,12 @@ static void k_handle_delete(CfrTerm *vt, const KittyParams *p)
                     j++;
             }
         }
+        break;
+    case 'f':
+        /* Delete animation frames: r= names the frame (1 is the root
+         * image itself and is never deleted); no r= clears them all. */
+        cfr_img_frames_delete(vt, store, named_idx,
+                              p->has_disp_rows ? p->disp_rows : 0);
         break;
     default:
         /* The geometric predicates (a, c, p, q, x, y, z) over the
@@ -1174,10 +1243,8 @@ void cfr_graphics_apc_dispatch(CfrTerm *vt, const uint8_t *buf, size_t len)
                           payload, payload_len, true, false);
         break;
     case 'a':
-        /* a=a: animation control (frame index is payload-form only in
-         * advanced clients). Accept and acknowledge as OK. */
-        if (!p.quiet)
-            k_emit_ok(vt, p.image_id);
+        /* a=a: animation control (current frame, gaps, playback). */
+        k_handle_animate(vt, &p);
         break;
     case 'c':
         /* a=c: compose (frame visibility). We render the latest frame in
@@ -1200,4 +1267,30 @@ void cfr_graphics_apc_dispatch(CfrTerm *vt, const uint8_t *buf, size_t len)
             k_emit_error(vt, p.image_id, "EINVAL:unknown action");
         break;
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Public animation clock                                             */
+/* ------------------------------------------------------------------ */
+
+bool cfr_kitty_tick(CfrTerm *vt, uint64_t now_us)
+{
+    if (!vt || !vt->images)
+        return false;
+    cfr_img_tick(vt, vt->images, now_us);
+
+    /* Report whether any kitty animation is still playing, so the host
+     * can pace its frames (the lottie pattern). */
+    for (int i = 0; i < vt->images->img_count; i++) {
+        if (vt->images->imgs[i].source == IMG_SRC_KITTY &&
+            vt->images->imgs[i].anim_mode != 0)
+            return true;
+    }
+    return false;
+}
+
+bool cfr_kitty_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us)
+{
+    (void)hold_us; /* the kitty clock is frame-gap driven, not phase-sampled */
+    return cfr_kitty_tick(vt, present_us);
 }

@@ -184,15 +184,20 @@ its last placement, as in kitty.
 
 Not yet implemented:
 
-- **Animation control (`a=a`)** — only acknowledged with OK; no frame
-  index, no loop/gap timing, no playback. `a=f` replaces the image's
-  pixels in place (single-frame), there is no frame store.
 - **Compose (`a=c`)** — no-op acknowledgment; we always render the
   latest frame in every visible placement.
-- **`d=f`/`d=F` (delete animation frames)** — acknowledged, nothing to
-  delete until the frame store lands.
 - **Unicode placeholders (`q=1`)** — no placeholder-cell rendering or
   cursor-movement-via-placeholder-text.
+
+The animation model: `a=f` stores frames (partial-rect compose onto a
+base frame with `X=`/`Y=`/`c=`/`r=`, gaps via `z=` incl. gapless
+negatives), `a=a` drives it (`c=` current frame, `s=1/2/3` stop /
+loading / run, `v=` loops, `r=`+`z=` per-frame gaps), and `d=f` deletes
+frames. The host advances playback with `cfr_kitty_tick()` /
+`cfr_kitty_present()`; a frame switch copies the frame into the image's
+pixels (version bump + damage), so the renderer is unchanged. Frame
+memory counts into the store's live-byte budget and evicts with the
+image.
 
 **Benefit:** Full spec compliance for kitty-native clients (timg,
 chafa, and tools driving kitty animations). Most consumers only need

@@ -63,9 +63,13 @@ compositing. See the portty README for renderer-side details.
 - **Kitty graphics protocol** — APC sequences (`ESC _ G … ST`) are routed
   by first byte: `G` → kitty graphics, anything else → Lottie. The core
   actions are implemented: query (`a=q`), transmit (`a=t`/`a=T` in RGBA,
-  RGB, and PNG formats), place (`a=p`), and delete (`a=d`). Chunked and
-  zlib-compressed transfers, animation frames, and relative/virtual
-  placements are supported. Placements are exposed to the host via
+  RGB, and PNG formats), place (`a=p`), and delete (`a=d`, the full
+  delete table plus image numbers via `I=`). Chunked and zlib-compressed
+  transfers, relative/virtual placements, and animation are supported:
+  `a=f` stores frames (rect compose, gaps), `a=a` controls playback
+  (current frame, stop/loading/run, loops), and the host advances the
+  clock with `cfr_kitty_tick()` / `cfr_kitty_present()`. Placements are
+  exposed to the host via
   `cfr_get_image_placements()` / `cfr_get_image_placements_for()`.
 - **Shared image store** — sixel, iTerm2, kitty, and Lottie all delegate
   storage to one `image_store.c`: dense record array with swap-remove

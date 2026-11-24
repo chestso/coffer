@@ -937,6 +937,18 @@ bool cfr_lottie_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us);
 /* Point-sample form: cfr_lottie_present(vt, now_us, 0). */
 bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us);
 
+/* Kitty graphics animation clock. Advances every playing kitty image's
+ * current frame to `present_us` and copies the frame into the image's
+ * pixels (version bump + damage), so the host draws exactly what
+ * cfr_get_images() reports. `hold_us` is accepted for symmetry with
+ * cfr_lottie_present and ignored. Returns true while any kitty
+ * animation is still playing, for adaptive frame pacing. Call once per
+ * presented frame, before cfr_get_images(). */
+bool cfr_kitty_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us);
+
+/* Point-sample form: cfr_kitty_present(vt, now_us, 0). */
+bool cfr_kitty_tick(CfrTerm *vt, uint64_t now_us);
+
 /* Number of animations that are currently playing (not paused, stopped, or
  * finished). Zero-allocation. Hosts use it to decide whether frame pacing
  * should run; cfr_lottie_active_count() also counts paused animations. */

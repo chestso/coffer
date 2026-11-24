@@ -21,6 +21,7 @@
 
 #define IMG_MAX_DIM    10000                  /* per-dimension clamp */
 #define IMG_MAX_IMAGES 256                    /* live record cap */
+#define IMG_MAX_FRAMES 128                    /* frames per animated image */
 #define IMG_LIVE_MAX   (128u * 1024u * 1024u) /* live pixel-byte budget */
 #define IMG_SPARE_MAX  16                     /* retained free buffers */
 #define IMG_RETAIN_MAX (32u * 1024u * 1024u)  /* retained free bytes */
@@ -70,6 +71,17 @@ enum
 /* Types                                                               */
 /* ------------------------------------------------------------------ */
 
+/* One extra animation frame of a 1:N image (kitty). The root image's
+ * pixels are the record's own rgba buffer; frames are full-image
+ * canvases the same size, shown by copying one into the root buffer. */
+typedef struct
+{
+    uint8_t *rgba; /* full-image frame pixels (the caller's allocator) */
+    size_t cap;    /* allocated bytes of rgba */
+    int gap_ms;    /* delay before the next frame; negative = gapless */
+    bool has_gap;  /* z= was specified (else the default 40 ms) */
+} CfrFrame;
+
 /* One stored image (was SxRec in sixel.c). */
 typedef struct
 {
@@ -102,6 +114,24 @@ typedef struct
     int cols_wide;         /* cells wide (cached) */
     uint8_t *rgba;         /* pixel buffer */
     size_t cap;            /* allocated bytes of rgba */
+
+    /* Kitty animation state: extra frames plus the playback clock.
+     * Frames use kitty's 1-based numbering: 1 is the root image, extra
+     * frames are 2..frame_count + 1, stored at frames[n - 2]. */
+    CfrFrame *frames;
+    uint8_t *root_rgba; /* the root frame's pixels, kept apart from rgba
+                         * once frames exist: rgba is the DISPLAY buffer
+                         * that frame switches copy into */
+    size_t root_cap;
+    int frame_count;
+    int frame_cap;
+    int current_frame; /* 1 = the root image, else the frame number */
+    uint8_t anim_mode; /* 0 = stopped, 1 = loading (wait), 2 = running */
+    int loops_left;    /* loops remaining; -1 = infinite */
+    uint64_t next_advance_us;
+    size_t frame_bytes; /* pixel bytes the frames hold (in live_bytes) */
+    int root_gap_ms;    /* the root frame's gap (a=a,r=1,z=) */
+    bool root_has_gap;
 } CfrImg;
 
 /* A retained free buffer (was SxSpare / LtSpare). */
@@ -234,6 +264,48 @@ int cfr_img_put_named(void *vt, CfrImgStore *st,
 /* Replace image pixel data (animation / frame update). Bumps version. */
 void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
                      const uint8_t *rgba, int w, int h);
+
+/* ------------------------------------------------------------------ */
+/* Animation frames (kitty)                                           */
+/* ------------------------------------------------------------------ */
+
+/* Compose a rectangle of frame data onto one frame of a 1:N image.
+ * `fx`/`fy` is the rect's origin in the frame (pixels), `w`/`h` its
+ * size; the rect must lie inside the image. `edit_n` is the 1-based
+ * frame being created or edited (0 = append a new frame); `base_n` the
+ * 1-based frame whose pixels fill the canvas first (0 = the Y=
+ * background or transparent black). `overwrite` (kitty X=1) replaces
+ * pixels instead of alpha blending; `bg_rgba` (Y=) is the canvas fill;
+ * `gap_ms` (z=) the frame's gap, negative = gapless, 0 = unspecified.
+ * Returns the frame number stored, or -1 on EINVAL. */
+int cfr_img_frame_put(void *vt, CfrImgStore *st, int idx,
+                      const uint8_t *rgba, int w, int h, int fx, int fy,
+                      int edit_n, int base_n, bool overwrite,
+                      uint32_t bg_rgba, int gap_ms);
+
+/* Show a frame: copy it into the image's root buffer, bump the version
+ * and damage every placement. `frame_n` is 1-based (0 = the root
+ * image). Returns false when the frame does not exist. */
+bool cfr_img_frame_set_current(void *vt, CfrImgStore *st, int idx,
+                               int frame_n);
+
+/* Set (or clear, gap_ms == 0) the gap of one frame (`frame_n` 1-based;
+ * 0 = the root frame). Returns false when the frame does not exist. */
+bool cfr_img_frame_set_gap(CfrImgStore *st, int idx, int frame_n,
+                           int gap_ms);
+
+/* Delete one extra frame (1-based; 0 = all frames). */
+void cfr_img_frames_delete(void *vt, CfrImgStore *st, int idx, int frame_n);
+
+/* Set the playback state: mode 1 = stop, 2 = loading (run and wait for
+ * more frames), 3 = run. `loops` 0 = unchanged, 1 = infinite, n > 1 =
+ * n - 1 loops. */
+void cfr_img_anim_control(CfrImgStore *st, int idx, int mode, int loops);
+
+/* The engine's animation clock: advance every playing kitty image to
+ * `now_us`. Each advance is bounded (a tick steps an image at most once
+ * around its frame list), so an all-gapless loop cannot spin the host. */
+void cfr_img_tick(void *vt, CfrImgStore *st, uint64_t now_us);
 
 /* Find an image at a given anchor + layer on ONE screen. Returns index
  * or -1. Anchored ids are engine-assigned, but the anchor is a row of

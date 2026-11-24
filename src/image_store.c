@@ -151,6 +151,39 @@ static void img_damage(CfrTerm *vt, uint8_t screen, long abs_line,
  * release path calls it. */
 static void img_reanchor(CfrImgStore *st, uint64_t handle);
 
+/* Drop an image's extra frames: return their bytes to the budget and
+ * their buffers to the pool, and reset the playback clock. The root
+ * frame's pixels stay — they are the image's data. */
+static void img_frames_release(void *vt, CfrImgStore *st, CfrImg *r)
+{
+    st->live_bytes -= r->frame_bytes;
+    for (int i = 0; i < r->frame_count; i++)
+        img_buf_release(vt, st, r->frames[i].rgba, r->frames[i].cap);
+    cfr_dealloc(vt, r->frames);
+    r->frames = NULL;
+    r->frame_count = 0;
+    r->frame_cap = 0;
+    r->frame_bytes = 0;
+    r->current_frame = 1;
+    r->anim_mode = 0;
+    r->loops_left = 0;
+    r->next_advance_us = 0;
+    r->root_gap_ms = 0;
+    r->root_has_gap = false;
+}
+
+/* Drop the root frame's kept copy. Only img_rec_release and the
+ * re-store path call this; img_frames_release keeps it. */
+static void img_root_release(void *vt, CfrImgStore *st, CfrImg *r)
+{
+    if (!r->root_rgba)
+        return;
+    st->live_bytes -= r->root_cap;
+    img_buf_release(vt, st, r->root_rgba, r->root_cap);
+    r->root_rgba = NULL;
+    r->root_cap = 0;
+}
+
 /* Release an image record: return its buffer to the pool, swap-remove. */
 static void img_rec_release(void *vt, CfrImgStore *st, int idx)
 {
@@ -161,6 +194,8 @@ static void img_rec_release(void *vt, CfrImgStore *st, int idx)
     uint8_t kind = r->kind;
     uint8_t screen = r->screen;
     st->live_bytes -= r->cap;
+    img_frames_release(vt, st, r);
+    img_root_release(vt, st, r);
     img_buf_release(vt, st, r->rgba, r->cap);
     st->imgs[idx] = st->imgs[--st->img_count];
 
@@ -623,6 +658,18 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     r->rgba = buf;
     r->cap = cap;
     st->live_bytes += cap;
+    r->frames = NULL;
+    r->frame_count = 0;
+    r->frame_cap = 0;
+    r->current_frame = 1;
+    r->anim_mode = 0;
+    r->loops_left = 0;
+    r->next_advance_us = 0;
+    r->frame_bytes = 0;
+    r->root_gap_ms = 0;
+    r->root_has_gap = false;
+    r->root_rgba = NULL;
+    r->root_cap = 0;
 
     memcpy(buf, rgba, need);
 
@@ -674,10 +721,12 @@ int cfr_img_put_named(void *vt, CfrImgStore *st,
         r->layer = layer;
         r->source = source;
         /* Re-storing pixels is a new image identity: any I= number the
-         * old record carried is gone. */
+         * old record carried is gone, and so are its animation frames. */
         r->image_num = 0;
         r->has_image_num = 0;
         r->has_client_id = 0;
+        img_frames_release(vt, st, r);
+        img_root_release(vt, st, r);
         return existing;
     }
 
@@ -723,6 +772,18 @@ int cfr_img_put_named(void *vt, CfrImgStore *st,
     r->rgba = buf;
     r->cap = cap;
     st->live_bytes += cap;
+    r->frames = NULL;
+    r->frame_count = 0;
+    r->frame_cap = 0;
+    r->current_frame = 1;
+    r->anim_mode = 0;
+    r->loops_left = 0;
+    r->next_advance_us = 0;
+    r->frame_bytes = 0;
+    r->root_gap_ms = 0;
+    r->root_has_gap = false;
+    r->root_rgba = NULL;
+    r->root_cap = 0;
     if (rgba)
         memcpy(buf, rgba, need);
     else
@@ -776,6 +837,284 @@ void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
         cfr_img_damage_placements(vt, st, r->handle);
     else
         img_damage(vt, r->screen, r->abs_line, r->rows_tall);
+}
+
+/* ------------------------------------------------------------------ */
+/* Animation frames (kitty)                                           */
+/* ------------------------------------------------------------------ */
+
+/* One alpha blend (src-over) of an RGBA rectangle. */
+static void img_blend_px(uint8_t *d, const uint8_t *s)
+{
+    unsigned sa = s[3];
+    if (sa == 255) {
+        memcpy(d, s, 4);
+        return;
+    }
+    if (sa == 0)
+        return;
+    unsigned da = d[3];
+    unsigned out_a = sa + da * (255u - sa) / 255u;
+    if (out_a == 0) {
+        memset(d, 0, 4);
+        return;
+    }
+    for (int c = 0; c < 3; c++)
+        d[c] = (uint8_t)(((unsigned)s[c] * sa +
+                          (unsigned)d[c] * da * (255u - sa) / 255u) /
+                         out_a);
+    d[3] = (uint8_t)out_a;
+}
+
+/* Frames use kitty's 1-based numbering: 1 is the ROOT image (the
+ * record's own rgba buffer), extra frames are 2..frame_count + 1 and
+ * live in frames[frame_n - 2]. */
+int cfr_img_frame_put(void *vt, CfrImgStore *st, int idx,
+                      const uint8_t *rgba, int w, int h, int fx, int fy,
+                      int edit_n, int base_n, bool overwrite,
+                      uint32_t bg_rgba, int gap_ms)
+{
+    if (idx < 0 || idx >= st->img_count || !rgba || w <= 0 || h <= 0)
+        return -1;
+    CfrImg *img = &st->imgs[idx];
+    int img_w = img->buf_w > 0 ? img->buf_w : img->w;
+    int img_h = img->buf_h > 0 ? img->buf_h : img->h;
+    if (fx < 0 || fy < 0 || fx + w > img_w || fy + h > img_h)
+        return -1;
+    if (edit_n > img->frame_count + 1 || base_n > img->frame_count + 1)
+        return -1;
+    if (edit_n == 0)
+        edit_n = img->frame_count + 2; /* append */
+
+    size_t need = (size_t)img_w * (size_t)img_h * 4u;
+
+    /* The first frame freezes the root image's pixels: rgba becomes
+     * the DISPLAY buffer that frame switches copy into, and the root
+     * data lives on in root_rgba so a switch back restores it. */
+    if (img->frame_count == 0 && !img->root_rgba) {
+        size_t rcap = 0;
+        uint8_t *rb = img_buf_alloc(vt, st, need, &rcap);
+        if (!rb)
+            return -1;
+        memcpy(rb, img->rgba, need);
+        img->root_rgba = rb;
+        img->root_cap = rcap;
+        st->live_bytes += rcap;
+    }
+
+    /* The frame canvas, creating it when the put appends a frame. */
+    CfrFrame *frame;
+    if (edit_n >= 2 && edit_n <= img->frame_count + 1) {
+        frame = &img->frames[edit_n - 2];
+    } else {
+        if (img->frame_count >= IMG_MAX_FRAMES)
+            return -1;
+        if (img->frame_count == img->frame_cap) {
+            int ncap = img->frame_cap ? img->frame_cap * 2 : 4;
+            if (ncap > IMG_MAX_FRAMES)
+                ncap = IMG_MAX_FRAMES;
+            CfrFrame *nf = cfr_realloc(vt, img->frames,
+                                       (size_t)ncap * sizeof(CfrFrame));
+            if (!nf)
+                return -1;
+            img->frames = nf;
+            img->frame_cap = ncap;
+        }
+        frame = &img->frames[img->frame_count++];
+        memset(frame, 0, sizeof(*frame));
+    }
+
+    if (frame->cap < need) {
+        size_t cap = 0;
+        uint8_t *buf = img_buf_alloc(vt, st, need, &cap);
+        if (!buf)
+            return -1;
+        if (frame->rgba) {
+            st->live_bytes -= frame->cap;
+            img->frame_bytes -= frame->cap;
+            img_buf_release(vt, st, frame->rgba, frame->cap);
+        }
+        frame->rgba = buf;
+        frame->cap = cap;
+        img->frame_bytes += cap;
+        st->live_bytes += cap;
+    }
+
+    /* Fill the canvas: the base frame's pixels, else the Y= background
+     * (transparent black by default). */
+    if (base_n > 0) {
+        const uint8_t *base;
+        if (base_n == 1)
+            base = img->root_rgba ? img->root_rgba : img->rgba;
+        else
+            base = img->frames[base_n - 2].rgba;
+        memcpy(frame->rgba, base, need);
+    } else if (bg_rgba != 0) {
+        uint8_t b = (uint8_t)(bg_rgba >> 16);
+        uint8_t g = (uint8_t)(bg_rgba >> 8);
+        uint8_t r = (uint8_t)bg_rgba;
+        uint8_t a = (uint8_t)(bg_rgba >> 24);
+        for (int i = 0; i < img_w * img_h; i++) {
+            frame->rgba[i * 4 + 0] = r;
+            frame->rgba[i * 4 + 1] = g;
+            frame->rgba[i * 4 + 2] = b;
+            frame->rgba[i * 4 + 3] = a;
+        }
+    } else {
+        memset(frame->rgba, 0, need);
+    }
+
+    /* Compose the rect: X=1 replaces, the default alpha blends. */
+    for (int y = 0; y < h; y++) {
+        uint8_t *drow = frame->rgba +
+                        ((size_t)(fy + y) * (size_t)img_w + (size_t)fx) * 4u;
+        const uint8_t *srow = rgba + (size_t)y * (size_t)w * 4u;
+        if (overwrite) {
+            memcpy(drow, srow, (size_t)w * 4u);
+            continue;
+        }
+        for (int x = 0; x < w; x++)
+            img_blend_px(drow + (size_t)x * 4u, srow + (size_t)x * 4u);
+    }
+
+    if (gap_ms != 0) {
+        frame->gap_ms = gap_ms;
+        frame->has_gap = true;
+    }
+
+    /* A frame arriving resumes a loading animation parked at the end. */
+    if (img->anim_mode == 1)
+        img->next_advance_us = 0;
+
+    return edit_n;
+}
+
+bool cfr_img_frame_set_current(void *vt, CfrImgStore *st, int idx,
+                               int frame_n)
+{
+    if (idx < 0 || idx >= st->img_count)
+        return false;
+    CfrImg *img = &st->imgs[idx];
+    if (frame_n < 1 || frame_n > img->frame_count + 1)
+        return false;
+    img->current_frame = frame_n;
+    if (frame_n > 1) {
+        const CfrFrame *f = &img->frames[frame_n - 2];
+        cfr_img_replace(vt, st, idx, f->rgba, img->buf_w, img->buf_h);
+    } else if (img->root_rgba) {
+        /* Back to the root frame: restore its kept pixels. */
+        cfr_img_replace(vt, st, idx, img->root_rgba, img->buf_w,
+                        img->buf_h);
+    }
+    return true;
+}
+
+bool cfr_img_frame_set_gap(CfrImgStore *st, int idx, int frame_n,
+                           int gap_ms)
+{
+    if (idx < 0 || idx >= st->img_count)
+        return false;
+    CfrImg *img = &st->imgs[idx];
+    if (frame_n < 1 || frame_n > img->frame_count + 1)
+        return false;
+    if (frame_n == 1) {
+        img->root_gap_ms = gap_ms;
+        img->root_has_gap = gap_ms != 0;
+        return true;
+    }
+    img->frames[frame_n - 2].gap_ms = gap_ms;
+    img->frames[frame_n - 2].has_gap = gap_ms != 0;
+    return true;
+}
+
+void cfr_img_frames_delete(void *vt, CfrImgStore *st, int idx, int frame_n)
+{
+    if (idx < 0 || idx >= st->img_count)
+        return;
+    CfrImg *img = &st->imgs[idx];
+    if (frame_n == 0) {
+        /* Delete every extra frame; the display falls back to the
+         * root image. */
+        img_frames_release(vt, st, img);
+        if (img->root_rgba)
+            cfr_img_replace(vt, st, idx, img->root_rgba, img->buf_w,
+                            img->buf_h);
+        return;
+    }
+    if (frame_n < 2 || frame_n > img->frame_count + 1)
+        return; /* frame 1 is the root image itself */
+    CfrFrame *f = &img->frames[frame_n - 2];
+    st->live_bytes -= f->cap;
+    img->frame_bytes -= f->cap;
+    img_buf_release(vt, st, f->rgba, f->cap);
+    memmove(&img->frames[frame_n - 2], &img->frames[frame_n - 1],
+            (size_t)(img->frame_count + 1 - frame_n) * sizeof(CfrFrame));
+    img->frame_count--;
+    bool was_current = img->current_frame == frame_n;
+    if (img->current_frame > frame_n)
+        img->current_frame--;
+    if (was_current && img->current_frame > 1)
+        cfr_img_frame_set_current(vt, st, idx, img->current_frame);
+}
+
+void cfr_img_anim_control(CfrImgStore *st, int idx, int mode, int loops)
+{
+    if (idx < 0 || idx >= st->img_count)
+        return;
+    CfrImg *img = &st->imgs[idx];
+    if (mode >= 1 && mode <= 3)
+        img->anim_mode = (uint8_t)(mode - 1); /* 1 stop, 2 loading, 3 run */
+    if (loops > 0)
+        img->loops_left = loops == 1 ? -1 : loops - 1;
+    /* The next tick picks the new state up immediately. */
+    img->next_advance_us = 0;
+}
+
+void cfr_img_tick(void *vt, CfrImgStore *st, uint64_t now_us)
+{
+    if (!st || st->img_count == 0)
+        return;
+    for (int i = 0; i < st->img_count; i++) {
+        CfrImg *img = &st->imgs[i];
+        if (img->source != IMG_SRC_KITTY || img->anim_mode == 0)
+            continue;
+        if (img->next_advance_us > now_us)
+            continue;
+
+        /* One frame step per tick: the host calls the clock per frame,
+         * and a gapless run renders as fast as the host paints instead
+         * of spinning the engine. The loop is still bounded — at most
+         * one pass around the frame list. */
+        for (;;) {
+            int next = img->current_frame + 1;
+            if (next > img->frame_count + 1) {
+                if (img->anim_mode == 1) {
+                    /* Loading mode: wait for more frames to arrive. */
+                    img->next_advance_us = UINT64_MAX;
+                    break;
+                }
+                /* Running: loop back to the root frame. */
+                if (img->loops_left > 0 && --img->loops_left == 0) {
+                    img->anim_mode = 0;
+                    break;
+                }
+                next = 1;
+            }
+            cfr_img_frame_set_current(vt, st, i, next);
+            int gap;
+            if (next == 1)
+                gap = img->root_has_gap ? img->root_gap_ms : 0;
+            else {
+                const CfrFrame *f = &img->frames[next - 2];
+                gap = f->has_gap ? f->gap_ms : 40;
+            }
+            if (gap < 0)
+                continue; /* gapless: step on immediately */
+            img->next_advance_us =
+                now_us + (gap > 0 ? (uint64_t)gap * 1000u : 0u);
+            break;
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
