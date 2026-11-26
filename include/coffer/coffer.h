@@ -765,8 +765,8 @@ typedef struct
     uint8_t source; /* IMG_SRC_SIXEL, IMG_SRC_LOTTIE, IMG_SRC_ITERM, IMG_SRC_KITTY */
     int row;
     int col;
-    int width_px;        /* physical display pixels (coffer pre-converts) */
-    int height_px;       /* physical display pixels */
+    int width_px;        /* display width in device pixels, drawn 1:1 */
+    int height_px;       /* display height in device pixels */
     int buf_w;           /* pixel buffer width (for texture upload) — the
                           * REAL width of `rgba`, NOT scaled: the buffer
                           * holds the decoded (native) pixels */

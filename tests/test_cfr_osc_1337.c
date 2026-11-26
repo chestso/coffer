@@ -284,7 +284,7 @@ static void test_width_cells(void)
 {
     CfrTerm *vt = make_term(24, 80);
     /* 4x4 px image, cell is 10x6 px. width=2 means 2 cells = 20px wide.
-     * width_px is physical (content_scale=1.0 so physical=logical).
+     * width_px is device pixels (cell 10x6, scale 1).
      * buf_w/buf_h hold the native decoded size (4x4). */
     char seq[256];
     snprintf(seq, sizeof(seq),
@@ -536,28 +536,24 @@ static void test_large_single_shot(void)
 }
 
 /* --------------------------------------------------------------- */
-/* 12. Physical dimensions with content_scale = 2.0                */
+/* 12. Device dimensions with content_scale = 2.0                  */
 /* --------------------------------------------------------------- */
 
-/* The single-conversion design: cfr_img_get converts logical→physical.
- * With content_scale=2.0, a 4x4 decoded image with width=2 cells should
- * have width_px = 2 * 5 * 2 = 20 (physical).
+/* Client pixels are device pixels: a cell-count hint multiplies the
+ * PHYSICAL cell and the store draws the result 1:1 — no scale
+ * conversion. With content_scale=2.0 and a 10x6 physical cell, a 4x4
+ * decoded image with width=2 cells is 20 device px wide.
  *
- * The BUFFER dimensions are NOT scaled: the buffer holds the decoded
- * (native) pixels, so buf_w/buf_h are the real extent of the memory
- * the host is about to read (buf_w * buf_h * 4 bytes). Scaling them
- * told the host to read past the end of the allocation on a scaled
- * display — a heap-buffer-overflow the ASan reproducer
- * (tests/repro/host_upload.c) confirmed. The scaling lives in the
- * DISPLAY fields only. */
-static void test_content_scale_physical(void)
+ * The BUFFER dimensions are the decoded (native) pixels: buf_w/buf_h
+ * are the real extent of the memory the host reads (buf_w * buf_h * 4
+ * bytes). */
+static void test_content_scale_device_pixels(void)
 {
     CfrTerm *vt = make_term(24, 80);
     cfr_set_content_scale(vt, 2.0f);
     /* cell_w_px=10, cell_h_px=6 (physical, from make_term).
-     * logical_cw = 10 / 2 = 5.  width=2 cells → disp_w = 2*5 = 10 (logical).
-     * cfr_img_get: width_px = 10 * 2 = 20 (physical).
-     * buf_w = 4 (the decoded PNG's real width — NOT scaled). */
+     * width=2 cells → disp_w = 2*10 = 20 device px, drawn 1:1.
+     * buf_w = 4 (the decoded PNG's real width). */
     char seq[256];
     snprintf(seq, sizeof(seq),
              "\x1b]1337;File=inline=1;width=2:%s\x07",
@@ -570,6 +566,30 @@ static void test_content_scale_physical(void)
     ASSERT_EQ(count, 1);
     ASSERT_EQ(imgs[0].width_px, 20);
     ASSERT_EQ(imgs[0].height_px, 20);
+    ASSERT_EQ(imgs[0].buf_w, 4);
+    ASSERT_EQ(imgs[0].buf_h, 4);
+
+    cfr_free(vt);
+}
+
+/* A px hint is device pixels as-is: width=10px at scale 2 is 10 device
+ * px, not 20 — the engine never scales a client's raster. */
+static void test_px_hint_is_device_pixels(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    cfr_set_content_scale(vt, 2.0f);
+    char seq[256];
+    snprintf(seq, sizeof(seq),
+             "\x1b]1337;File=inline=1;width=10px:%s\x07",
+             PNG_4X4_GREEN_B64);
+    feed(vt, seq);
+
+    int count = 0;
+    const CfrImage *imgs = cfr_get_images(vt, &count);
+    ASSERT_NOT_NULL(imgs);
+    ASSERT_EQ(count, 1);
+    ASSERT_EQ(imgs[0].width_px, 10);
+    ASSERT_EQ(imgs[0].height_px, 10);
     ASSERT_EQ(imgs[0].buf_w, 4);
     ASSERT_EQ(imgs[0].buf_h, 4);
 
@@ -660,7 +680,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_intermediate_alpha);
     RUN_TEST(test_tiff_payload);
     RUN_TEST(test_large_single_shot);
-    RUN_TEST(test_content_scale_physical);
+    RUN_TEST(test_content_scale_device_pixels);
+    RUN_TEST(test_px_hint_is_device_pixels);
     RUN_TEST(test_inline_image_altscreen_roundtrip);
     RUN_TEST(test_pending_cluster_flushed_before_image);
 

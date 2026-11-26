@@ -965,9 +965,9 @@ static void test_img_placement_damages_rows(void)
 }
 
 /* I4: the buffer dimensions the host reads are the buffer's REAL
- * dimensions. The logical→physical scaling belongs to the display
- * fields; scaling the buffer fields told the host to read past the
- * end of the allocation on a scaled display. */
+ * dimensions, and the display dimensions are the raster's own device
+ * pixels — display == buffer, so a whole-texture upload is exactly the
+ * raster even on a scaled display. */
 static void test_img_buffer_dims_are_the_buffers(void)
 {
     CfrTerm *vt = make_term(24, 80);
@@ -986,9 +986,9 @@ static void test_img_buffer_dims_are_the_buffers(void)
     /* The buffer holds the decoded 4x4 pixels. */
     ASSERT_EQ(imgs[0].buf_w, 4);
     ASSERT_EQ(imgs[0].buf_h, 4);
-    /* The display is scaled. */
-    ASSERT_EQ(imgs[0].width_px, 8);
-    ASSERT_EQ(imgs[0].height_px, 8);
+    /* The display is the raster's device pixels — no scaling. */
+    ASSERT_EQ(imgs[0].width_px, 4);
+    ASSERT_EQ(imgs[0].height_px, 4);
 
     cfr_img_store_free(vt, st);
     cfr_free(vt);

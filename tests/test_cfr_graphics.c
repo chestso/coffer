@@ -714,11 +714,12 @@ static void test_place_cell_size_from_aspect(void)
     cfr_free(vt);
 }
 
-/* A natural-size placement (no c=/r=) derives its cell box from the image's
- * DEVICE extent: the client's pixels are logical and the engine scales them
- * by content_scale exactly once, on the way out. Dropping that scale puts a
- * HiDPI placement at 1x — half the intended box. */
-static void test_natural_size_placement_scales_with_content_scale(void)
+/* A natural-size placement (no c=/r=) derives its cell box from the
+ * image's DEVICE pixels against the physical cell — the kitty
+ * convention. On a 2x display a natural-size image keeps its device
+ * extent (half the logical size it used to occupy); a client that wants
+ * a cell-filling image sizes its raster to the cell grid. */
+static void test_natural_size_placement_is_device_pixels(void)
 {
     /* 12x7 opaque red RGBA. */
     static uint8_t rgba[12 * 7 * 4];
@@ -746,9 +747,9 @@ static void test_natural_size_placement_scales_with_content_scale(void)
     ASSERT_EQ(pls[0].rows, 2);
     cfr_free(vt);
 
-    /* 2x display: cell 20x12 physical, content_scale 2. The image's device
-     * extent doubles (24x14) and the box is derived from THAT, not from the
-     * unscaled pixels. */
+    /* 2x display: cell 20x12 physical, content_scale 2. The raster's 12x7
+     * device pixels are drawn 1:1, so the box is ceil(12/20) x ceil(7/12)
+     * = 1x1 — the device extent does NOT double. */
     vt = make_term(24, 80);
     cfr_set_cell_pixels(vt, 20, 12);
     cfr_set_content_scale(vt, 2.0f);
@@ -757,11 +758,11 @@ static void test_natural_size_placement_scales_with_content_scale(void)
     feed(vt, seq);
     feed(vt, "\x1b_Ga=p,i=1\x1b\\");
     imgs = cfr_get_images(vt, &count);
-    ASSERT_EQ(imgs[0].width_px, 24);
-    ASSERT_EQ(imgs[0].height_px, 14);
+    ASSERT_EQ(imgs[0].width_px, 12);
+    ASSERT_EQ(imgs[0].height_px, 7);
     pls = cfr_img_get_placements(vt, vt->images, &count);
-    ASSERT_EQ(pls[0].cols, 2); /* ceil(24 / 20) — NOT ceil(12 / 20) == 1 */
-    ASSERT_EQ(pls[0].rows, 2); /* ceil(14 / 12) — NOT ceil(7 / 12) == 1 */
+    ASSERT_EQ(pls[0].cols, 1); /* ceil(12 / 20) */
+    ASSERT_EQ(pls[0].rows, 1); /* ceil(7 / 12) */
     cfr_free(vt);
 }
 
@@ -2875,7 +2876,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_image_number_is_screen_scoped);
     RUN_TEST(test_place);
     RUN_TEST(test_place_cell_size_from_aspect);
-    RUN_TEST(test_natural_size_placement_scales_with_content_scale);
+    RUN_TEST(test_natural_size_placement_is_device_pixels);
     RUN_TEST(test_place_cursor_advance);
     RUN_TEST(test_place_virtual);
     RUN_TEST(test_place_relative);

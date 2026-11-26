@@ -328,9 +328,9 @@ static void k_advance_cursor(CfrTerm *vt, int start_col, int cols, int rows)
  * missing dimension is derived from the source rect's aspect ratio; with
  * neither, the image's natural size in cells.
  *
- * src_w/src_h are the source rect's size in the image's own pixels (the
- * whole image when the client sends no rect). The cell size is physical
- * (content scale included), so the image's pixels are scaled before the
+ * src_w/src_h are the source rect's size in the image's own DEVICE
+ * pixels (the whole image when the client sends no rect), the same unit
+ * as the physical cell — the natural-size box is a plain ceiling
  * division. */
 static void k_placement_cells(CfrTerm *vt, const KittyParams *p,
                               int src_w, int src_h,
@@ -338,7 +338,6 @@ static void k_placement_cells(CfrTerm *vt, const KittyParams *p,
 {
     int cell_w = vt->cell_w_px > 0 ? vt->cell_w_px : 1;
     int cell_h = vt->cell_h_px > 0 ? vt->cell_h_px : 1;
-    float scale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
     if (src_w <= 0)
         src_w = 1;
     if (src_h <= 0)
@@ -359,8 +358,8 @@ static void k_placement_cells(CfrTerm *vt, const KittyParams *p,
         cols = (int)ceil(width_px / (double)cell_w);
     } else if (cols <= 0 && rows <= 0) {
         /* Neither: the image's natural size, as close as it fits. */
-        cols = ((int)((float)src_w * scale) + cell_w - 1) / cell_w;
-        rows = ((int)((float)src_h * scale) + cell_h - 1) / cell_h;
+        cols = (src_w + cell_w - 1) / cell_w;
+        rows = (src_h + cell_h - 1) / cell_h;
     }
     if (cols < 1)
         cols = 1;

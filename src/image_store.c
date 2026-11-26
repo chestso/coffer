@@ -578,16 +578,13 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     if (need == 0 || need > IMG_LIVE_MAX)
         return -1;
 
-    /* Compute grid occupancy from logical display dimensions.
-     * cell_w_px/cell_h_px are physical (include content_scale), so
-     * we scale disp to physical before dividing. */
+    /* Grid occupancy: the display dimensions are device pixels, the
+     * same unit as the physical cell, so the box is a plain ceiling
+     * division — no scale conversion. */
     int cell_h = cvt->cell_h_px;
     int cell_w = cvt->cell_w_px;
-    float scale = cvt->content_scale > 0.0f ? cvt->content_scale : 1.0f;
-    int scaled_w = (int)((float)disp_w * scale + 0.5f);
-    int scaled_h = (int)((float)disp_h * scale + 0.5f);
-    int rows_tall = (scaled_h + cell_h - 1) / cell_h;
-    int cols_wide = (scaled_w + cell_w - 1) / cell_w;
+    int rows_tall = (disp_h + cell_h - 1) / cell_h;
+    int cols_wide = (disp_w + cell_w - 1) / cell_w;
     if (rows_tall < 1)
         rows_tall = 1;
     if (cols_wide < 1)
@@ -831,13 +828,13 @@ void cfr_img_replace(void *vt, CfrImgStore *st, int idx,
     r->buf_h = h;
     r->version = ++st->version_seq;
 
-    int cell_h = ((CfrTerm *)vt)->cell_h_px;
-    int cell_w = ((CfrTerm *)vt)->cell_w_px;
-    float scale = ((CfrTerm *)vt)->content_scale > 0.0f ? ((CfrTerm *)vt)->content_scale : 1.0f;
-    int scaled_h = (int)((float)h * scale);
-    int scaled_w = (int)((float)w * scale);
-    r->rows_tall = (scaled_h + cell_h - 1) / cell_h;
-    r->cols_wide = (scaled_w + cell_w - 1) / cell_w;
+    /* The raster's device pixels against the physical cell — the same
+     * unit, a plain ceiling division. */
+    CfrTerm *cvt = vt;
+    int cell_h = cvt->cell_h_px;
+    int cell_w = cvt->cell_w_px;
+    r->rows_tall = (h + cell_h - 1) / cell_h;
+    r->cols_wide = (w + cell_w - 1) / cell_w;
     if (r->rows_tall < 1)
         r->rows_tall = 1;
     if (r->cols_wide < 1)
@@ -1468,15 +1465,11 @@ const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count)
         st->img_scratch_cap = ncap;
     }
 
-    /* Single logical→physical conversion point for the whole pipeline.
-     * The renderer receives physical values and does zero conversions.
-     *
-     * The conversion applies to the DISPLAY dimensions only. The
-     * buffer dimensions (buf_w/buf_h) are the REAL dimensions of the
-     * pixel buffer the host is about to read: the buffer holds the
-     * decoded (native) pixels, so scaling them told the host to read
-     * past the end of the allocation on a scaled display. */
-    float cscale = cvt->content_scale > 0.0f ? cvt->content_scale : 1.0f;
+    /* The display dimensions are the raster's own device pixels: the
+     * renderer draws them 1:1 and does zero conversions. buf_w/buf_h
+     * are the REAL dimensions of the pixel buffer the host reads; for
+     * an unscaled raster display == buffer, so a whole-texture upload
+     * is exactly the raster (no read-past-end, no stretch). */
     uint8_t active = (uint8_t)cvt->in_altscreen;
     int n = 0;
 
@@ -1492,8 +1485,8 @@ const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count)
         v->source = r->source;
         v->row = (int)(r->abs_line - cvt->sixel_abs_top);
         v->col = r->col;
-        v->width_px = (int)((float)r->w * cscale + 0.5f);
-        v->height_px = (int)((float)r->h * cscale + 0.5f);
+        v->width_px = r->w;
+        v->height_px = r->h;
         v->buf_w = r->buf_w;
         v->buf_h = r->buf_h;
         v->rgba = r->rgba;

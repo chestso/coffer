@@ -93,15 +93,10 @@ static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
     if (!rgba)
         return;
 
-    /* Compute display dimensions in LOGICAL pixels from the protocol's
-     * width/height hints.  vt->cell_w_px is physical (includes
-     * content_scale), so we take the logical cell size before
-     * multiplying by the cell count.  cfr_img_add and cfr_img_get each
-     * apply content_scale once to convert logical→physical. */
-    int logical_cw = 1;
-    int logical_ch = 1;
-    cfr_cell_logical_px(vt, &logical_cw, &logical_ch);
-
+    /* Display dimensions in DEVICE pixels from the protocol's
+     * width/height hints: a cell-count hint multiplies the physical
+     * cell, a px hint is device pixels as-is. The store draws them
+     * 1:1 — no scale conversion anywhere in the pipeline. */
     int disp_w = w;
     int disp_h = h;
 
@@ -109,7 +104,7 @@ static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
         if (params->width_is_px) {
             disp_w = params->width;
         } else {
-            disp_w = params->width * logical_cw;
+            disp_w = params->width * vt->cell_w_px;
         }
         if (params->preserve_aspect && disp_w > 0 && w > 0) {
             disp_h = (int)((long)disp_w * h / w);
@@ -119,7 +114,7 @@ static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
         if (params->height_is_px) {
             disp_h = params->height;
         } else {
-            disp_h = params->height * logical_ch;
+            disp_h = params->height * vt->cell_h_px;
         }
         if (params->preserve_aspect && disp_h > 0 && h > 0) {
             if (!params->has_width)
@@ -137,7 +132,8 @@ static void process_image(CfrTerm *vt, const uint8_t *raw, size_t raw_len,
     if (disp_h > IMG_MAX_DIM)
         disp_h = IMG_MAX_DIM;
 
-    /* Store: pixel buffer at native w×h, display at disp_w×disp_h (both logical) */
+    /* Store: pixel buffer at native w×h, display at disp_w×disp_h
+     * (device pixels, drawn 1:1). */
     CfrImgStore *store = cfr_img_get_store(vt);
     if (store)
         cfr_img_add(vt, store, rgba, w, h, disp_w, disp_h, 0, IMG_SRC_ITERM);
@@ -220,12 +216,10 @@ static void handle_report_cell_size(CfrTerm *vt)
 {
     /* iTerm2's format: ReportCellSize=[height];[width];[scale] — height
      * and width in POINTS (logical pixels), scale the number of device
-     * pixels per point. The scale is the one figure that lets a client
-     * tell logical from physical: it can size its image in logical pixels
-     * and transmit a raster at scale x that resolution, which the engine
-     * then draws 1:1 into the device-pixel box. The cell figures are the
-     * logical ones (see cfr_cell_logical_px); reporting the physical size
-     * would make the client pack twice the pixels per cell. */
+     * pixels per point. This is the ONE client-facing report that defines
+     * its own unit, kept for iTerm2 compatibility: every other pixel
+     * figure the engine reports is device pixels. The two agree —
+     * physical cell (CSI 16 t) == these points × scale. */
     int logical_cw = 1;
     int logical_ch = 1;
     cfr_cell_logical_px(vt, &logical_cw, &logical_ch);
