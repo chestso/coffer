@@ -1239,18 +1239,19 @@ static void test_report_on_load(void)
     cfr_free(vt);
 }
 
-/* The report's cell figures are LOGICAL pixels, like every other
- * client-facing pixel quantity. */
-static void test_report_cell_is_logical(void)
+/* The report's cell figures are DEVICE pixels, matching the cell-size
+ * queries. A natural-size animation keeps its device extent: a 20x20
+ * design on a 2x display (cell 20x12) is 1x2 cells, not 2x4. */
+static void test_report_cell_is_device_pixels(void)
 {
     CfrTerm *vt = make_term(24, 80);
-    /* 2x display: the cell is 20x12 physical, 10x6 logical. */
+    /* 2x display: the cell is 20x12 physical. */
     cfr_set_cell_pixels(vt, 20, 12);
     cfr_set_content_scale(vt, 2.0f);
     g_out_len = 0;
     g_out[0] = '\0';
 
-    /* 20x20 design, no constraints → raster=20x20, cells=2x4 */
+    /* 20x20 design, no constraints → raster=20x20 device px, cells=1x2 */
     feed_lottie(vt,
                 "{\"cmd\":\"load\",\"id\":42,"
                 "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
@@ -1267,12 +1268,49 @@ static void test_report_cell_is_logical(void)
     ASSERT_EQ((long long)rid, 42);
     ASSERT_EQ(r_row, 3);
     ASSERT_EQ(r_col, 5);
-    ASSERT_EQ(r_rows, 4);
-    ASSERT_EQ(r_cols, 2);
+    ASSERT_EQ(r_rows, 2); /* ceil(20 / 12) */
+    ASSERT_EQ(r_cols, 1); /* ceil(20 / 20) */
     ASSERT_EQ(r_rw, 20);
     ASSERT_EQ(r_rh, 20);
-    ASSERT_EQ(r_cw, 10);
-    ASSERT_EQ(r_ch, 6);
+    ASSERT_EQ(r_cw, 20);
+    ASSERT_EQ(r_ch, 12);
+
+    cfr_free(vt);
+}
+
+/* load and place derive the raster from the SAME unit — device pixels
+ * against the physical cell — so a cols=8 region at scale 2 rasterizes
+ * 160 device px wide and occupies 8 columns on both paths. */
+static void test_load_place_agree_at_scale(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    cfr_set_cell_pixels(vt, 20, 12);
+    cfr_set_content_scale(vt, 2.0f);
+
+    feed_lottie(vt,
+                "{\"cmd\":\"load\",\"id\":7,"
+                "\"lottie\":{\"v\":\"5.6.0\",\"fr\":30,\"ip\":0,\"op\":30,"
+                "\"w\":20,\"h\":20,\"layers\":[]},"
+                "\"placement\":{\"cols\":8}}");
+    int n = 0;
+    const CfrLottie *ls = cfr_get_lotties(vt, &n);
+    ASSERT_EQ(n, 1);
+    ASSERT_EQ(ls[0].canvas_w, 160); /* 8 cols * 20 device px */
+    ASSERT_EQ(ls[0].canvas_h, 160);
+    const CfrLottiePlacement *pl = get_placements(vt, &ls[0]);
+    ASSERT_EQ(pl[0].cols, 8);
+    ASSERT_EQ(pl[0].rows, 14); /* ceil(160 / 12) */
+
+    /* place with the same region keeps the raster and the box. */
+    feed_lottie(vt,
+                "{\"cmd\":\"place\",\"id\":7,"
+                "\"placement\":{\"row\":1,\"col\":1,\"cols\":8}}");
+    ls = cfr_get_lotties(vt, &n);
+    ASSERT_EQ(ls[0].canvas_w, 160);
+    ASSERT_EQ(ls[0].placement_count, 2);
+    pl = get_placements(vt, &ls[0]);
+    ASSERT_EQ(pl[1].cols, 8);
+    ASSERT_EQ(pl[1].rows, 14);
 
     cfr_free(vt);
 }
@@ -1628,7 +1666,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_contain_mixed_constraints);
     RUN_TEST(test_region_fit);
     RUN_TEST(test_report_on_load);
-    RUN_TEST(test_report_cell_is_logical);
+    RUN_TEST(test_report_cell_is_device_pixels);
+    RUN_TEST(test_load_place_agree_at_scale);
     RUN_TEST(test_report_on_place);
     RUN_TEST(test_place_rescale_seamless);
 

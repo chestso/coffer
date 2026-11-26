@@ -133,6 +133,10 @@ the appropriate handler.
 | `"contain"` | Scale to fit within region (largest aspect-correct) | Cell box centered in region |
 | `"none"`    | Scale by explicit `scale` field (default 1.0)       | Cell box centered in region |
 
+**Units**: every pixel quantity in this protocol — the `width`/`height`
+region hints, the rasterization size, and the reported cell figures — is
+**device pixels**, the same unit `CSI 16 t` reports. Rasters are drawn 1:1.
+
 **Size computation** (always aspect-correct):
 
 ```
@@ -339,18 +343,18 @@ The report payload is a JSON object:
 }
 ```
 
-| Field       | Type | Description                                 |
-| ----------- | ---- | ------------------------------------------- |
-| `type`      | str  | Always `"report"`                           |
-| `id`        | int  | Animation id                                |
-| `row`       | int  | Placement row (top-left of region)          |
-| `col`       | int  | Placement col (top-left of region)          |
-| `rows`      | int  | Cell rows occupied (engine-computed)        |
-| `cols`      | int  | Cell cols occupied (engine-computed)        |
-| `raster_w`  | int  | Rasterization width in px (design × scale)  |
-| `raster_h`  | int  | Rasterization height in px (design × scale) |
-| `cell_w_px` | int  | Terminal cell width in px                   |
-| `cell_h_px` | int  | Terminal cell height in px                  |
+| Field       | Type | Description                                        |
+| ----------- | ---- | -------------------------------------------------- |
+| `type`      | str  | Always `"report"`                                  |
+| `id`        | int  | Animation id                                       |
+| `row`       | int  | Placement row (top-left of region)                 |
+| `col`       | int  | Placement col (top-left of region)                 |
+| `rows`      | int  | Cell rows occupied (engine-computed)               |
+| `cols`      | int  | Cell cols occupied (engine-computed)               |
+| `raster_w`  | int  | Rasterization width in device px (design × scale)  |
+| `raster_h`  | int  | Rasterization height in device px (design × scale) |
+| `cell_w_px` | int  | Terminal cell width in device px                   |
+| `cell_h_px` | int  | Terminal cell height in device px                  |
 
 **Requesting a report**: add `"report": true` to the `load` or `place` command:
 

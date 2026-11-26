@@ -726,23 +726,18 @@ static double lt_compute_scale(int design_w, int design_h,
 }
 
 /* Emit an APC report (OSC 5556 on Windows) with placement info. The cell
- * figures are LOGICAL pixels — the unit every client-facing pixel quantity
- * uses, since a client's pixel dimensions are logical. */
+ * figures are DEVICE pixels, matching the cell-size queries (CSI 16 t). */
 static void lt_emit_report(CfrTerm *vt, uint64_t id,
                            int row, int col, int rows, int cols,
                            int raster_w, int raster_h)
 {
-    int logical_cw = 1;
-    int logical_ch = 1;
-    cfr_cell_logical_px(vt, &logical_cw, &logical_ch);
-
     char json[200];
     int jn = snprintf(json, sizeof(json),
                       "{\"type\":\"report\",\"id\":%llu,\"row\":%d,\"col\":%d,"
                       "\"rows\":%d,\"cols\":%d,\"raster_w\":%d,\"raster_h\":%d,"
                       "\"cell_w_px\":%d,\"cell_h_px\":%d}",
                       (unsigned long long)id, row, col, rows, cols,
-                      raster_w, raster_h, logical_cw, logical_ch);
+                      raster_w, raster_h, vt->cell_w_px, vt->cell_h_px);
     if (jn <= 0)
         return;
 
@@ -907,17 +902,13 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     }
 
     /* Compute aspect-correct rasterization size from constraints.
-     * Use logical cell sizes (physical / content_scale) because px_w/px_h
-     * are intended to be logical/unscaled pixels. */
-    float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
-    int logical_cell_w = 1;
-    int logical_cell_h = 1;
-    cfr_cell_logical_px(vt, &logical_cell_w, &logical_cell_h);
-
+     * Every pixel quantity is device pixels: the region's px hints are
+     * device px and cols/rows multiply the physical cell, so the
+     * rasterization size is device px too — drawn 1:1. */
     double scale = lt_compute_scale(design_w, design_h,
                                     p_width, p_height,
                                     p_cols, p_rows,
-                                    logical_cell_w, logical_cell_h,
+                                    vt->cell_w_px, vt->cell_h_px,
                                     fit, explicit_scale);
     int px_w = (int)((double)design_w * scale + 0.5);
     int px_h = (int)((double)design_h * scale + 0.5);
@@ -932,13 +923,10 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     if (design_h <= 0)
         design_h = px_h;
 
-    /* Placement cells derived from rasterization size / cell px.
-     * px_w/px_h are in unscaled pixels; cell_w_px/cell_h_px include
-     * content_scale, so we scale the rasterization size to match. */
-    int scaled_px_w = (int)((double)px_w * cscale + 0.5);
-    int scaled_px_h = (int)((double)px_h * cscale + 0.5);
-    int pcols = (scaled_px_w + vt->cell_w_px - 1) / vt->cell_w_px;
-    int prows = (scaled_px_h + vt->cell_h_px - 1) / vt->cell_h_px;
+    /* Placement cells: the rasterization size in device pixels against
+     * the physical cell — the same unit, a plain ceiling division. */
+    int pcols = (px_w + vt->cell_w_px - 1) / vt->cell_w_px;
+    int prows = (px_h + vt->cell_h_px - 1) / vt->cell_h_px;
     if (pcols < 1)
         pcols = 1;
     if (prows < 1)
@@ -1260,12 +1248,9 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
     }
 
     /* Compute placement cells from current rasterization size.
-     * px_w/px_h are unscaled; cell_w_px/cell_h_px include content_scale. */
-    float cscale = vt->content_scale > 0.0f ? vt->content_scale : 1.0f;
-    int scaled_px_w = (int)((double)rec->px_w * cscale + 0.5);
-    int scaled_px_h = (int)((double)rec->px_h * cscale + 0.5);
-    int pcols = (scaled_px_w + vt->cell_w_px - 1) / vt->cell_w_px;
-    int prows = (scaled_px_h + vt->cell_h_px - 1) / vt->cell_h_px;
+     * px_w/px_h are device pixels, the same unit as the physical cell. */
+    int pcols = (rec->px_w + vt->cell_w_px - 1) / vt->cell_w_px;
+    int prows = (rec->px_h + vt->cell_h_px - 1) / vt->cell_h_px;
     if (pcols < 1)
         pcols = 1;
     if (prows < 1)
