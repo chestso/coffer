@@ -780,19 +780,21 @@ typedef struct
 void cfr_set_cell_pixels(CfrTerm *vt, int cell_w_px, int cell_h_px);
 
 /* Set the DPI content scale factor (1.0 = unscaled). The host passes its
- * content_scale so the engine can compute correct sixel cell occupancy when
- * cell_px already includes the scale but image pixels are unscaled. */
+ * content_scale so OSC 1337 ReportCellSize can report iTerm2's points +
+ * scale. Every other client-facing pixel quantity is device pixels: the
+ * cell-size queries (CSI 14t/16t, XTSMGRAPHICS) report cell_w_px/cell_h_px
+ * directly, and a client's raster pixels are drawn 1:1. */
 void cfr_set_content_scale(CfrTerm *vt, float scale);
 
-/* Physical pixels -> the LOGICAL (unscaled) pixels a client measures in.
- * A client's pixel dimensions are logical (the display fields are scaled
- * by content_scale once, in cfr_img_get), so every figure reported back to
- * a client goes through this. Rounds half-up and never returns below 1.
+/* Device pixels -> the POINTS (logical pixels) iTerm2's ReportCellSize
+ * reports — the one client-facing report that defines its own unit. Every
+ * other pixel figure the engine reports or accepts is device pixels, so
+ * this conversion serves ReportCellSize alone. Rounds half-up and never
+ * returns below 1.
  *
- * At a fractional content scale the logical cell can be +/-1 px off
- * physical/scale, so an image sized in logical px can overflow its cell
- * box by a few device px. That is inherent to an integer-cell grid (kitty
- * and foot behave the same); it is not a defect in the rounding. */
+ * At a fractional content scale the points cell can be +/-1 px off
+ * physical/scale. That is inherent to an integer-cell grid (kitty and
+ * foot behave the same); it is not a defect in the rounding. */
 int cfr_px_logical(int px, float content_scale);
 
 /* Return the live images of the active screen (sixel, iTerm2, kitty,

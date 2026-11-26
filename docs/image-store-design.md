@@ -253,9 +253,10 @@ The store must satisfy, and the tests must pin:
    anchor, so the image's own record can be culled/ordered), or keep it
    0 and give the store a helper `img_anchor_line()` that answers
    "the oldest line this image touches" for both kinds.
-5. `buf_w`/`buf_h` are the REAL buffer dimensions (never scaled);
-   `w`/`h` are the logical display dimensions. `cfr_img_get()` scales
-   only the display fields (as the header already says).
+5. `buf_w`/`buf_h` are the REAL buffer dimensions; `w`/`h` are the
+   display dimensions in device pixels — the raster's own unit, drawn
+   1:1. `cfr_img_get()` copies them through with no scale conversion
+   (see `docs/IMAGE-DEVICE-PX-PLAN.md`).
 
 ### Phase 2 — the lifetimes (F1, F2, F3)
 
@@ -438,16 +439,12 @@ run in CI).
 - The damage callback is the host's only repaint trigger. Any new
   mutation path that changes the screen MUST call `cfr_damage_row()` /
   `cfr_damage_all()`.
-- The `content_scale` conversion has exactly ONE home: the display
-  fields on the way out (`cfr_img_get`). Never scale the buffer
-  fields.
-- Every pixel figure the engine _reports_ back to a client carries the
-  logical cell size (`cfr_cell_logical_px`): XTWINOPS `14t`/`16t`,
-  XTSMGRAPHICS geometry, and OSC 1337 `ReportCellSize`. A client told
-  the physical size packs twice the pixels per cell, and the engine then
-  scales its raster a second time on the way out — a sixel raster ends
-  up at 2x while a cell-count protocol (kitty `c=`/`r=`, iTerm2
-  `width=`/`height=` in cells) stays at 1x, so the same picture renders
-  at two different sizes depending on the protocol.
+- Client pixels are DEVICE pixels: the display fields, the grid
+  occupancy, and every pixel figure the engine _reports_ back to a
+  client (XTWINOPS `14t`/`16t`, XTSMGRAPHICS geometry, the Lottie APC
+  report) carry the physical cell, and a client's raster is drawn 1:1.
+  The one exception is OSC 1337 `ReportCellSize`, which keeps iTerm2's
+  points + scale unit — `cfr_cell_logical_px` / `cfr_px_logical` serve
+  that report alone. See `docs/IMAGE-DEVICE-PX-PLAN.md`.
 - Budget constants live in `src/image_store.h` (`IMG_MAX_IMAGES`,
   `IMG_LIVE_MAX`, `IMG_SPARE_MAX`, `IMG_RETAIN_MAX`).

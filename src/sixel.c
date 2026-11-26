@@ -558,6 +558,9 @@ void cfr_set_content_scale(CfrTerm *vt, float scale)
     vt->content_scale = scale > 0.0f ? scale : 1.0f;
 }
 
+/* Device pixels -> the points iTerm2's ReportCellSize reports. Every
+ * other client-facing pixel quantity is device pixels; this conversion
+ * serves that one report (see cfr_cell_logical_px). */
 int cfr_px_logical(int px, float content_scale)
 {
     if (content_scale <= 0.0f)

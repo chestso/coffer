@@ -496,7 +496,7 @@ struct CfrTerm
     struct CfrSixelState *sixel;
     int cell_w_px; /* px per cell, set at creation */
     int cell_h_px;
-    float content_scale; /* DPI scale factor (1.0 = unscaled), set by host */
+    float content_scale; /* DPI scale (1.0 = unscaled); ReportCellSize only */
     long sixel_abs_top;
 
     /* Lottie animations (lottie.c). Lazily allocated on first APC.
@@ -603,14 +603,11 @@ static inline bool should_log_once(CfrTerm *vt, uint32_t bit)
 /* Internal helpers (cross-file)                                       */
 /* ------------------------------------------------------------------ */
 
-/* The cell's size in LOGICAL (unscaled) pixels: cell_w_px/cell_h_px are
- * physical and include content_scale, while every pixel dimension a
- * client hands the engine is logical — the display fields are scaled
- * once on the way out (cfr_img_get). Anything that *reports* a pixel
- * quantity back to a client (XTWINOPS 14t/16t, OSC 1337
- * ReportCellSize) must therefore report the logical figure: a client
- * told the physical size packs twice the pixels per cell, and its
- * raster then gets scaled a second time on the way out. */
+/* The cell's size in POINTS (logical pixels) for OSC 1337
+ * ReportCellSize — the ONE client-facing report that defines its own
+ * unit (iTerm2's points + scale). Every other pixel quantity the engine
+ * reports or accepts is device pixels (cell_w_px/cell_h_px), drawn 1:1;
+ * this conversion serves ReportCellSize alone. */
 static inline void cfr_cell_logical_px(const CfrTerm *vt, int *out_w,
                                        int *out_h)
 {
