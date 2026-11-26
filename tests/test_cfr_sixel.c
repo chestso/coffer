@@ -398,8 +398,8 @@ static void test_capabilities(void)
 }
 
 /* XTSMGRAPHICS geometry (CSI ? 2 ; Pa ; Pv S) reports the maximum graphics
- * area in LOGICAL pixels, like every pixel figure handed to a client. */
-static void test_xtsmgraphics_geometry_is_logical(void)
+ * area in DEVICE pixels, the unit a client's raster uses. */
+static void test_xtsmgraphics_geometry_is_device_pixels(void)
 {
     CfrTerm *vt = make_term(24, 80);
 
@@ -407,13 +407,13 @@ static void test_xtsmgraphics_geometry_is_logical(void)
     feed(vt, "\x1b[?2;1;0S");
     ASSERT_STR_EQ(g_out, "\x1b[?2;0;800;144S"); /* 80*10 x 24*6 */
 
-    /* 2x display: physical cell 20x12, logical 10x6 — reply unchanged. */
+    /* 2x display: physical cell 20x12 — the geometry is 80*20 x 24*12. */
     cfr_set_cell_pixels(vt, 20, 12);
     cfr_set_content_scale(vt, 2.0f);
     g_out_len = 0;
     g_out[0] = '\0';
     feed(vt, "\x1b[?2;1;0S");
-    ASSERT_STR_EQ(g_out, "\x1b[?2;0;800;144S");
+    ASSERT_STR_EQ(g_out, "\x1b[?2;0;1600;288S");
     cfr_free(vt);
 }
 
@@ -495,7 +495,7 @@ int main(int argc, char *argv[])
     RUN_TEST(test_animation_stress);
     RUN_TEST(test_image_count_cap);
     RUN_TEST(test_capabilities);
-    RUN_TEST(test_xtsmgraphics_geometry_is_logical);
+    RUN_TEST(test_xtsmgraphics_geometry_is_device_pixels);
     RUN_TEST(test_csi_s_still_scrolls);
     TEST_SUMMARY();
 }

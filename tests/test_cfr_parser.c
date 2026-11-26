@@ -1640,16 +1640,12 @@ static void test_decrqm_altscreen(void)
     cfr_free(vt);
 }
 
-/* XTWINOPS pixel reports are LOGICAL pixels, not the physical cell size.
- *
- * Every pixel dimension a client hands the engine (a sixel raster, kitty
- * c=/r=, an iTerm2 px hint) is logical: cfr_img_get() scales the display
- * fields once on the way out. A client that measures the cell from these
- * reports therefore has to see the logical size, or its output is scaled
- * twice — a sixel raster comes out at 2x on a 2x display while a
- * cell-count protocol (kitty/iTerm2) comes out at 1x, so `chafa` renders
- * the same PNG at two different sizes depending on the protocol. */
-static void test_xtwinops_logical_pixels(void)
+/* XTWINOPS pixel reports are DEVICE pixels — the physical cell size,
+ * the unit the placement box and a client's canvas use (the
+ * kitty/foot/wezterm convention). A client that sizes its raster from
+ * these reports lands sharp on a scaled display: its pixels are drawn
+ * 1:1, never scaled a second time. */
+static void test_xtwinops_device_pixels(void)
 {
     CfrTerm *vt = make_term(24, 80); /* cell 10x6, unscaled */
     g_output_len = 0;
@@ -1661,18 +1657,49 @@ static void test_xtwinops_logical_pixels(void)
     feed(vt, "\x1b[14t");
     ASSERT_STR_EQ(g_output_buf, "\x1b[4;144;800t"); /* 24*6, 80*10 */
 
-    /* On a 2x display the cell is 20x12 physical, 10x6 logical. */
+    /* On a 2x display the cell is 20x12 physical: the reports carry
+     * the physical figures, not the 10x6 logical cell. */
     cfr_set_content_scale(vt, 2.0f);
     cfr_set_cell_pixels(vt, 20, 12);
     g_output_len = 0;
     g_output_buf[0] = '\0';
     feed(vt, "\x1b[16t");
-    ASSERT_STR_EQ(g_output_buf, "\x1b[6;6;10t");
+    ASSERT_STR_EQ(g_output_buf, "\x1b[6;12;20t");
 
     g_output_len = 0;
     g_output_buf[0] = '\0';
     feed(vt, "\x1b[14t");
-    ASSERT_STR_EQ(g_output_buf, "\x1b[4;144;800t");
+    ASSERT_STR_EQ(g_output_buf, "\x1b[4;288;1600t"); /* 24*12, 80*20 */
+
+    cfr_free(vt);
+}
+
+/* The two cell-size oracles agree: CSI 16 t reports device pixels, OSC
+ * 1337 ReportCellSize reports iTerm2's points + scale, and the physical
+ * cell == points x scale. A client can size its canvas from either and
+ * land on the same device extent. */
+static void test_cell_size_reports_agree(void)
+{
+    CfrTerm *vt = make_term(24, 80);
+    cfr_set_cell_pixels(vt, 20, 12);
+    cfr_set_content_scale(vt, 2.0f);
+
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    feed(vt, "\x1b[16t");
+    int dev_h = 0, dev_w = 0;
+    ASSERT_EQ(sscanf(g_output_buf, "\x1b[6;%d;%dt", &dev_h, &dev_w), 2);
+
+    g_output_len = 0;
+    g_output_buf[0] = '\0';
+    feed(vt, "\x1b]1337;ReportCellSize\x07");
+    int pt_h = 0, pt_w = 0;
+    float scale = 0.0f;
+    ASSERT_EQ(sscanf(g_output_buf, "\x1b]1337;ReportCellSize=%d;%d;%f",
+                     &pt_h, &pt_w, &scale),
+              3);
+    ASSERT_EQ(dev_h, (int)((float)pt_h * scale));
+    ASSERT_EQ(dev_w, (int)((float)pt_w * scale));
 
     cfr_free(vt);
 }
@@ -2556,7 +2583,8 @@ int main(int argc, char *argv[])
     RUN_TEST(test_decrqm_dec_modes);
     RUN_TEST(test_decrqm_dec_fixed_modes);
     RUN_TEST(test_decrqm_altscreen);
-    RUN_TEST(test_xtwinops_logical_pixels);
+    RUN_TEST(test_xtwinops_device_pixels);
+    RUN_TEST(test_cell_size_reports_agree);
     RUN_TEST(test_cfr_px_logical);
     RUN_TEST(test_altscreen_save_restore);
     RUN_TEST(test_altscreen_decsc_does_not_clobber_1049);
