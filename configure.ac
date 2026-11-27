@@ -217,41 +217,6 @@ if test "x$host_windows" = "xno"; then
   ])
 fi
 
-dnl Optional: ThorVG for Lottie animation rasterization.
-dnl When found, coffer links libthorvg-1 and the lottie subsystem produces
-dnl real RGBA pixels; otherwise the RGBA buffer is zeroed and APC sequences
-dnl are accepted but produce no visible output.
-AC_ARG_ENABLE([thorvg],
-    [AS_HELP_STRING([--disable-thorvg],
-        [disable ThorVG Lottie rasterization even if libthorvg-1 is found])],
-    [enable_thorvg="$enableval"],
-    [enable_thorvg=auto])
-
-HAVE_THORVG=no
-AS_IF([test "x$enable_thorvg" != xno], [
-    PKG_CHECK_MODULES([THORVG], [thorvg-1], [
-        HAVE_THORVG=yes
-        AC_DEFINE([HAVE_THORVG], [1], [Define to 1 if ThorVG is available])
-    ], [
-        AS_IF([test "x$enable_thorvg" = xyes], [
-            AC_MSG_ERROR([ThorVG was explicitly requested but thorvg-1 was not found])
-        ])
-        AC_MSG_NOTICE([thorvg-1 not found — Lottie rasterization will be disabled])
-    ])
-])
-AM_CONDITIONAL([HAVE_THORVG], [test "x$HAVE_THORVG" = xyes])
-
-dnl Propagate ThorVG dependency through pkg-config so consumers link it.
-AS_IF([test "x$HAVE_THORVG" = xyes], [
-    THORVG_REQUIRES="thorvg-1"
-    THORVG_LIBS="$THORVG_LIBS"
-], [
-    THORVG_REQUIRES=""
-    THORVG_LIBS=""
-])
-AC_SUBST([THORVG_REQUIRES])
-AC_SUBST([THORVG_LIBS])
-
 # stb_image is a single-file header library used by image_decode.c for
 # PNG/JPEG decoding (iTerm2 inline images, kitty graphics). It lives in
 # third_party/stb/stb_image.h. Fetched by scripts/fetch-stb.sh if missing.

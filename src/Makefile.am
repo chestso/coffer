@@ -57,12 +57,6 @@ coffer_LDADD = libcoffer.a -lm
 # automake does not ship man_MANS on its own.
 EXTRA_DIST = $(man1_MANS)
 
-if HAVE_THORVG
-libcoffer_a_CPPFLAGS += $(THORVG_CFLAGS)
-coffer_CPPFLAGS += $(THORVG_CFLAGS)
-coffer_LDADD += $(THORVG_LIBS)
-endif
-
 # Windows PTY + bundled ConPTY loader, shared with test_cfr_pty.
 if HOST_WINDOWS
 noinst_LIBRARIES = libcofferpty.a

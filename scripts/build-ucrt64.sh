@@ -22,9 +22,8 @@
 #
 # Can be launched from any shell (git-bash, cmd, PowerShell, or an MSYS2
 # shell); it re-execs into a real MSYS2 shell via msys2_shell.cmd.  The
-# prerequisites (a compiler, autotools, and optionally ThorVG for Lottie
-# rasterization) must already be installed — see the README Windows section
-# for the pacman command. This script never runs pacman itself.
+# prerequisites (a compiler and autotools) must already be installed — see
+# the README Windows section. This script never runs pacman itself.
 #
 # Usage:
 #   ./scripts/build-ucrt64.sh            # autogen + configure + make + check
@@ -34,7 +33,6 @@
 #
 # Extra args are forwarded to configure, e.g.:
 #   ./scripts/build-ucrt64.sh --enable-release
-#   ./scripts/build-ucrt64.sh --disable-thorvg
 
 set -eu
 

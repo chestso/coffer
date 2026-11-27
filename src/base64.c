@@ -46,6 +46,32 @@ int cfr_buf_append(CfrTerm *vt, uint8_t **buf, size_t *len, size_t *cap,
     return 0;
 }
 
+char *cfr_base64_encode(CfrTerm *vt, const uint8_t *in, size_t in_len,
+                        size_t *out_len)
+{
+    static const char chars[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t cap = ((in_len + 2) / 3) * 4 + 1;
+    char *out = cfr_alloc(vt, cap);
+    if (!out)
+        return NULL;
+    size_t n = 0;
+    for (size_t i = 0; i < in_len; i += 3) {
+        uint32_t a = in[i];
+        uint32_t b = i + 1 < in_len ? in[i + 1] : 0;
+        uint32_t c = i + 2 < in_len ? in[i + 2] : 0;
+        uint32_t triple = (a << 16) | (b << 8) | c;
+        out[n++] = chars[(triple >> 18) & 0x3f];
+        out[n++] = chars[(triple >> 12) & 0x3f];
+        out[n++] = i + 1 < in_len ? chars[(triple >> 6) & 0x3f] : '=';
+        out[n++] = i + 2 < in_len ? chars[triple & 0x3f] : '=';
+    }
+    out[n] = '\0';
+    if (out_len)
+        *out_len = n;
+    return out;
+}
+
 static int b64_val(char c)
 {
     if (c >= 'A' && c <= 'Z')

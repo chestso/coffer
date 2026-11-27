@@ -92,6 +92,8 @@ void cfr_img_store_free(void *vt, CfrImgStore *st)
      * the buffer pool, so they must be released here, not just the
      * display buffer. */
     for (int i = 0; i < st->img_count; i++) {
+        if (st->imgs[i].source_state_free)
+            st->imgs[i].source_state_free(cvt, st->imgs[i].source_state);
         img_frames_release(cvt, st, &st->imgs[i]);
         img_root_release(cvt, st, &st->imgs[i]);
         cfr_dealloc(cvt, st->imgs[i].rgba);
@@ -207,6 +209,8 @@ static void img_rec_release(void *vt, CfrImgStore *st, int idx)
     uint8_t kind = r->kind;
     uint8_t screen = r->screen;
     st->live_bytes -= r->cap;
+    if (r->source_state_free)
+        r->source_state_free(vt, r->source_state);
     img_frames_release(vt, st, r);
     img_root_release(vt, st, r);
     img_buf_release(vt, st, r->rgba, r->cap);
@@ -467,6 +471,8 @@ int cfr_img_add_placement(void *vt, CfrImgStore *st, uint64_t image_handle,
     pl->screen = screen;
     pl->abs_line = abs_line;
     pl->col = col;
+    pl->requested_abs_line = abs_line;
+    pl->requested_col = col;
     pl->rows = rows;
     pl->cols = cols;
     pl->layer = layer;
@@ -668,6 +674,8 @@ int cfr_img_add(void *vt, CfrImgStore *st,
     r->rgba = buf;
     r->cap = cap;
     st->live_bytes += cap;
+    r->source_state = NULL;
+    r->source_state_free = NULL;
     r->frames = NULL;
     r->frame_count = 0;
     r->frame_cap = 0;
@@ -685,6 +693,44 @@ int cfr_img_add(void *vt, CfrImgStore *st,
 
     img_damage(cvt, screen, abs_line, rows_tall);
     img_advance_cursor(cvt, rows_tall, cols_wide);
+    return st->img_count - 1;
+}
+
+int cfr_img_add_object(void *vt, CfrImgStore *st, uint64_t id,
+                       uint8_t layer, uint8_t source, void *source_state,
+                       void (*source_state_free)(void *vt, void *state))
+{
+    if (!st)
+        return -1;
+    uint8_t screen = (uint8_t)((CfrTerm *)vt)->in_altscreen;
+    int existing = cfr_img_find_by_source_id(st, source, id, screen);
+    if (existing >= 0)
+        return existing;
+
+    img_evict_for_cap(vt, st);
+    if (st->img_count >= st->img_cap) {
+        int ncap = st->img_cap ? st->img_cap * 2 : 8;
+        if (ncap > IMG_MAX_IMAGES)
+            ncap = IMG_MAX_IMAGES;
+        CfrImg *nr = cfr_realloc(vt, st->imgs, (size_t)ncap * sizeof(CfrImg));
+        if (!nr)
+            return -1;
+        st->imgs = nr;
+        st->img_cap = ncap;
+    }
+
+    CfrImg *r = &st->imgs[st->img_count++];
+    memset(r, 0, sizeof(*r));
+    r->id = id;
+    r->handle = st->next_handle++;
+    r->seq = st->next_seq++;
+    r->version = ++st->version_seq;
+    r->layer = layer;
+    r->source = source;
+    r->kind = IMG_KIND_REFERENCED;
+    r->screen = screen;
+    r->source_state = source_state;
+    r->source_state_free = source_state_free;
     return st->img_count - 1;
 }
 
@@ -782,6 +828,8 @@ int cfr_img_put_named(void *vt, CfrImgStore *st,
     r->rgba = buf;
     r->cap = cap;
     st->live_bytes += cap;
+    r->source_state = NULL;
+    r->source_state_free = NULL;
     r->frames = NULL;
     r->frame_count = 0;
     r->frame_cap = 0;
@@ -1475,7 +1523,7 @@ const CfrImage *cfr_img_get(void *vt, CfrImgStore *st, int *out_count)
 
     for (int i = 0; i < st->img_count; ++i) {
         CfrImg *r = &st->imgs[i];
-        if (r->screen != active)
+        if (r->screen != active || r->source == IMG_SRC_LOTTIE)
             continue;
         CfrImage *v = &st->img_scratch[n++];
         v->id = r->id;

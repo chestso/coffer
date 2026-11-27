@@ -232,8 +232,6 @@ void cfr_scrollback_set_capacity(CfrTerm *vt, int lines)
         cfr_selection_clear(vt);
     if (vt->images)
         cfr_img_note_scroll(vt, vt->images, 0);
-    if (vt->lottie)
-        cfr_lottie_note_scroll(vt, 0);
 }
 
 const CfrPage *cfr_sb_page_for_row(const CfrTerm *vt, int sb_row,

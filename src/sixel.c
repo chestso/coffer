@@ -547,8 +547,11 @@ void cfr_set_cell_pixels(CfrTerm *vt, int cell_w_px, int cell_h_px)
 {
     if (!vt || cell_w_px <= 0 || cell_h_px <= 0)
         return;
+    if (vt->cell_w_px == cell_w_px && vt->cell_h_px == cell_h_px)
+        return;
     vt->cell_w_px = cell_w_px;
     vt->cell_h_px = cell_h_px;
+    cfr_lottie_cell_pixels_changed(vt);
 }
 
 void cfr_set_content_scale(CfrTerm *vt, float scale)

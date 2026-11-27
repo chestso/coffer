@@ -102,8 +102,6 @@ void cfr_set_altscreen(CfrTerm *vt, bool on, bool save_restore_cursor)
      * the alt screen is active). */
     if (vt->images)
         cfr_img_screen_switch(vt, vt->images);
-    if (vt->lottie)
-        cfr_lottie_screen_switch(vt);
 
     if (on) {
         if (save_restore_cursor)

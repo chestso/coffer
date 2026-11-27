@@ -8,4 +8,4 @@ Description: Standalone virtual terminal engine (UAX-aware grapheme clustering, 
 URL: https://github.com/chestso/coffer
 Version: @COFFER_VERSION@
 Cflags: -I${includedir}
-Libs: -L${libdir} -lcoffer @THORVG_LIBS@ -lm
+Libs: -L${libdir} -lcoffer -lm

@@ -13,12 +13,9 @@ Build them against a built coffer tree:
 cd tests/repro
 for f in *.c; do
     gcc -g -O0 -I../../include "$f" ../../build/src/libcoffer.a \
-        -lm -lthorvg-1 -o "${f%.c}" || echo "skip $f (no thorvg?)"
+        -lm -o "${f%.c}"
 done
 ```
-
-(`-lthorvg-1` is only needed for the Lottie case; drop it when coffer
-is built without ThorVG.)
 
 | Program       | Finding | What it shows                                                                |
 | ------------- | ------- | ---------------------------------------------------------------------------- |

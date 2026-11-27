@@ -2633,15 +2633,13 @@ static void test_delete_all_is_kitty_only(void)
     /* A Lottie animation with the same id, in the same store. */
     CfrImgStore *store = cfr_img_get_store(vt);
     ASSERT_NOT_NULL(store);
-    uint8_t pixels[4 * 4 * 4] = { 0 };
-    pixels[0] = 255;
-    int lottie = cfr_img_put_named(vt, store, 1, pixels, 4, 4, 0,
-                                   IMG_SRC_LOTTIE);
+    int lottie = cfr_img_add_object(vt, store, 1, 0, IMG_SRC_LOTTIE,
+                                    NULL, NULL);
     ASSERT_TRUE(lottie >= 0);
 
     int count = 0;
     cfr_get_images(vt, &count);
-    ASSERT_EQ(count, 2);
+    ASSERT_EQ(count, 1);
 
     /* d=a removes the kitty placement only; the Lottie animation and
      * the kitty's soft-deleted data both survive. */
@@ -2650,17 +2648,16 @@ static void test_delete_all_is_kitty_only(void)
     cfr_get_image_placements(vt, &pc);
     ASSERT_EQ(pc, 0);
     cfr_get_images(vt, &count);
-    ASSERT_EQ(count, 2);
+    ASSERT_EQ(count, 1);
 
     /* With a visible placement again, the uppercase form frees the
      * kitty data — not the Lottie. */
     feed(vt, "\x1b_Ga=p,i=1,U=1\x1b\\");
     feed(vt, "\x1b_Ga=d,d=A\x1b\\");
     cfr_get_images(vt, &count);
-    ASSERT_EQ(count, 1);
-    const CfrImage *imgs = cfr_get_images(vt, &count);
-    ASSERT_EQ(imgs[0].source, IMG_SRC_LOTTIE);
-    ASSERT_EQ((long long)imgs[0].id, 1);
+    ASSERT_EQ(count, 0);
+    ASSERT_TRUE(cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE, 1,
+                                          IMG_SCREEN_MAIN) >= 0);
 
     cfr_free(vt);
 }
@@ -2680,15 +2677,13 @@ static void test_delete_by_id_is_kitty_scoped(void)
     feed(vt, seq);
 
     CfrImgStore *store = cfr_img_get_store(vt);
-    uint8_t pixels[4 * 4 * 4] = { 0 };
-    pixels[0] = 255;
-    int lottie = cfr_img_put_named(vt, store, 1, pixels, 4, 4, 0,
-                                   IMG_SRC_LOTTIE);
+    int lottie = cfr_img_add_object(vt, store, 1, 0, IMG_SRC_LOTTIE,
+                                    NULL, NULL);
     ASSERT_TRUE(lottie >= 0);
 
     int count = 0;
     cfr_get_images(vt, &count);
-    ASSERT_EQ(count, 2);
+    ASSERT_EQ(count, 1);
 
     /* d=i removes the kitty image's placements; both records stay (the
      * lowercase form keeps data). */
@@ -2697,14 +2692,14 @@ static void test_delete_by_id_is_kitty_scoped(void)
     cfr_get_image_placements(vt, &pc);
     ASSERT_EQ(pc, 0);
     cfr_get_images(vt, &count);
-    ASSERT_EQ(count, 2);
+    ASSERT_EQ(count, 1);
 
     /* d=I frees the kitty image's data — and only that. */
     feed(vt, "\x1b_Ga=d,d=I,i=1\x1b\\");
     cfr_get_images(vt, &count);
-    ASSERT_EQ(count, 1);
-    const CfrImage *imgs = cfr_get_images(vt, &count);
-    ASSERT_EQ(imgs[0].source, IMG_SRC_LOTTIE);
+    ASSERT_EQ(count, 0);
+    ASSERT_TRUE(cfr_img_find_by_source_id(store, IMG_SRC_LOTTIE, 1,
+                                          IMG_SCREEN_MAIN) >= 0);
 
     cfr_free(vt);
 }

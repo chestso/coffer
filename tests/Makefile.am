@@ -19,12 +19,7 @@ endif
 AM_TESTS_ENVIRONMENT = srcdir='$(srcdir)'; export srcdir;
 LDADD = $(top_builddir)/src/libcoffer.a -lm
 
-if HAVE_THORVG
-LDADD += $(THORVG_LIBS)
-AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src -I$(srcdir) $(THORVG_CFLAGS)
-else
 AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src -I$(srcdir)
-endif
 
 # The PTY layer (src/pty_posix.c or src/pty_w32.c + conpty.c) is shared
 # with the CLI.

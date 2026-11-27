@@ -1,44 +1,14 @@
-/* lottie.c — Lottie animation subsystem for coffer.
+/* lottie.c — Lottie animation protocol for coffer.
  *
- * Parses APC sequences (ESC _ ... ST), manages animation state, rasterizes
- * frames via ThorVG, and exposes RGBA pixel data through cfr_get_lotties().
- *
- * Architecture mirrors sixel.c: engine owns all pixel data, host does
- * texture cache + compositing only. */
+ * Parses APC sequences (ESC _ ... ST), owns animation definitions, placements
+ * and playback clocks, and exposes the frame the host should rasterize. Pixel
+ * production and raster caches belong to the host renderer. */
 
 #include "coffer_internal.h"
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
-#ifdef HAVE_THORVG
-#include <thorvg_capi.h>
-#endif
-
-/* ------------------------------------------------------------------ */
-/* Constants                                                          */
-/* ------------------------------------------------------------------ */
-
-#define LT_MAX_ANIMS      64
-#define LT_MAX_PLACEMENTS 32
-#define LT_SPARE_MAX      16
-#define LT_LIVE_MAX       (128 * 1024 * 1024)
-#define LT_RETAIN_MAX     (64 * 1024 * 1024)
-
-/* ------------------------------------------------------------------ */
-/* Types — all defined up front so functions can reference them       */
-/* ------------------------------------------------------------------ */
-
-typedef struct
-{
-    uint8_t *buf;
-    size_t cap;
-} LtSpare;
 
 enum
 {
@@ -48,78 +18,48 @@ enum
 
 typedef struct
 {
-    uint64_t id;      /* client-assigned, stable cache key */
-    uint32_t version; /* bumps on any state/pixel change */
+    uint32_t definition_rev; /* increments when the JSON document changes */
 
-    /* The screen buffer this animation was loaded on. kitty-style
-     * per-screen sets: an alt-screen animation is dropped when the alt
-     * screen is left, and its client id does not shadow a main-screen
-     * animation's. */
-    uint8_t screen;
+    /* The complete Lottie document. The host reads it when definition_rev
+     * changes; coffer never interprets its vector drawing commands. */
+    uint8_t *json;
+    size_t json_len;
 
-    /* The store-internal handle of this animation's image record in the
-     * shared store (vt->images). The pixel buffer lives there; 0 when
-     * the animation has no image record yet (not yet rasterized).
-     *
-     * The handle (not an index, not the client id) is the reference:
-     * the store's record array is swap-removed, so an index goes stale,
-     * and the client id lives in the Lottie id space, which overlaps
-     * the other protocols'. */
-    uint64_t img_handle;
-
-    /* Parsed Lottie data */
-    void *json_root; /* parsed JSON tree root (arena-allocated) */
-
-    /* Design space from Lottie JSON (w, h fields) */
+    /* Design space from the Lottie JSON (w, h fields). */
     int design_w;
     int design_h;
 
-    /* Rasterization pixel dimensions (design × scale, not cell box) */
+    /* Requested host raster size in device pixels. */
     int px_w;
     int px_h;
 
-    /* Placement region (from load/place commands) */
+    /* Placement region (from load/place commands). */
     int p_width;           /* pixel region width, 0 = no limit */
     int p_height;          /* pixel region height, 0 = no limit */
     int p_cols;            /* cell region width, 0 = no limit */
     int p_rows;            /* cell region height, 0 = no limit */
-    double explicit_scale; /* user scale, only used with fit:"none" (default 1.0) */
+    double explicit_scale; /* user scale, only used with fit:"none" */
     int fit;               /* LT_FIT_CONTAIN or LT_FIT_NONE */
 
-    /* Playback state */
     int current_frame;
-    int frame_ip;    /* Lottie in-point */
-    int frame_op;    /* Lottie out-point */
-    double frame_fr; /* Lottie framerate */
+    int frame_ip;
+    int frame_op;
+    double frame_fr;
     double speed;
     bool playing;
     bool loop;
-    bool dirty; /* frame changed, rgba needs re-upload */
 
-    /* Timing. Playback position is a pure function of presentation time:
+    /* Playback position is a pure function of presentation time:
      *   pos(t) = pos0 + (t - anchor_us) * speed * frame_fr / 1e6
-     * in frames from frame_ip. The anchor is taken at the first
-     * cfr_lottie_present() after the record starts playing, resumes, seeks
-     * or changes speed (anchored == false until then), so a frame's duration
-     * never depends on when the host happened to call. */
+     * in frames from frame_ip. The first present after a playback change
+     * anchors the clock. */
     uint64_t anchor_us;
-    double pos0;     /* frames from frame_ip at anchor_us */
-    double last_pos; /* wrapped position at the last present (re-anchor point) */
+    double pos0;
+    double last_pos;
     bool anchored;
-
-    /* ThorVG rasterization state (only when HAVE_THORVG) */
-#ifdef HAVE_THORVG
-    Tvg_Animation tvg_anim;
-    Tvg_Canvas tvg_canvas;
-#endif
-
-    /* Arena for JSON parse tree */
-    uint8_t *arena_base;
-    size_t arena_offset;
-    size_t arena_cap;
 } LtRec;
 
-/* Chunked upload accumulator */
+/* Chunked upload accumulator. */
 typedef struct
 {
     uint64_t id;
@@ -130,24 +70,14 @@ typedef struct
     int chunks_total;
 } LtChunkAccum;
 
-/* Global Lottie state (analogous to CfrSixelState) */
 struct CfrLottieState
 {
-    LtRec *recs;
-    int rec_count;
-    int rec_cap;
-
     LtChunkAccum *chunks;
     int chunk_count;
     int chunk_cap;
 
-    /* Scratch buffer for cfr_get_lotties() snapshots */
-    uint8_t *scratch;
-    size_t scratch_cap;
-
-    /* Scratch buffer for cfr_get_lottie_placements() snapshots */
-    CfrLottiePlacement *pl_scratch;
-    int pl_scratch_cap;
+    CfrLottie *scratch;
+    int scratch_cap;
 };
 
 /* ------------------------------------------------------------------ */
@@ -179,9 +109,6 @@ static int lt_placements_for_count(CfrTerm *vt, uint64_t id);
 static struct CfrLottieState *lt_state(CfrTerm *vt)
 {
     if (!vt->lottie) {
-#ifdef HAVE_THORVG
-        tvg_engine_init(0);
-#endif
         vt->lottie = cfr_alloc(vt, sizeof(*vt->lottie));
         if (!vt->lottie)
             return NULL;
@@ -199,20 +126,6 @@ static CfrImgStore *lt_store(CfrTerm *vt)
     if (st)
         vt->images = st;
     return st;
-}
-
-/* Return the RGBA buffer for a Lottie animation, or NULL. The record's
- * HANDLE names the image in the store — the client id lives in the
- * Lottie id space, which overlaps the other protocols'. */
-static uint8_t *lt_rgba(CfrTerm *vt, uint64_t handle)
-{
-    CfrImgStore *st = vt->images;
-    if (!st)
-        return NULL;
-    int idx = cfr_img_find_by_handle(st, handle);
-    if (idx < 0)
-        return NULL;
-    return st->imgs[idx].rgba;
 }
 
 /* ------------------------------------------------------------------ */
@@ -239,195 +152,42 @@ static void lt_anchor_keep_position(LtRec *r)
 static LtRec *lt_find_by_id(CfrTerm *vt, struct CfrLottieState *st,
                             uint64_t id)
 {
-    uint8_t screen = (uint8_t)vt->in_altscreen;
-    for (int i = 0; i < st->rec_count; i++) {
-        if (st->recs[i].id == id && st->recs[i].screen == screen)
-            return &st->recs[i];
-    }
-    return NULL;
+    (void)st;
+    if (!vt->images)
+        return NULL;
+    int idx = cfr_img_find_by_source_id(vt->images, IMG_SRC_LOTTIE, id,
+                                        (uint8_t)vt->in_altscreen);
+    return idx >= 0 ? vt->images->imgs[idx].source_state : NULL;
 }
 
-static void lt_rec_release(CfrTerm *vt, struct CfrLottieState *st, int idx)
+static int lt_index_of(CfrTerm *vt, const LtRec *rec)
 {
-    LtRec *r = &st->recs[idx];
-    /* Remove the image (and its placements) from the shared store. The
-     * record's HANDLE names the image: the client id lives in the
-     * Lottie id space, which overlaps the other protocols'. */
-    if (vt->images && r->img_handle) {
-        int ii = cfr_img_find_by_handle(vt->images, r->img_handle);
-        if (ii >= 0)
-            cfr_img_remove(vt, vt->images, ii);
+    if (!vt->images)
+        return -1;
+    for (int i = 0; i < vt->images->img_count; i++) {
+        if (vt->images->imgs[i].source == IMG_SRC_LOTTIE &&
+            vt->images->imgs[i].source_state == rec)
+            return i;
     }
-    if (r->arena_base)
-        cfr_dealloc(vt, r->arena_base);
-#ifdef HAVE_THORVG
-    if (r->tvg_canvas && r->tvg_anim) {
-        Tvg_Paint pic = tvg_animation_get_picture(r->tvg_anim);
-        tvg_canvas_remove(r->tvg_canvas, pic);
-    }
-    if (r->tvg_anim)
-        tvg_animation_del(r->tvg_anim);
-    if (r->tvg_canvas)
-        tvg_canvas_destroy(r->tvg_canvas);
-    r->tvg_canvas = NULL;
-    r->tvg_anim = NULL;
-#endif
-    st->recs[idx] = st->recs[--st->rec_count];
+    return -1;
 }
 
-/* ------------------------------------------------------------------ */
-/* ThorVG rasterization                                                */
-/* ------------------------------------------------------------------ */
-
-#ifdef HAVE_THORVG
-static uint8_t lt_srgb_lut[256];
-static bool lt_srgb_lut_init = false;
-
-static void lt_srgb_lut_ensure(void)
+static void lt_rec_free(void *vt, void *state)
 {
-    if (lt_srgb_lut_init)
+    LtRec *rec = state;
+    if (!rec)
         return;
-    for (int i = 0; i < 256; i++) {
-        float s = (float)i / 255.0f;
-        float l = s <= 0.04045f ? s / 12.92f
-                                : powf((s + 0.055f) / 1.055f, 2.4f);
-        int out = (int)(l * 255.0f + 0.5f);
-        lt_srgb_lut[i] = (uint8_t)(out < 0 ? 0 : out > 255 ? 255
-                                                           : out);
-    }
-    lt_srgb_lut_init = true;
+    cfr_dealloc(vt, rec->json);
+    cfr_dealloc(vt, rec);
 }
 
-static void lt_linearize_rgba(uint8_t *rgba, int w, int h)
+/* Bump the globally unique pixel generation for this animation. */
+static void lt_touch_raster(CfrTerm *vt, LtRec *rec)
 {
-    lt_srgb_lut_ensure();
-
-    /* ThorVG renders to ARGB8888 with premultiplied alpha
-     * (little-endian memory: B,G,R,A bytes; uint32 = A<<24|R<<16|G<<8|B).
-     * The host renderer expects RGBA32 (R,G,B,A) with non-premultiplied
-     * alpha, pre-linearized for the linear-light compositing path.
-     * Un-premultiply, swap R<->B, linearize RGB.
-     * Skip fully transparent pixels (alpha=0) — they're already zero. */
-    const uint8_t *lut = lt_srgb_lut;
-    size_t n = (size_t)w * (size_t)h;
-    for (size_t i = 0; i < n; i++) {
-        uint8_t *px = rgba + i * 4;
-        uint8_t a = px[3];
-        if (a == 0) {
-            px[0] = px[1] = px[2] = 0;
-            continue;
-        }
-        uint8_t b = px[0];
-        uint8_t g = px[1];
-        uint8_t r = px[2];
-        if (a < 255) {
-            r = (uint8_t)((int)r * 255 / a);
-            g = (uint8_t)((int)g * 255 / a);
-            b = (uint8_t)((int)b * 255 / a);
-        }
-        px[0] = lut[r];
-        px[1] = lut[g];
-        px[2] = lut[b];
-    }
+    int idx = lt_index_of(vt, rec);
+    if (idx >= 0)
+        vt->images->imgs[idx].version = ++vt->images->version_seq;
 }
-
-static void lt_rasterize(CfrTerm *vt, LtRec *r)
-{
-    if (!r->tvg_anim || !r->tvg_canvas)
-        return;
-    if (r->px_w <= 0 || r->px_h <= 0)
-        return;
-
-    Tvg_Result sf_res =
-        tvg_animation_set_frame(r->tvg_anim, (float)r->current_frame);
-    /* ThorVG 1.0 on Windows returns INSUFFICIENT_CONDITION on the first
-     * set_frame call after loading a Lottie animation.  Performing a
-     * full draw cycle at a different frame index forces ThorVG to fully
-     * initialise the animation; the target frame can then be set. */
-    if (sf_res != TVG_RESULT_SUCCESS) {
-        float warm = (float)r->current_frame + 1.0f;
-        tvg_animation_set_frame(r->tvg_anim, warm);
-        tvg_canvas_update(r->tvg_canvas);
-        tvg_canvas_draw(r->tvg_canvas, true);
-        tvg_canvas_sync(r->tvg_canvas);
-        tvg_animation_set_frame(r->tvg_anim, (float)r->current_frame);
-    }
-    tvg_canvas_update(r->tvg_canvas);
-    tvg_canvas_draw(r->tvg_canvas, true);
-    tvg_canvas_sync(r->tvg_canvas);
-
-    uint8_t *rgba = lt_rgba(vt, r->img_handle);
-    if (rgba)
-        lt_linearize_rgba(rgba, r->px_w, r->px_h);
-    r->dirty = true;
-}
-
-static bool lt_tvg_init(CfrTerm *vt, LtRec *r)
-{
-    uint8_t *rgba = lt_rgba(vt, r->img_handle);
-    if (!rgba)
-        return false;
-
-    r->tvg_anim = tvg_animation_new();
-    if (!r->tvg_anim)
-        return false;
-
-    Tvg_Paint picture = tvg_animation_get_picture(r->tvg_anim);
-    if (!picture)
-        goto fail;
-
-    /* Load Lottie JSON from the arena buffer */
-    if (r->arena_base && r->arena_offset > 0) {
-        Tvg_Result res = tvg_picture_load_data(
-            picture, (const char *)r->arena_base,
-            (uint32_t)r->arena_offset, "lottie+json", NULL, true);
-        if (res != TVG_RESULT_SUCCESS)
-            goto fail;
-    } else {
-        goto fail;
-    }
-
-    /* Scale the animation from design space to pixel dimensions */
-    if (r->design_w > 0 && r->design_h > 0 && r->px_w > 0 && r->px_h > 0)
-        tvg_picture_set_size(picture, (float)r->px_w, (float)r->px_h);
-
-    r->tvg_canvas = tvg_swcanvas_create(TVG_ENGINE_OPTION_DEFAULT);
-    if (!r->tvg_canvas)
-        goto fail;
-
-    tvg_swcanvas_set_target(r->tvg_canvas, (uint32_t *)rgba,
-                            (uint32_t)r->px_w,
-                            (uint32_t)r->px_w,
-                            (uint32_t)r->px_h,
-                            TVG_COLORSPACE_ARGB8888);
-    tvg_canvas_add(r->tvg_canvas, picture);
-
-    /* Rasterize the initial frame */
-    lt_rasterize(vt, r);
-    return true;
-
-fail:
-    if (r->tvg_anim && r->tvg_canvas) {
-        Tvg_Paint pic = tvg_animation_get_picture(r->tvg_anim);
-        tvg_canvas_remove(r->tvg_canvas, pic);
-    }
-    if (r->tvg_anim) {
-        tvg_animation_del(r->tvg_anim);
-        r->tvg_anim = NULL;
-    }
-    if (r->tvg_canvas) {
-        tvg_canvas_destroy(r->tvg_canvas);
-        r->tvg_canvas = NULL;
-    }
-    return false;
-}
-#else
-static void lt_rasterize(CfrTerm *vt, LtRec *r)
-{
-    (void)vt;
-    (void)r;
-}
-#endif
 
 /* ------------------------------------------------------------------ */
 /* JSON command parsing                                               */
@@ -562,121 +322,6 @@ static bool lt_json_bool(const char *val, size_t len)
 }
 
 /* ------------------------------------------------------------------ */
-/* Base64 decoder                                                     */
-/* ------------------------------------------------------------------ */
-
-static const int8_t b64_table[256] = {
-    ['A'] = 0,
-    ['B'] = 1,
-    ['C'] = 2,
-    ['D'] = 3,
-    ['E'] = 4,
-    ['F'] = 5,
-    ['G'] = 6,
-    ['H'] = 7,
-    ['I'] = 8,
-    ['J'] = 9,
-    ['K'] = 10,
-    ['L'] = 11,
-    ['M'] = 12,
-    ['N'] = 13,
-    ['O'] = 14,
-    ['P'] = 15,
-    ['Q'] = 16,
-    ['R'] = 17,
-    ['S'] = 18,
-    ['T'] = 19,
-    ['U'] = 20,
-    ['V'] = 21,
-    ['W'] = 22,
-    ['X'] = 23,
-    ['Y'] = 24,
-    ['Z'] = 25,
-    ['a'] = 26,
-    ['b'] = 27,
-    ['c'] = 28,
-    ['d'] = 29,
-    ['e'] = 30,
-    ['f'] = 31,
-    ['g'] = 32,
-    ['h'] = 33,
-    ['i'] = 34,
-    ['j'] = 35,
-    ['k'] = 36,
-    ['l'] = 37,
-    ['m'] = 38,
-    ['n'] = 39,
-    ['o'] = 40,
-    ['p'] = 41,
-    ['q'] = 42,
-    ['r'] = 43,
-    ['s'] = 44,
-    ['t'] = 45,
-    ['u'] = 46,
-    ['v'] = 47,
-    ['w'] = 48,
-    ['x'] = 49,
-    ['y'] = 50,
-    ['z'] = 51,
-    ['0'] = 52,
-    ['1'] = 53,
-    ['2'] = 54,
-    ['3'] = 55,
-    ['4'] = 56,
-    ['5'] = 57,
-    ['6'] = 58,
-    ['7'] = 59,
-    ['8'] = 60,
-    ['9'] = 61,
-    ['+'] = 62,
-    ['/'] = 63,
-};
-
-static size_t lt_base64_decode(const uint8_t *in, size_t in_len,
-                               uint8_t *out, size_t out_cap)
-{
-    size_t out_len = 0;
-    uint32_t accum = 0;
-    int bits = 0;
-
-    for (size_t i = 0; i < in_len && out_len < out_cap; i++) {
-        int8_t v = b64_table[in[i]];
-        if (v < 0)
-            continue;
-        accum = (accum << 6) | (uint32_t)(uint8_t)v;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out[out_len++] = (uint8_t)(accum >> bits);
-        }
-    }
-    return out_len;
-}
-
-static size_t lt_base64_encode(const uint8_t *in, size_t in_len,
-                               char *out, size_t out_cap)
-{
-    static const char chars[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    size_t out_len = 0;
-    for (size_t i = 0; i < in_len; i += 3) {
-        if (out_len + 4 > out_cap)
-            break;
-        uint32_t a = in[i];
-        uint32_t b = (i + 1 < in_len) ? in[i + 1] : 0;
-        uint32_t c = (i + 2 < in_len) ? in[i + 2] : 0;
-        uint32_t t = (a << 16) | (b << 8) | c;
-        out[out_len++] = chars[(t >> 18) & 0x3F];
-        out[out_len++] = chars[(t >> 12) & 0x3F];
-        out[out_len++] = (i + 1 < in_len) ? chars[(t >> 6) & 0x3F] : '=';
-        out[out_len++] = (i + 2 < in_len) ? chars[t & 0x3F] : '=';
-    }
-    if (out_len < out_cap)
-        out[out_len] = '\0';
-    return out_len;
-}
-
-/* ------------------------------------------------------------------ */
 /* Size computation                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -741,10 +386,10 @@ static void lt_emit_report(CfrTerm *vt, uint64_t id,
     if (jn <= 0)
         return;
 
-    char b64[300];
-    size_t b64_len = lt_base64_encode(
-        (const uint8_t *)json, (size_t)jn, b64, sizeof(b64));
-    if (b64_len == 0)
+    size_t b64_len = 0;
+    char *b64 = cfr_base64_encode(vt, (const uint8_t *)json, (size_t)jn,
+                                  &b64_len);
+    if (!b64)
         return;
 
     char seq[340];
@@ -756,18 +401,25 @@ static void lt_emit_report(CfrTerm *vt, uint64_t id,
 #endif
     if (n > 0)
         cfr_emit_bytes(vt, (const uint8_t *)seq, (size_t)n);
+    cfr_dealloc(vt, b64);
 }
 
-static int lt_add_placement(CfrTerm *vt, struct CfrLottieState *st,
-                            LtRec *rec, long abs_line, int col,
-                            int rows, int cols, uint8_t layer, uint8_t opacity)
+static int lt_add_placement(CfrTerm *vt, LtRec *rec,
+                            long requested_abs_line, int requested_col,
+                            long abs_line, int col, int rows, int cols,
+                            uint8_t layer, uint8_t opacity)
 {
-    (void)st;
     CfrImgStore *store = lt_store(vt);
-    if (!store)
+    int idx = lt_index_of(vt, rec);
+    if (!store || idx < 0)
         return -1;
-    return cfr_img_add_placement(vt, store, rec->img_handle, abs_line, col,
-                                 rows, cols, layer, opacity, 0);
+    int pi = cfr_img_add_placement(vt, store, store->imgs[idx].handle,
+                                   abs_line, col, rows, cols, layer, opacity, 0);
+    if (pi >= 0) {
+        store->places[pi].requested_abs_line = requested_abs_line;
+        store->places[pi].requested_col = requested_col;
+    }
+    return pi;
 }
 
 /* ------------------------------------------------------------------ */
@@ -780,6 +432,8 @@ static void lt_damage_placement(CfrTerm *vt, int idx)
     if (!store || idx < 0 || idx >= store->place_count)
         return;
     CfrPlacement *pl = &store->places[idx];
+    if (pl->screen != (uint8_t)vt->in_altscreen)
+        return;
     int top = (int)(pl->abs_line - vt->sixel_abs_top);
     int bot = top + pl->rows - 1;
     if (top < 0)
@@ -793,11 +447,84 @@ static void lt_damage_placement(CfrTerm *vt, int idx)
 static void lt_damage_all_placements(CfrTerm *vt, LtRec *rec)
 {
     CfrImgStore *store = vt->images;
-    if (!store)
+    int idx = lt_index_of(vt, rec);
+    if (!store || idx < 0)
         return;
+    uint64_t handle = store->imgs[idx].handle;
     for (int i = 0; i < store->place_count; i++)
-        if (store->places[i].image_handle == rec->img_handle)
+        if (store->places[i].image_handle == handle)
             lt_damage_placement(vt, i);
+}
+
+static void lt_cell_box(CfrTerm *vt, const LtRec *rec, int *cols, int *rows)
+{
+    *cols = (rec->px_w + vt->cell_w_px - 1) / vt->cell_w_px;
+    *rows = (rec->px_h + vt->cell_h_px - 1) / vt->cell_h_px;
+    if (*cols < 1)
+        *cols = 1;
+    if (*rows < 1)
+        *rows = 1;
+}
+
+/* Recompute every placement from its requested region. The requested anchor
+ * survives centering and cell-metric changes, so a raster is never scaled to
+ * hide stale geometry. */
+static void lt_relayout_placements(CfrTerm *vt, LtRec *rec)
+{
+    CfrImgStore *store = vt->images;
+    int idx = lt_index_of(vt, rec);
+    if (!store || idx < 0)
+        return;
+    uint64_t handle = store->imgs[idx].handle;
+    int cols, rows;
+    lt_cell_box(vt, rec, &cols, &rows);
+
+    for (int i = 0; i < store->place_count; i++) {
+        CfrPlacement *pl = &store->places[i];
+        if (pl->image_handle != handle)
+            continue;
+        lt_damage_placement(vt, i);
+        pl->abs_line = pl->requested_abs_line;
+        pl->col = pl->requested_col;
+        if (rec->p_rows > 0)
+            pl->abs_line += (rec->p_rows - rows) / 2;
+        if (rec->p_cols > 0)
+            pl->col += (rec->p_cols - cols) / 2;
+        if (pl->abs_line < vt->sixel_abs_top)
+            pl->abs_line = vt->sixel_abs_top;
+        if (pl->col < 0)
+            pl->col = 0;
+        pl->rows = rows;
+        pl->cols = cols;
+        lt_damage_placement(vt, i);
+    }
+}
+
+static void lt_recompute_size(CfrTerm *vt, LtRec *rec)
+{
+    double scale = lt_compute_scale(rec->design_w, rec->design_h,
+                                    rec->p_width, rec->p_height,
+                                    rec->p_cols, rec->p_rows,
+                                    vt->cell_w_px, vt->cell_h_px,
+                                    rec->fit, rec->explicit_scale);
+    int px_w = (int)((double)rec->design_w * scale + 0.5);
+    int px_h = (int)((double)rec->design_h * scale + 0.5);
+    if (px_w < 1)
+        px_w = 1;
+    if (px_h < 1)
+        px_h = 1;
+    bool changed = px_w != rec->px_w || px_h != rec->px_h;
+    rec->px_w = px_w;
+    rec->px_h = px_h;
+
+    int idx = lt_index_of(vt, rec);
+    if (idx >= 0) {
+        vt->images->imgs[idx].w = px_w;
+        vt->images->imgs[idx].h = px_h;
+    }
+    if (changed)
+        lt_touch_raster(vt, rec);
+    lt_relayout_placements(vt, rec);
 }
 
 /* ------------------------------------------------------------------ */
@@ -932,6 +659,9 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     if (prows < 1)
         prows = 1;
 
+    int requested_row = prow;
+    int requested_col = pcol;
+
     /* Center cell box within the placement region */
     if (p_cols > 0)
         pcol += (p_cols - pcols) / 2;
@@ -960,75 +690,46 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
             autostart = lt_json_bool(pv, pvlen);
     }
 
-    LtRec *rec = lt_find_by_id(vt, st, id);
-    size_t need = (size_t)px_w * (size_t)px_h * 4;
-    if (need == 0 || need > LT_LIVE_MAX)
-        return; /* single animation larger than the whole budget → drop */
-
-    CfrImgStore *store = lt_store(vt);
-    if (!store)
+    if (!lottie_obj)
         return;
 
+    uint8_t *doc = cfr_alloc(vt, lottie_obj_len + 1);
+    if (!doc)
+        return;
+    memcpy(doc, lottie_obj, lottie_obj_len);
+    doc[lottie_obj_len] = '\0';
+
+    CfrImgStore *store = lt_store(vt);
+    if (!store) {
+        cfr_dealloc(vt, doc);
+        return;
+    }
+
+    LtRec *rec = lt_find_by_id(vt, st, id);
+    int idx;
     if (rec) {
-        if (rec->arena_base)
-            cfr_dealloc(vt, rec->arena_base);
-        rec->arena_base = NULL;
-        rec->arena_offset = 0;
-        rec->arena_cap = 0;
-
-        /* (Re-)size the shared pixel buffer for this id. If the id already
-         * exists but at a different size, put_named grows/replaces the
-         * backing buffer in place. A NULL pixel pointer asks for a zeroed
-         * raster target: the rasterizer writes it and reports the change. */
-        int ii = cfr_img_put_named(vt, store, id, NULL, px_w, px_h,
-                                   layer, IMG_SRC_LOTTIE);
-        if (ii < 0)
-            return;
-        rec->img_handle = store->imgs[ii].handle;
+        idx = lt_index_of(vt, rec);
+        rec->definition_rev++;
+        cfr_dealloc(vt, rec->json);
     } else {
-        if (st->rec_count >= st->rec_cap) {
-            int new_cap = st->rec_cap ? st->rec_cap * 2 : 8;
-            if (new_cap > LT_MAX_ANIMS)
-                new_cap = LT_MAX_ANIMS;
-            LtRec *new_recs = cfr_alloc(vt, (size_t)new_cap * sizeof(LtRec));
-            if (!new_recs)
-                return;
-            if (st->recs) {
-                memcpy(new_recs, st->recs,
-                       (size_t)st->rec_count * sizeof(LtRec));
-                cfr_dealloc(vt, st->recs);
-            }
-            st->recs = new_recs;
-            st->rec_cap = new_cap;
-        }
-        rec = &st->recs[st->rec_count++];
-        memset(rec, 0, sizeof(*rec));
-        rec->id = id;
-        rec->screen = (uint8_t)vt->in_altscreen;
-        rec->img_handle = 0;
-        rec->version = 1;
-
-        /* Store the initial (zeroed) raster target in the shared store. */
-        int ni = cfr_img_put_named(vt, store, id, NULL, px_w, px_h,
-                                   layer, IMG_SRC_LOTTIE);
-        if (ni < 0) {
-            st->rec_count--;
+        rec = cfr_alloc(vt, sizeof(*rec));
+        if (!rec) {
+            cfr_dealloc(vt, doc);
             return;
         }
-        rec->img_handle = store->imgs[ni].handle;
-    }
-
-    if (lottie_obj) {
-        size_t arena_need = lottie_obj_len + 1;
-        rec->arena_base = cfr_alloc(vt, arena_need);
-        if (rec->arena_base) {
-            rec->arena_cap = arena_need;
-            rec->arena_offset = lottie_obj_len;
-            memcpy(rec->arena_base, lottie_obj, lottie_obj_len);
-            rec->arena_base[lottie_obj_len] = '\0';
+        memset(rec, 0, sizeof(*rec));
+        rec->definition_rev = 1;
+        idx = cfr_img_add_object(vt, store, id, layer, IMG_SRC_LOTTIE,
+                                 rec, lt_rec_free);
+        if (idx < 0) {
+            cfr_dealloc(vt, rec);
+            cfr_dealloc(vt, doc);
+            return;
         }
     }
 
+    rec->json = doc;
+    rec->json_len = lottie_obj_len;
     rec->design_w = design_w;
     rec->design_h = design_h;
     rec->px_w = px_w;
@@ -1047,44 +748,20 @@ static void lt_cmd_load(struct CfrLottieState *st, CfrTerm *vt,
     rec->loop = loop;
     rec->playing = autostart;
     lt_anchor_at_frame(rec);
-    rec->dirty = true;
 
-#ifdef HAVE_THORVG
-    /* Destroy any previous ThorVG state for this rec (re-load) */
-    if (rec->tvg_canvas && rec->tvg_anim) {
-        Tvg_Paint pic = tvg_animation_get_picture(rec->tvg_anim);
-        tvg_canvas_remove(rec->tvg_canvas, pic);
-    }
-    if (rec->tvg_anim) {
-        tvg_animation_del(rec->tvg_anim);
-        rec->tvg_anim = NULL;
-    }
-    if (rec->tvg_canvas) {
-        tvg_canvas_destroy(rec->tvg_canvas);
-        rec->tvg_canvas = NULL;
-    }
-    /* Initialize ThorVG and rasterize the first frame */
-    if (!lt_tvg_init(vt, rec)) {
-        uint8_t *rgba = lt_rgba(vt, rec->img_handle);
-        if (rgba)
-            memset(rgba, 0,
-                   (size_t)rec->px_w * (size_t)rec->px_h * 4);
-    }
-#else
-    (void)vt;
-    (void)rec;
-#endif
+    store->imgs[idx].w = px_w;
+    store->imgs[idx].h = px_h;
+    store->imgs[idx].layer = layer;
+    lt_touch_raster(vt, rec);
+    lt_relayout_placements(vt, rec);
 
-    long abs_line = vt->sixel_abs_top + prow;
-    int pi = lt_add_placement(vt, st, rec, abs_line, pcol,
-                              prows, pcols, layer, opacity);
-    if (pi >= 0)
-        lt_damage_placement(vt, pi);
+    lt_add_placement(vt, rec,
+                     vt->sixel_abs_top + requested_row, requested_col,
+                     vt->sixel_abs_top + prow, pcol,
+                     prows, pcols, layer, opacity);
 
     if (want_report)
         lt_emit_report(vt, id, prow, pcol, prows, pcols, px_w, px_h);
-
-    rec->version++;
 }
 
 static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
@@ -1178,73 +855,7 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
         rec->p_rows = new_rows;
         rec->fit = new_fit;
         rec->explicit_scale = new_scale;
-
-        double scale = lt_compute_scale(
-            rec->design_w, rec->design_h,
-            new_w, new_h, new_cols, new_rows,
-            vt->cell_w_px, vt->cell_h_px,
-            new_fit, new_scale);
-
-        int new_px_w = (int)((double)rec->design_w * scale + 0.5);
-        int new_px_h = (int)((double)rec->design_h * scale + 0.5);
-        if (new_px_w < 1)
-            new_px_w = 1;
-        if (new_px_h < 1)
-            new_px_h = 1;
-
-        /* Resize the shared RGBA buffer if size changed. */
-        size_t need = (size_t)new_px_w * (size_t)new_px_h * 4;
-        if (need > LT_LIVE_MAX)
-            return;
-        CfrImgStore *store = lt_store(vt);
-        if (!store)
-            return;
-        int ii = cfr_img_find_by_handle(store, rec->img_handle);
-        if (ii >= 0) {
-            /* cfr_img_replace may realloc the backing buffer to grow it, so
-             * we must not pass the image's own buffer as the source (it
-             * would be freed before the memcpy reads it). Use a zeroed
-             * scratch buffer instead; the next rasterize fills it. */
-            uint8_t *scratch = cfr_alloc(vt, need);
-            if (scratch) {
-                memset(scratch, 0, need);
-                cfr_img_replace(vt, store, ii, scratch, new_px_w, new_px_h);
-                cfr_dealloc(vt, scratch);
-            }
-        }
-
-        rec->px_w = new_px_w;
-        rec->px_h = new_px_h;
-
-#ifdef HAVE_THORVG
-        /* Update ThorVG picture size (no JSON reload) */
-        if (rec->tvg_anim) {
-            Tvg_Paint pic = tvg_animation_get_picture(rec->tvg_anim);
-            tvg_picture_set_size(pic, (float)new_px_w, (float)new_px_h);
-
-            uint8_t *rgba = lt_rgba(vt, rec->img_handle);
-            if (rgba) {
-                /* Recreate SW canvas with new target buffer */
-                if (rec->tvg_canvas) {
-                    tvg_canvas_remove(rec->tvg_canvas,
-                                      tvg_animation_get_picture(rec->tvg_anim));
-                    tvg_canvas_destroy(rec->tvg_canvas);
-                }
-                rec->tvg_canvas = tvg_swcanvas_create(TVG_ENGINE_OPTION_DEFAULT);
-                tvg_swcanvas_set_target(rec->tvg_canvas,
-                                        (uint32_t *)rgba,
-                                        (uint32_t)new_px_w,
-                                        (uint32_t)new_px_w,
-                                        (uint32_t)new_px_h,
-                                        TVG_COLORSPACE_ARGB8888);
-                tvg_canvas_add(rec->tvg_canvas, pic);
-
-                /* Re-rasterize current frame — seamless rescale */
-                lt_rasterize(vt, rec);
-            }
-        }
-#endif
-        rec->version++;
+        lt_recompute_size(vt, rec);
     }
 
     /* Compute placement cells from current rasterization size.
@@ -1256,6 +867,9 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
     if (prows < 1)
         prows = 1;
 
+    int requested_row = prow;
+    int requested_col = pcol;
+
     /* Center cell box within the placement region */
     if (new_cols > 0)
         pcol += (new_cols - pcols) / 2;
@@ -1266,11 +880,10 @@ static void lt_cmd_place(struct CfrLottieState *st, CfrTerm *vt,
     if (pcol < 0)
         pcol = 0;
 
-    long abs_line = vt->sixel_abs_top + prow;
-    int pi = lt_add_placement(vt, st, rec, abs_line, pcol,
-                              prows, pcols, layer, opacity);
-    if (pi >= 0)
-        lt_damage_placement(vt, pi);
+    lt_add_placement(vt, rec,
+                     vt->sixel_abs_top + requested_row, requested_col,
+                     vt->sixel_abs_top + prow, pcol,
+                     prows, pcols, layer, opacity);
 
     if (want_report)
         lt_emit_report(vt, id, prow, pcol, prows, pcols, rec->px_w, rec->px_h);
@@ -1307,9 +920,6 @@ static void lt_cmd_play(struct CfrLottieState *st, CfrTerm *vt,
     val = lt_json_find_key(json, json_len, "loop", &vlen);
     if (val)
         rec->loop = lt_json_bool(val, vlen);
-
-    rec->version++;
-    lt_damage_all_placements(vt, rec);
 }
 
 static void lt_cmd_pause(struct CfrLottieState *st, CfrTerm *vt,
@@ -1329,8 +939,6 @@ static void lt_cmd_pause(struct CfrLottieState *st, CfrTerm *vt,
 
     rec->playing = false;
     lt_anchor_at_frame(rec);
-    rec->version++;
-    lt_damage_all_placements(vt, rec);
 }
 
 static void lt_cmd_stop(struct CfrLottieState *st, CfrTerm *vt,
@@ -1349,12 +957,12 @@ static void lt_cmd_stop(struct CfrLottieState *st, CfrTerm *vt,
         return;
 
     rec->playing = false;
-    rec->current_frame = rec->frame_ip;
+    if (rec->current_frame != rec->frame_ip) {
+        rec->current_frame = rec->frame_ip;
+        lt_touch_raster(vt, rec);
+        lt_damage_all_placements(vt, rec);
+    }
     lt_anchor_at_frame(rec);
-    rec->dirty = true;
-    lt_rasterize(vt, rec);
-    rec->version++;
-    lt_damage_all_placements(vt, rec);
 }
 
 static void lt_cmd_seek(struct CfrLottieState *st, CfrTerm *vt,
@@ -1383,12 +991,10 @@ static void lt_cmd_seek(struct CfrLottieState *st, CfrTerm *vt,
 
     if (rec->current_frame != frame) {
         rec->current_frame = frame;
-        rec->dirty = true;
-        lt_rasterize(vt, rec);
+        lt_touch_raster(vt, rec);
+        lt_damage_all_placements(vt, rec);
     }
     lt_anchor_at_frame(rec);
-    rec->version++;
-    lt_damage_all_placements(vt, rec);
 }
 
 static void lt_cmd_delete(struct CfrLottieState *st, CfrTerm *vt,
@@ -1406,8 +1012,9 @@ static void lt_cmd_delete(struct CfrLottieState *st, CfrTerm *vt,
     if (!rec)
         return;
 
-    lt_damage_all_placements(vt, rec);
-    lt_rec_release(vt, st, (int)(rec - st->recs));
+    int idx = lt_index_of(vt, rec);
+    if (idx >= 0)
+        cfr_img_remove(vt, vt->images, idx);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1501,32 +1108,19 @@ static void lt_cmd_load_chunk(struct CfrLottieState *st, CfrTerm *vt,
             return;
     }
 
-    /* Decode the base64 data field */
-    size_t dec_cap = b64_len;
-    uint8_t *decoded = cfr_alloc(vt, dec_cap + 1);
+    size_t dec_len = 0;
+    uint8_t *decoded = cfr_base64_decode(vt, (const char *)b64_in, b64_len,
+                                         &dec_len);
     if (!decoded) {
         lt_chunk_discard(vt, st, c);
         return;
     }
-    size_t dec_len = lt_base64_decode(b64_in, b64_len, decoded, dec_cap);
-
-    if (c->buf_len + dec_len > c->buf_cap) {
-        size_t new_cap = (c->buf_len + dec_len) * 2;
-        uint8_t *new_buf = cfr_alloc(vt, new_cap);
-        if (!new_buf) {
-            cfr_dealloc(vt, decoded);
-            lt_chunk_discard(vt, st, c);
-            return;
-        }
-        if (c->buf_len > 0)
-            memcpy(new_buf, c->buf, c->buf_len);
-        if (c->buf)
-            cfr_dealloc(vt, c->buf);
-        c->buf = new_buf;
-        c->buf_cap = new_cap;
+    if (cfr_buf_append(vt, &c->buf, &c->buf_len, &c->buf_cap,
+                       decoded, dec_len) < 0) {
+        cfr_dealloc(vt, decoded);
+        lt_chunk_discard(vt, st, c);
+        return;
     }
-    memcpy(c->buf + c->buf_len, decoded, dec_len);
-    c->buf_len += dec_len;
     c->chunks_received++;
     cfr_dealloc(vt, decoded);
 
@@ -1569,12 +1163,11 @@ void cfr_lottie_apc_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
     if (!st)
         return;
 
-    size_t dec_cap = body_len;
-    uint8_t *decoded = cfr_alloc(vt, dec_cap + 1);
+    size_t dec_len = 0;
+    uint8_t *decoded = cfr_base64_decode(vt, (const char *)body, body_len,
+                                         &dec_len);
     if (!decoded)
         return;
-    size_t dec_len = lt_base64_decode(body, body_len, decoded, dec_cap);
-    decoded[dec_len] = '\0';
 
     size_t cmd_len;
     const char *cmd = lt_json_find_key((const char *)decoded, dec_len,
@@ -1610,8 +1203,7 @@ void cfr_lottie_apc_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len)
 
 bool cfr_lottie_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us)
 {
-    struct CfrLottieState *st = vt->lottie;
-    if (!st || st->rec_count == 0)
+    if (!vt || !vt->images)
         return false;
 
     /* The frame is on screen for [present_us, present_us + hold_us); sample
@@ -1621,9 +1213,12 @@ bool cfr_lottie_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us)
     const uint64_t sample_us = present_us + hold_us / 2;
     bool any_advanced = false;
 
-    for (int i = 0; i < st->rec_count; i++) {
-        LtRec *r = &st->recs[i];
-        if (!r->playing)
+    for (int i = 0; i < vt->images->img_count; i++) {
+        CfrImg *img = &vt->images->imgs[i];
+        if (img->source != IMG_SRC_LOTTIE)
+            continue;
+        LtRec *r = img->source_state;
+        if (!r || !r->playing)
             continue;
 
         const double span = (double)(r->frame_op - r->frame_ip);
@@ -1647,17 +1242,15 @@ bool cfr_lottie_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us)
         }
         r->last_pos = pos;
 
-        int idx = (int)pos;
-        if (idx >= (int)span)
-            idx = (int)span - 1;
-        int new_frame = r->frame_ip + idx;
+        int frame_idx = (int)pos;
+        if (frame_idx >= (int)span)
+            frame_idx = (int)span - 1;
+        int new_frame = r->frame_ip + frame_idx;
 
         if (new_frame != r->current_frame) {
             r->current_frame = new_frame;
-            r->dirty = true;
-            lt_rasterize(vt, r);
+            img->version = ++vt->images->version_seq;
             lt_damage_all_placements(vt, r);
-            r->version++;
             any_advanced = true;
         }
     }
@@ -1665,140 +1258,24 @@ bool cfr_lottie_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us)
     return any_advanced;
 }
 
-bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us)
-{
-    return cfr_lottie_present(vt, now_us, 0);
-}
-
 int cfr_lottie_playing_count(CfrTerm *vt)
 {
-    struct CfrLottieState *st = vt->lottie;
-    if (!st)
+    if (!vt || !vt->images)
         return 0;
     int n = 0;
-    for (int i = 0; i < st->rec_count; i++) {
-        if (st->recs[i].playing)
-            n++;
+    for (int i = 0; i < vt->images->img_count; i++) {
+        CfrImg *img = &vt->images->imgs[i];
+        if (img->source == IMG_SRC_LOTTIE && img->source_state) {
+            LtRec *rec = img->source_state;
+            if (rec->playing)
+                n++;
+        }
     }
     return n;
 }
 
-const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count)
-{
-    struct CfrLottieState *st = vt->lottie;
-    if (!st || st->rec_count == 0) {
-        *out_count = 0;
-        return NULL;
-    }
-
-    size_t total = (size_t)st->rec_count * sizeof(CfrLottie);
-    if (total > st->scratch_cap) {
-        size_t new_cap = total * 2;
-        uint8_t *new_scratch = cfr_alloc(vt, new_cap);
-        if (!new_scratch) {
-            *out_count = 0;
-            return NULL;
-        }
-        if (st->scratch)
-            cfr_dealloc(vt, st->scratch);
-        st->scratch = new_scratch;
-        st->scratch_cap = new_cap;
-    }
-
-    uint8_t active = (uint8_t)vt->in_altscreen;
-    int n = 0;
-    for (int i = 0; i < st->rec_count; i++) {
-        LtRec *r = &st->recs[i];
-        if (r->screen != active)
-            continue;
-        CfrLottie *l = &((CfrLottie *)st->scratch)[n++];
-        l->id = r->id;
-        l->version = r->version;
-        l->canvas_w = r->px_w;
-        l->canvas_h = r->px_h;
-        l->rgba = lt_rgba(vt, r->img_handle);
-        l->current_frame = r->current_frame;
-        l->frame_count = r->frame_op - r->frame_ip;
-        l->playing = r->playing;
-        l->speed = r->speed;
-        l->loop = r->loop;
-        l->placement_count = lt_placements_for_count(vt, r->id);
-        r->dirty = false;
-    }
-
-    if (n == 0) {
-        *out_count = 0;
-        return NULL;
-    }
-
-    *out_count = n;
-    return (CfrLottie *)st->scratch;
-}
-
-const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
-                                                    int *out_count)
-{
-    struct CfrLottieState *st = vt->lottie;
-    if (!st) {
-        *out_count = 0;
-        return NULL;
-    }
-
-    LtRec *rec = lt_find_by_id(vt, st, id);
-    if (!rec) {
-        *out_count = 0;
-        return NULL;
-    }
-
-    /* Lottie placements now live in the shared store as CfrPlacement,
-     * which has the same trailing layout as CfrLottiePlacement plus the
-     * kitty-only src/z_index fields. Copy into the lottie scratch. */
-    CfrImgStore *store = vt->images;
-    if (!store) {
-        *out_count = 0;
-        return NULL;
-    }
-
-    const CfrImagePlacement *pls =
-        cfr_img_get_placements_for(vt, store, IMG_SRC_LOTTIE, id, out_count);
-    if (!pls)
-        return NULL;
-
-    int need = *out_count;
-    /* Reuse the lottie scratch (CfrLottiePlacement is a prefix-compatible
-     * prefix of CfrImagePlacement, so copy field-by-field with an alloc'd
-     * scratch since CfrLottiePlacement dropped abs_line/row in the store). */
-    if (st->pl_scratch_cap < need) {
-        int ncap = st->pl_scratch_cap ? st->pl_scratch_cap * 2 : 8;
-        while (ncap < need)
-            ncap *= 2;
-        CfrLottiePlacement *ns = cfr_alloc(vt, (size_t)ncap * sizeof(*ns));
-        if (!ns) {
-            *out_count = 0;
-            return NULL;
-        }
-        if (st->pl_scratch)
-            cfr_dealloc(vt, st->pl_scratch);
-        st->pl_scratch = ns;
-        st->pl_scratch_cap = ncap;
-    }
-    for (int i = 0; i < need; i++) {
-        st->pl_scratch[i].id = pls[i].id;
-        st->pl_scratch[i].abs_line = 0; /* unused externally now */
-        st->pl_scratch[i].row = pls[i].row;
-        st->pl_scratch[i].col = pls[i].col;
-        st->pl_scratch[i].rows = pls[i].rows;
-        st->pl_scratch[i].cols = pls[i].cols;
-        st->pl_scratch[i].layer = pls[i].layer;
-        st->pl_scratch[i].opacity_x256 = pls[i].opacity_x256;
-    }
-    return st->pl_scratch;
-}
-
-/* Count placements for an image id in the shared store. The id is the
- * Lottie id space's — another protocol's image may carry the same
- * number. */
-static int lt_placements_for_count(CfrTerm *vt, uint64_t id)
+/* Count placements by their stable object handle, not the protocol id. */
+static int lt_placements_for_count(CfrTerm *vt, uint64_t handle)
 {
     CfrImgStore *store = vt->images;
     if (!store)
@@ -1806,93 +1283,102 @@ static int lt_placements_for_count(CfrTerm *vt, uint64_t id)
     int n = 0;
     for (int i = 0; i < store->place_count; i++)
         if (store->places[i].source == IMG_SRC_LOTTIE &&
-            store->places[i].image_id == id)
+            store->places[i].image_handle == handle)
             n++;
     return n;
 }
 
-/* ------------------------------------------------------------------ */
-/* Grid maintenance                                                   */
-/* ------------------------------------------------------------------ */
-
-/* Drop the ALT screen's animations on an altscreen switch. kitty's
- * per-screen graphics rule: the alternate buffer starts blank, and its
- * set goes with it; the main buffer's animations survive the visit and
- * reappear on the way back. Called while vt->in_altscreen is still the
- * screen being left, so the test is against the ALT tag (0/1), not the
- * active screen. */
-void cfr_lottie_screen_switch(CfrTerm *vt)
+const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count)
 {
+    if (out_count)
+        *out_count = 0;
+    if (!vt || !vt->lottie || !vt->images)
+        return NULL;
+
     struct CfrLottieState *st = vt->lottie;
-    if (!st)
-        return;
-    for (int i = 0; i < st->rec_count;) {
-        if (st->recs[i].screen == IMG_SCREEN_ALT)
-            lt_rec_release(vt, st, i);
-        else
-            ++i;
+    CfrImgStore *store = vt->images;
+    uint8_t active = (uint8_t)vt->in_altscreen;
+    int want = 0;
+    for (int i = 0; i < store->img_count; i++)
+        if (store->imgs[i].source == IMG_SRC_LOTTIE &&
+            store->imgs[i].screen == active)
+            want++;
+    if (want == 0)
+        return NULL;
+
+    if (st->scratch_cap < want) {
+        int ncap = st->scratch_cap ? st->scratch_cap * 2 : 8;
+        while (ncap < want)
+            ncap *= 2;
+        CfrLottie *ns = cfr_realloc(vt, st->scratch,
+                                    (size_t)ncap * sizeof(*ns));
+        if (!ns)
+            return NULL;
+        st->scratch = ns;
+        st->scratch_cap = ncap;
     }
+
+    int n = 0;
+    for (int i = 0; i < store->img_count; i++) {
+        CfrImg *img = &store->imgs[i];
+        if (img->source != IMG_SRC_LOTTIE || img->screen != active)
+            continue;
+        LtRec *r = img->source_state;
+        if (!r)
+            continue;
+        CfrLottie *l = &st->scratch[n++];
+        memset(l, 0, sizeof(*l));
+        l->handle = img->handle;
+        l->id = img->id;
+        l->definition_rev = r->definition_rev;
+        l->raster_rev = img->version;
+        l->json = r->json;
+        l->json_len = r->json_len;
+        l->px_w = r->px_w;
+        l->px_h = r->px_h;
+        l->current_frame = r->current_frame;
+        l->frame_count = r->frame_op - r->frame_ip;
+        l->playing = r->playing;
+        l->speed = r->speed;
+        l->loop = r->loop;
+        l->placement_count = lt_placements_for_count(vt, img->handle);
+    }
+
+    if (out_count)
+        *out_count = n;
+    return n ? st->scratch : NULL;
 }
 
-void cfr_lottie_note_scroll(CfrTerm *vt, int lines)
+/* Cell metrics are inputs to Lottie layout. Recompute every animation so the
+ * host receives a new raster revision when its device-pixel size changes. */
+void cfr_lottie_cell_pixels_changed(CfrTerm *vt)
 {
-    struct CfrLottieState *st = vt->lottie;
-    if (!st || st->rec_count == 0)
+    if (!vt || !vt->images)
         return;
-
-    /* Cull placement-anchored images (and their placements) in the shared
-     * store, then reconcile the parallel LtRec array against whatever
-     * survived. The store is the one source of truth: a record whose
-     * IMAGE is gone is released — the question is answered by the
-     * handle, not by a second walk over two arrays. */
-    CfrImgStore *store = vt->images;
-    if (store)
-        cfr_img_note_scroll(vt, store, lines);
-
-    for (int i = 0; i < st->rec_count;) {
-        if (!store ||
-            cfr_img_find_by_handle(store, st->recs[i].img_handle) < 0)
-            lt_rec_release(vt, st, i);
-        else
-            ++i;
+    for (int i = 0; i < vt->images->img_count; i++) {
+        CfrImg *img = &vt->images->imgs[i];
+        if (img->source == IMG_SRC_LOTTIE && img->source_state)
+            lt_recompute_size(vt, img->source_state);
     }
 }
 
 void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot)
 {
-    struct CfrLottieState *st = vt->lottie;
-    if (!st)
-        return;
-
-    CfrImgStore *store = vt->images;
-    if (store) {
-        /* A Lottie animation's clear behaviour is its own (the Lottie
-         * spec): the foreground placements in the erased rows go, the
-         * background ones stay. The kitty rules do not apply here. */
-        cfr_img_clear_source_rows(vt, store, IMG_SRC_LOTTIE, top, bot);
-        /* Drop animations whose image record was removed. */
-        for (int i = 0; i < st->rec_count;) {
-            if (cfr_img_find_by_handle(store, st->recs[i].img_handle) < 0)
-                lt_rec_release(vt, st, i);
-            else
-                ++i;
-        }
-    }
+    if (vt && vt->images)
+        cfr_img_clear_source_rows(vt, vt->images, IMG_SRC_LOTTIE, top, bot);
 }
 
 void cfr_lottie_clear_all(CfrTerm *vt)
 {
-    struct CfrLottieState *st = vt->lottie;
-    if (!st)
+    if (!vt || !vt->images)
         return;
-
-    while (st->rec_count > 0)
-        lt_rec_release(vt, st, 0);
+    for (int i = 0; i < vt->images->img_count;) {
+        if (vt->images->imgs[i].source == IMG_SRC_LOTTIE)
+            cfr_img_remove(vt, vt->images, i);
+        else
+            i++;
+    }
 }
-
-/* ------------------------------------------------------------------ */
-/* Lifecycle                                                          */
-/* ------------------------------------------------------------------ */
 
 void cfr_lottie_state_free(CfrTerm *vt)
 {
@@ -1900,45 +1386,22 @@ void cfr_lottie_state_free(CfrTerm *vt)
     if (!st)
         return;
 
-    cfr_lottie_clear_all(vt);
-
-    if (st->recs)
-        cfr_dealloc(vt, st->recs);
-
-    for (int i = 0; i < st->chunk_count; i++) {
-        if (st->chunks[i].buf)
-            cfr_dealloc(vt, st->chunks[i].buf);
-    }
-    if (st->chunks)
-        cfr_dealloc(vt, st->chunks);
-
-    if (st->scratch)
-        cfr_dealloc(vt, st->scratch);
-
-    if (st->pl_scratch)
-        cfr_dealloc(vt, st->pl_scratch);
+    for (int i = 0; i < st->chunk_count; i++)
+        cfr_dealloc(vt, st->chunks[i].buf);
+    cfr_dealloc(vt, st->chunks);
+    cfr_dealloc(vt, st->scratch);
 
     cfr_dealloc(vt, st);
     vt->lottie = NULL;
-
-#ifdef HAVE_THORVG
-    tvg_engine_term();
-#endif
-}
-
-bool cfr_have_lottie(void)
-{
-#ifdef HAVE_THORVG
-    return true;
-#else
-    return false;
-#endif
 }
 
 int cfr_lottie_active_count(CfrTerm *vt)
 {
-    struct CfrLottieState *st = vt->lottie;
-    if (!st)
+    if (!vt || !vt->images)
         return 0;
-    return st->rec_count;
+    int n = 0;
+    for (int i = 0; i < vt->images->img_count; i++)
+        if (vt->images->imgs[i].source == IMG_SRC_LOTTIE)
+            n++;
+    return n;
 }

@@ -830,6 +830,8 @@ uint8_t *cfr_zlib_decompress(CfrTerm *vt, const uint8_t *data, size_t len,
  * or NULL on error. */
 uint8_t *cfr_base64_decode(CfrTerm *vt, const char *in, size_t in_len,
                            size_t *out_len);
+char *cfr_base64_encode(CfrTerm *vt, const uint8_t *in, size_t in_len,
+                        size_t *out_len);
 
 /* Append n bytes to a growing buffer (base64.c, the caller's allocator).
  * Doubles capacity as needed; one byte past the appended data is kept
@@ -942,8 +944,7 @@ void cfr_sixel_finish(CfrTerm *vt);
  * All entry points are no-ops when no animation has been loaded. */
 void cfr_lottie_state_free(CfrTerm *vt);
 void cfr_lottie_apc_dispatch(CfrTerm *vt, const uint8_t *body, size_t body_len);
-void cfr_lottie_note_scroll(CfrTerm *vt, int lines);
-void cfr_lottie_screen_switch(CfrTerm *vt);
+void cfr_lottie_cell_pixels_changed(CfrTerm *vt);
 void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot);
 void cfr_lottie_clear_all(CfrTerm *vt);
 

@@ -797,8 +797,9 @@ void cfr_set_content_scale(CfrTerm *vt, float scale);
  * foot behave the same); it is not a defect in the rounding. */
 int cfr_px_logical(int px, float content_scale);
 
-/* Return the live images of the active screen (sixel, iTerm2, kitty,
- * Lottie). The returned array is owned by the engine and valid until the
+/* Return the live engine-rasterized images of the active screen (sixel,
+ * iTerm2, kitty). Lottie vector objects use cfr_get_lotties() instead. The
+ * returned array is owned by the engine and valid until the
  * next mutation; *out_count receives the number of images (0 if none).
  * Returns NULL when there are none. The other screen buffer's images are
  * not reported: kitty keeps a graphics set per screen, so a main-screen
@@ -839,7 +840,8 @@ typedef struct
     int cell_off_y; /* Y= */
 } CfrImagePlacement;
 
-/* Return the live image placements of the active screen (kitty
+/* Return the live 1:N placements of the active screen (kitty graphics and
+ * Lottie
  * graphics). The returned array is owned by the engine and valid until
  * the next mutation; *out_count receives the number of placements (0 if
  * none). Returns NULL if empty. */
@@ -867,33 +869,31 @@ const CfrImagePlacement *cfr_get_image_placements_for_source(CfrTerm *vt,
 
 /* --- Lottie animations ------------------------------------------------- */
 
-/* A placement of a Lottie animation on the terminal grid. Anchored by
- * absolute line so the animation scrolls with text. `layer` is 0 for
- * foreground (drawn over text), 1 for background (drawn behind text).
- * `opacity_x256` is the per-placement opacity scaled to 0–255. */
+/* A Lottie animation snapshot, returned by cfr_get_lotties(). The engine owns
+ * the protocol, placement and playback state; the host rasterizes `json`.
+ *
+ * `handle` is the engine's stable identity, unique across graphics protocols
+ * and never reused. `id` belongs to the Lottie protocol's client id space.
+ * Placements name the animation through CfrImagePlacement.image_handle.
+ *
+ * `definition_rev` changes when `json` changes and the host must rebuild its
+ * vector scene. `raster_rev` changes when the requested pixels change: a new
+ * definition, a new frame, or a new raster size. Placement, opacity and
+ * playback-state changes alone do not bump it. Both revisions are nonzero.
+ *
+ * `json` and the snapshot array are borrowed and remain valid until the next
+ * engine mutation or query. `px_w`/`px_h` are the exact device-pixel raster
+ * size; a host draws the resulting pixels 1:1 without applying content scale. */
 typedef struct
 {
+    uint64_t handle;
     uint64_t id;
-    long abs_line;
-    int row; /* display-relative row (abs_line - sixel_abs_top) */
-    int col;
-    int rows;
-    int cols;
-    uint8_t layer;
-    uint8_t opacity_x256;
-} CfrLottiePlacement;
-
-/* A Lottie animation snapshot, returned by cfr_get_lotties(). Engine-owned.
- * `rgba` is the rasterized RGBA32 pixel data for the current frame,
- * valid until the next cfr_input_write()/cfr_get_lotties() call.
- * Placements are queried separately via cfr_get_lottie_placements(). */
-typedef struct
-{
-    uint64_t id;
-    uint32_t version;
-    int canvas_w;        /* rasterization width in px (design × scale, aspect-correct) */
-    int canvas_h;        /* rasterization height in px (design × scale, aspect-correct) */
-    const uint8_t *rgba; /* canvas_w * canvas_h * 4, RGBA32, engine-owned */
+    uint32_t definition_rev;
+    uint32_t raster_rev;
+    const uint8_t *json;
+    size_t json_len;
+    int px_w;
+    int px_h;
     int current_frame;
     int frame_count;
     bool playing;
@@ -902,23 +902,16 @@ typedef struct
     int placement_count;
 } CfrLottie;
 
-/* Return the live Lottie animations. The returned array is a contiguous
- * array of CfrLottie structs (NO interleaved placement data), owned by the
- * engine and valid until the next mutation; *out_count receives the
- * number of animations (0 if none). Returns NULL when there are none.
- * Use cfr_get_lottie_placements() to query placements for each animation. */
+/* Return the Lottie animations on the active screen. The returned contiguous
+ * array is owned by the engine and valid until the next mutation or query.
+ * *out_count receives the number of animations (0 if none). Returns NULL when
+ * empty. Use cfr_get_image_placements() and match image_handle for placement
+ * geometry. */
 const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count);
 
-/* Return the placements for a specific animation. The returned array is
- * owned by the engine and valid until the next mutation. *out_count
- * receives the number of placements (0 if none). Returns NULL if the
- * animation has no placements or doesn't exist. */
-const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
-                                                    int *out_count);
-
 /* Advance all playing Lottie animations to the frame that should be on
- * screen at the given presentation time, re-rasterizing any whose frame
- * changed. Returns true if any animation advanced (pixel data changed).
+ * screen at the given presentation time. Returns true if any animation's
+ * raster_rev changed. Pixel production belongs to the host.
  *
  * The frame is a pure function of time: position = anchor + elapsed *
  * speed * frame rate, so how often the host calls this, and how late a call
@@ -935,9 +928,6 @@ const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
  * sample at `present_us`). Call it once per presented frame, before
  * cfr_get_lotties(). */
 bool cfr_lottie_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us);
-
-/* Point-sample form: cfr_lottie_present(vt, now_us, 0). */
-bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us);
 
 /* Kitty graphics animation clock. Advances every playing kitty image's
  * current frame to `present_us` and copies the frame into the image's
@@ -962,23 +952,8 @@ int cfr_kitty_playing_count(CfrTerm *vt);
  * should run; cfr_lottie_active_count() also counts paused animations. */
 int cfr_lottie_playing_count(CfrTerm *vt);
 
-/* Notify the Lottie subsystem of a scroll event (cull scrolled-off
- * placements). Called automatically after scroll; also available for
- * manual invocation. */
-void cfr_lottie_note_scroll(CfrTerm *vt, int lines);
-
-/* Remove foreground-layer placements overlapping the inclusive display-row
- * range [top,bot]. Background placements survive. */
-void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot);
-
-/* Returns the number of registered Lottie animations (playing or not).
- * Zero-allocation, single field read — safe to call frequently. */
+/* Returns the number of registered Lottie animations (playing or not). */
 int cfr_lottie_active_count(CfrTerm *vt);
-
-/* Returns true if coffer was built with ThorVG (Lottie rasterization
- * produces real pixels). Returns false if ThorVG was absent or disabled
- * at build time — APC sequences are accepted but produce blank frames. */
-bool cfr_have_lottie(void);
 
 /* --- UTF-8 display width ------------------------------------------------*/
 

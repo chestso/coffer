@@ -146,8 +146,6 @@ void cfr_scroll_up(CfrTerm *vt, int lines)
         vt->sixel_abs_top += lines;
         if (vt->images)
             cfr_img_note_scroll(vt, vt->images, lines);
-        if (vt->lottie)
-            cfr_lottie_note_scroll(vt, lines);
     }
 
     /* Move rows up. The lineage array rides along so a join (or a

@@ -89,20 +89,15 @@ compositing. See the portty README for renderer-side details.
 - **Lottie graphics** — APC sequences (`ESC _ … ST`) with base64-encoded JSON
   payloads load, place, and control Lottie animations on the grid. Eight
   commands (load, load-chunk, place, play, pause, stop, seek, delete) manage
-  animation state, per-frame RGBA buffers, and placement tracking. Animations
-  scroll with the text, enter scrollback, and are culled on clear — the same
-  ownership model as the shared image store, which now backs Lottie too. The
-  host fetches animations via
-  `cfr_get_lotties()` / `cfr_get_lottie_placements()` and advances frames
-  with `cfr_lottie_present()` (the frame is a pure function of presentation
-  time; `cfr_lottie_tick()` is its point-sample form).
-  `cfr_lottie_active_count()` and `cfr_lottie_playing_count()` provide
-  zero-allocation counts for adaptive timer scheduling, and
-  `cfr_have_lottie()` checks build-time ThorVG availability.
-  Rasterization is handled by ThorVG (optional
-  dependency, auto-detected at configure time); when ThorVG is absent the APC
-  sequences are still accepted but RGBA buffers are zeroed. A Python TUI
-  player ([plotty](https://github.com/chestso/portty/tree/master/contrib/plotty))
+  definitions, playback state, and placement tracking. Animations scroll with
+  text and are culled by the shared graphics store. The host reads vector
+  definitions through `cfr_get_lotties()`, matches generic placements by
+  handle, and advances frames with `cfr_lottie_present()`; the frame is a pure
+  function of presentation time. `cfr_lottie_active_count()` and
+  `cfr_lottie_playing_count()` provide allocation-free counts for adaptive
+  scheduling. Rasterization and pixel caches belong to the host, so coffer has
+  no vector-graphics dependency and remains useful in headless hosts. A Python
+  TUI player ([plotty](https://github.com/chestso/portty/tree/master/contrib/plotty))
   provides interactive playback with keyboard controls for pause, seek,
   speed, opacity, and layer toggling.
 - **Dynamic colors (OSC 10/11/12)** — set, query (`?`) and reset
@@ -190,9 +185,8 @@ compositing. See the portty README for renderer-side details.
   of the identity: per the spec it connects cells only when their URIs
   also match, and an empty id is the same as no id. Ids are capped at
   256 bytes, matching kitty.
-- **Zero external dependencies** — libc only (ThorVG is optional and
-  auto-detected; stb_image is a single-file header auto-fetched at
-  configure time).
+- **Zero external dependencies** — libc only (stb_image is a single-file
+  header auto-fetched at configure time).
 - **Diagnostic logging** — the engine emits warnings for unimplemented
   or malformed sequences via an optional `log` callback at three levels
   (`CFR_LOG_DEBUG`, `CFR_LOG_INFO`, `CFR_LOG_WARN`). Pass `NULL` to
@@ -283,7 +277,7 @@ Standard GNU autotools workflow:
 
 ```sh
 ./autogen.sh                                # writes ./version, runs autoreconf -fi
-./configure --prefix=$HOME/.local           # ThorVG auto-detected; --disable-thorvg to skip
+./configure --prefix=$HOME/.local
 make
 make check
 make install
@@ -340,9 +334,6 @@ pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-autotools
 # One of these is needed to unpack the pinned Microsoft.Windows.Console.ConPTY
 # bundle; configure also accepts python3 if none of the archivers are present.
 pacman -S unzip        # or: libarchive (bsdtar)
-
-# Optional: ThorVG enables Lottie rasterization (auto-detected by configure)
-pacman -S mingw-w64-ucrt-x86_64-thorvg
 ```
 
 ### Building
@@ -363,7 +354,6 @@ Extra args are forwarded to `configure`:
 
 ```sh
 ./scripts/build-ucrt64.sh --enable-release
-./scripts/build-ucrt64.sh --disable-thorvg    # skip optional Lottie rasterizer
 ```
 
 The same script builds Windows arm64 in an MSYS2 CLANGARM64 shell; set the
@@ -378,7 +368,7 @@ To build manually inside an MSYS2 UCRT64 shell:
 ```sh
 ./autogen.sh
 mkdir build && cd build
-../configure --prefix="$MINGW_PREFIX"       # ThorVG auto-detected; --disable-thorvg to skip
+../configure --prefix="$MINGW_PREFIX"
 make -j$(nproc)
 make check                                  # PTY tests use the bundled ConPTY
 make install
@@ -573,12 +563,6 @@ Embedded third-party code:
 - Bjoern Hoehrmann's table-driven
   [UTF-8 decoder](https://bjoern.hoehrmann.de/utf-8/decoder/dfa/),
   used for decoding printable bytes in the GROUND state.
-
-Optional linked dependency:
-
-- [ThorVG](https://github.com/thorvg/thorvg) — vector graphics engine used
-  to rasterize Lottie animations. Detected at configure time; build with
-  `--disable-thorvg` to drop Lottie rendering.
 
 ## License
 

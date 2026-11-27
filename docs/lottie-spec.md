@@ -2,11 +2,11 @@
 
 This document specifies the Lottie animation protocol as implemented in
 coffer. It covers the terminal escape sequence wire format, the command
-vocabulary, the engine-side state machine, the public C API, rasterization,
+vocabulary, the engine-side state machine, the public C API, frame selection,
 memory management, and interaction with VT subsystems (scroll, clear, resize).
-
-For the host-side renderer design (texture cache, compositing, linear-light
-pipeline), see the portty documentation.
+Vector rasterization belongs to the host. Portty implements it with ThorVG's
+software canvas; see the portty documentation for texture upload, compositing
+and the linear-light pipeline.
 
 ---
 
@@ -177,8 +177,9 @@ omitted, the animation renders at design size (scale = 1.0) with no centering
 offset.
 
 **Replacement**: sending `load` with an existing `id` replaces the animation
-in-place. The pixel buffer is reused if dimensions match; ThorVG state is
-rebuilt. The version bumps, signaling the host to re-upload pixels.
+in-place. The object keeps its handle and placements. The definition and raster
+revisions bump, so the host rebuilds the vector scene and produces a fresh
+frame.
 
 **Default placement**: if `placement` is omitted, the animation is placed at
 the current cursor position with rasterization at design size (scale = 1.0).
@@ -231,9 +232,8 @@ An animation can have **multiple placements** at different cell positions. Each
 placement can independently specify `layer` and `opacity`.
 
 - `fit`/`scale`/`placement.cols`/`placement.rows`/`placement.width`/`placement.height`
-  optional — if any present and different from current, triggers seamless
-  re-rasterization + buffer realloc + cell recompute. Playback continues from
-  the current frame.
+  optional — if any present and different from current, recompute the raster
+  size and cell boxes. Playback continues from the current frame.
 - `report` (bool, default false) — if true, emit an APC report after placement (see §2.8).
 
 **Deduplication**: placements are keyed by `(abs_line, col)`. Sending `place`
@@ -242,8 +242,7 @@ with the same position as an existing placement **updates** that placement's
 duplicate. This enables efficient toggling (e.g. foreground ↔ background) at
 the same position.
 
-Each placement is auto-assigned a stable `id` by the engine (incrementing
-counter in `CfrLottieState.next_placement_id`).
+Each placement is auto-assigned a stable `id` by the shared graphics store.
 
 ### 2.4 `play` / `pause` / `stop` — Control playback
 
@@ -273,7 +272,7 @@ counter in `CfrLottieState.next_placement_id`).
 ```
 
 - `frame`: 0-based frame index. Clamped to the `[ip, op)` range.
-- If the frame changes, the animation is re-rasterized and the version bumps.
+- If the frame changes, `raster_rev` bumps and the host re-rasterizes it.
 
 ### 2.6 `delete` — Remove an animation
 
@@ -281,9 +280,9 @@ counter in `CfrLottieState.next_placement_id`).
 { "cmd": "delete", "id": 1 }
 ```
 
-Removes the animation and all its placements. The pixel buffer is released to
-the spare pool (or freed if over the retain limit). The host's GPU texture is
-freed on the next frame's cache reconciliation pass.
+Removes the animation and all its placements. The JSON and placement state are
+released. The host drops its vector scene and texture on its next
+reconciliation pass.
 
 ### 2.7 `load-chunk` — Upload a large animation in chunks
 
@@ -304,8 +303,9 @@ chunk the upload:
 
 - The engine concatenates all `data` fields (after base64-decoding each) before
   parsing the Lottie JSON.
-- A `load-chunk` with `seq == total - 1` triggers JSON parsing, ThorVG
-  initialization, rasterization of frame 0, and adds a default placement.
+- A `load-chunk` with `seq == total - 1` finishes the document, computes its
+  layout and adds a default placement. The host builds and rasterizes the
+  vector scene from the resulting definition.
 - If a new `load-chunk` with `seq == 0` arrives while a previous chunked upload
   is in progress, the previous upload is discarded.
 
@@ -381,22 +381,21 @@ The report payload is a JSON object:
               ┌─────────────────────┼─────────────────────┐
               ▼                     ▼                     ▼
         ┌──────────┐        ┌──────────────┐       ┌───────────┐
-        │  load /  │        │  play/pause/ │       │  delete / │
-        │  load-   │        │  stop/seek / │       │  place    │
-        │  chunk   │        │  place       │       │           │
+        │  load /  │        │  play/pause/ │       │  place /  │
+        │  load-   │        │  stop/seek   │       │  delete   │
+        │  chunk   │        │              │       │           │
         └────┬─────┘        └──────┬───────┘       └─────┬─────┘
              │                     │                     │
              ▼                     ▼                     ▼
   ┌───────────────────┐   ┌──────────────────┐   ┌─────────────────┐
-  │ Parse Lottie JSON │   │ Update playback  │   │ Remove record + │
-  │ Init ThorVG       │   │ state in LtRec   │   │ destroy painter │
-  │ Rasterize frame 0 │   │ Re-rasterize if  │   │ release rgba buf│
-  │ Un-premultiply +  │   │ frame changed    │   │ release arena   │
-  │ BGRA→RGBA +       │   │ version++        │   │ version++       │
-  │ sRGB→linear       │   └──────────────────┘   └─────────────────┘
-  │ Store in LtRec    │
-  └───────────────────┘
+  │ Retain the Lottie │   │ Update playback  │   │ Update or remove│
+  │ JSON and compute  │   │ state and the    │   │ placements and  │
+  │ device-pixel size │   │ requested frame  │   │ their grid life │
+  └───────────────────┘   └──────────────────┘   └─────────────────┘
 ```
+
+coffer does not parse the vector drawing commands or produce pixels. The host
+receives the JSON, the requested frame and the exact raster size.
 
 ### 3.2 Parser Integration
 
@@ -405,9 +404,7 @@ enters this state and accumulates bytes into `apc_buf[]`. On ST (`ESC \`) or
 BEL, it dispatches:
 
 ```c
-/* parser.c — ESC _ transitions to APC_STRING state */
 case CFR_STATE_APC_STRING:
-    /* ST/BEL received → dispatch the accumulated APC payload */
     cfr_lottie_apc_dispatch(vt, p->apc_buf, p->apc_len);
     break;
 ```
@@ -415,7 +412,6 @@ case CFR_STATE_APC_STRING:
 OSC 5555 routes to the same dispatch function:
 
 ```c
-/* osc.c — OSC code 5555 → lottie dispatch */
 case 5555:
     cfr_lottie_apc_dispatch(vt, body, body_len);
     break;
@@ -423,99 +419,46 @@ case 5555:
 
 ### 3.3 Internal Data Structures
 
-#### LtRec — Per-animation record
+`CfrImg` in the shared graphics store owns the Lottie record's public id,
+unique handle, screen, placements, lifetime policy and `raster_rev`. Its
+`source_state` points to the protocol-private record:
 
 ```c
 typedef struct
 {
-    uint64_t id;             /* client-assigned, stable cache key */
-    uint32_t version;        /* bumps on any state/pixel change   */
+    uint32_t definition_rev;
+    uint8_t *json;
+    size_t json_len;
 
-    void     *json_root;     /* unused (retained for struct compat) */
+    int design_w, design_h;
+    int px_w, px_h;
 
-    uint8_t  *rgba;          /* RGBA32 pixel data for current frame */
-    size_t    rgba_cap;      /* allocated bytes                     */
+    int p_width, p_height;
+    int p_cols, p_rows;
+    double explicit_scale;
+    int fit;
 
-    int       design_w;      /* Lottie JSON width  (abstract)  */
-    int       design_h;      /* Lottie JSON height (abstract)  */
+    int current_frame;
+    int frame_ip;
+    int frame_op;
+    double frame_fr;
+    double speed;
+    bool playing;
+    bool loop;
 
-    int       px_w;          /* rasterization pixel width  */
-    int       px_h;          /* rasterization pixel height */
-
-    int       current_frame; /* 0-based, within [ip, op) */
-    int       frame_ip;      /* Lottie in-point          */
-    int       frame_op;      /* Lottie out-point         */
-    double    frame_fr;      /* Lottie framerate         */
-    double    speed;         /* playback rate multiplier */
-    bool      playing;       /* actively advancing?      */
-    bool      loop;          /* loop at end?             */
-    bool      dirty;         /* frame changed, rgba needs re-upload */
-
-    uint64_t  last_tick_us;  /* last frame advance timestamp */
-
-    CfrLottiePlacement *placements;
-    int         placement_count;
-    int         placement_cap;
-
-#ifdef HAVE_THORVG
-    Tvg_Animation tvg_anim;
-    Tvg_Canvas    tvg_canvas;
-#endif
-
-    uint8_t  *arena_base;    /* raw Lottie JSON for ThorVG */
-    size_t     arena_offset;
-    size_t     arena_cap;
+    uint64_t anchor_us;
+    double pos0;
+    double last_pos;
+    bool anchored;
 } LtRec;
 ```
 
-Directly analogous to `SxRec`: owns the pixel buffer, has `id` + `version` for
-cache invalidation.
+The store's source destructor releases this record with the graphics object.
+There is no parallel animation array to reconcile after scroll, erase, screen
+switches, eviction or terminal teardown.
 
-#### LtChunkAccum — Chunked upload accumulator
-
-```c
-typedef struct
-{
-    uint64_t id;
-    uint8_t *buf;
-    size_t   buf_len;
-    size_t   buf_cap;
-    int      chunks_received;
-    int      chunks_total;
-} LtChunkAccum;
-```
-
-One per in-progress chunked upload. Discarded when a new `seq == 0` chunk
-arrives for the same `id`.
-
-#### CfrLottieState — Global lottie subsystem
-
-```c
-struct CfrLottieState
-{
-    LtRec         *recs;
-    int            rec_count;
-    int            rec_cap;
-    uint64_t       next_placement_id;
-    size_t         live_bytes;    /* sum of all LtRec.rgba_cap */
-
-    LtChunkAccum  *chunks;
-    int            chunk_count;
-    int            chunk_cap;
-
-    LtSpare        spares[LT_SPARE_MAX]; /* 16 spare RGBA buffers */
-    int            spare_count;
-    size_t         retain_bytes;
-
-    uint8_t       *scratch;       /* snapshot buffer for cfr_get_lotties() */
-    size_t         scratch_cap;
-    CfrLottiePlacement *pl_scratch;
-    int            pl_scratch_cap;
-};
-```
-
-Lazily allocated: `vt->lottie` is `NULL` until the first lottie APC arrives.
-`cfr_have_lottie()` returns whether ThorVG is available at runtime.
+`CfrLottieState` contains only chunked-upload accumulators and the public query
+scratch array. The state is allocated on the first Lottie APC.
 
 ---
 
@@ -523,272 +466,164 @@ Lazily allocated: `vt->lottie` is `NULL` until the first lottie APC arrives.
 
 All public types and functions are declared in `<coffer/coffer.h>`.
 
-### 4.1 Types
-
-#### CfrLottiePlacement
+### 4.1 `CfrLottie`
 
 ```c
 typedef struct
 {
-    uint64_t id;           /* auto-assigned stable placement id */
-    long     abs_line;     /* absolute line (scrolls with text)  */
-    int      row;          /* display-relative row (after centering) */
-    int      col;          /* display-relative col (after centering) */
-    int      rows;         /* engine-computed cell box height    */
-    int      cols;         /* engine-computed cell box width     */
-    uint8_t  layer;        /* 0 = foreground, 1 = background    */
-    uint8_t  opacity_x256; /* 0–255                              */
-} CfrLottiePlacement;
-```
-
-`row`/`col` are the final placement position after centering within the
-region. `rows`/`cols` are the engine-computed cell box dimensions derived
-from the rasterization size (`ceil(raster / cell_px)`), not the client-specified
-region.
-
-#### CfrLottie
-
-```c
-typedef struct
-{
-    uint64_t      id;
-    uint32_t      version;
-    int           canvas_w;        /* rasterization width in px (design × scale)  */
-    int           canvas_h;        /* rasterization height in px (design × scale) */
-    const uint8_t *rgba;           /* canvas_w × canvas_h × 4, engine-owned */
-    int           current_frame;
-    int           frame_count;     /* frame_op - frame_ip            */
-    bool          playing;
-    double        speed;
-    bool          loop;
-    int           placement_count;
+    uint64_t handle;         /* stable, unique, never reused */
+    uint64_t id;             /* client protocol id */
+    uint32_t definition_rev; /* JSON changed: rebuild the vector scene */
+    uint32_t raster_rev;     /* frame/size/definition changed: re-raster */
+    const uint8_t *json;     /* complete Lottie document */
+    size_t json_len;
+    int px_w, px_h;          /* exact raster size in device pixels */
+    int current_frame;
+    int frame_count;
+    bool playing;
+    double speed;
+    bool loop;
+    int placement_count;
 } CfrLottie;
 ```
 
-`rgba` is valid until the next `cfr_input_write()` or `cfr_get_lotties()`
-call. The host must copy or upload pixels before the next engine mutation.
+`definition_rev` and `raster_rev` are nonzero. A placement movement, opacity
+change, play or pause does not by itself bump `raster_rev`. A seek, stop that
+changes the frame, frame advance, document replacement and raster-size change
+do.
 
-### 4.2 Query Functions
+`json` and the snapshot are borrowed from the engine and remain valid until
+the next engine mutation or query. A host that retains JSON outside its normal
+synchronous rasterization pass must copy it.
+
+### 4.2 Queries
 
 ```c
-/* Snapshot of all active animations. Returned pointer valid until next
- * cfr_input_write / cfr_get_lotties. */
 const CfrLottie *cfr_get_lotties(CfrTerm *vt, int *out_count);
-
-/* Placements for a specific animation. .row is pre-computed for the
- * renderer (abs_line - sixel_abs_top). Valid until next call. */
-const CfrLottiePlacement *cfr_get_lottie_placements(CfrTerm *vt, uint64_t id,
-                                                    int *out_count);
+const CfrImagePlacement *cfr_get_image_placements(CfrTerm *vt,
+                                                  int *out_count);
 ```
+
+The first query returns Lottie animations on the active screen. The second
+returns all active-screen 1:N placements. Match `CfrImagePlacement.source ==
+IMG_SRC_LOTTIE` and `image_handle == CfrLottie.handle`.
+
+Lottie objects are not returned by `cfr_get_images()`: that query is for
+engine-owned raster images. Lottie pixels are host-owned.
 
 ### 4.3 Frame Advancement
 
 ```c
-/* Advance all playing animations to the frame that should be on screen at
- * the given presentation time. Re-rasterize any whose frame changed.
- * present_us: when the frame about to be drawn reaches the screen.
- * hold_us:    how long it stays (normally one display refresh period);
- *             0 = point sample. Returns true if any animation advanced. */
 bool cfr_lottie_present(CfrTerm *vt, uint64_t present_us, uint64_t hold_us);
-
-/* cfr_lottie_present(vt, now_us, 0). */
-bool cfr_lottie_tick(CfrTerm *vt, uint64_t now_us);
-
-/* Number of animations currently playing (excludes paused, stopped and
- * finished ones). */
 int cfr_lottie_playing_count(CfrTerm *vt);
+int cfr_lottie_active_count(CfrTerm *vt);
 ```
 
-The frame is a pure function of time (see §5.1): how often the host calls
-`cfr_lottie_present()`, and how late a call runs, changes nothing about which
-frame is chosen. The first call after an animation starts playing, resumes,
-seeks or changes speed anchors its clock and does not advance it. A host that
-paces to a display passes the refresh period as `hold_us` so that the frame is
-chosen at the middle of its time on screen; a host without a display clock
-passes `0` (or calls `cfr_lottie_tick()`). The function is a no-op when no
-animation has been loaded (`vt->lottie == NULL`), so it can be called
-unconditionally.
+`cfr_lottie_present()` evaluates every playing animation's frame, bumps its
+`raster_rev` and damages its placements when the frame changes. It performs no
+allocation or rasterization and can therefore run in the host's presentation
+path without making vector rendering part of VT input processing.
 
-### 4.4 Scroll and Clear Functions
+The frame is a pure function of time (§5). `cfr_lottie_playing_count()` drives
+the host's adaptive frame-pacing decision; `cfr_lottie_active_count()` also
+counts paused animations.
 
-```c
-/* Cull placements that scrolled past scrollback. */
-void cfr_lottie_note_scroll(CfrTerm *vt, int lines);
-
-/* Remove foreground placements in the given row range.
- * Background placements survive (text erase should not remove
- * background decorations). */
-void cfr_lottie_clear_display_rows(CfrTerm *vt, int top, int bot);
-```
-
-### 4.5 Configuration
+### 4.4 Configuration
 
 ```c
-/* Update cell pixel dimensions (called on resize). Existing placements
- * are NOT re-rasterized; only new placements use updated dimensions. */
 void cfr_set_cell_pixels(CfrTerm *vt, int cell_w_px, int cell_h_px);
-
-/* Returns true if ThorVG was found at build time and lottie rendering
- * is available. When false, APC sequences are still accepted but the
- * RGBA buffer is zeroed. */
-bool cfr_have_lottie(void);
 ```
 
-### 4.6 API Comparison with Sixel
+Cell pixel changes recompute every animation's raster size and placement cell
+box. If the device-pixel size changes, `raster_rev` bumps. The host must
+re-rasterize rather than stretch an existing bitmap.
 
-| Sixel                            | Lottie                                      | Notes                                   |
-| -------------------------------- | ------------------------------------------- | --------------------------------------- |
-| `cfr_get_sixels(vt, &count)`     | `cfr_get_lotties(vt, &count)`               | Same pull model, contiguous arrays      |
-| `CfrSixel.id` / `.version`       | `CfrLottie.id` / `.version`                 | Same cache-key pattern                  |
-| `CfrSixel.rgba`                  | `CfrLottie.rgba`                            | Engine-owned, valid until next mutation |
-| `CfrSixel.row/col/layer`         | `CfrLottiePlacement.row/col/layer`          | Separate placement query API            |
-| N/A                              | `cfr_lottie_present(vt, t, hold)`           | Frame advancement                       |
-| N/A                              | `cfr_get_lottie_placements(vt, id, &count)` | Separate placement query with `.row`    |
-| `cfr_sixel_note_scroll()`        | `cfr_lottie_note_scroll()`                  | Same cull logic                         |
-| `cfr_sixel_clear_display_rows()` | `cfr_lottie_clear_display_rows()`           | Same clear logic                        |
+### 4.5 Division of Responsibility
+
+| Concern                                             | Owner  |
+| --------------------------------------------------- | ------ |
+| APC / OSC 5555 transport                            | coffer |
+| Command parsing and chunked upload                  | coffer |
+| JSON metadata, fit and placement geometry           | coffer |
+| Scroll, erase, resize and alternate-screen lifetime | coffer |
+| Playback clock and frame selection                  | coffer |
+| Vector scene and rasterization                      | host   |
+| Pixel-format conversion and texture cache           | host   |
+| Layer compositing and presentation                  | host   |
 
 ---
 
-## 5. Frame Advancement and Rasterization
+## 5. Frame Selection and Host Rasterization
 
 ### 5.1 Sampling Algorithm
 
 Each playing `LtRec` keeps an anchor: `anchor_us` (the `present_us` of the
 first call after it started playing, resumed, seeked or changed speed) and
-`pos0` (its position in frames from `ip` at that moment). `cfr_lottie_present()`
-evaluates a closed form, with no state carried between calls:
+`pos0` (its position in frames from `ip` at that moment). The sampler is a
+closed form, with no accumulated frame error:
 
 ```
-For each LtRec where playing == true:
-    anchor on the first call (anchor_us = present_us)
-    t   = present_us + hold_us / 2
-    pos = pos0 + (t - anchor_us) × speed × fr / 1_000_000   // frames from ip
-    span = op - ip
-    if pos >= span:
-        if loop:  pos = fmod(pos, span)
-        else:     pos = span; playing = false
-    new_frame = ip + min(floor(pos), span - 1)
-    if new_frame != current_frame:
-        current_frame = new_frame
-        lt_rasterize(rec)            // re-rasterize into rec->rgba
-        rec->dirty = true
-        rec->version++
-    last_pos = pos
+t   = present_us + hold_us / 2
+pos = pos0 + (t - anchor_us) × speed × fr / 1_000_000
+span = op - ip
+if pos >= span:
+    if loop:  pos = fmod(pos, span)
+    else:     pos = span; playing = false
+new_frame = ip + min(floor(pos), span - 1)
 ```
 
-`last_pos` is the re-anchor point for a `play` that changes `speed` or `loop`
-on a running animation, so the position carries over, fractional frame
-included. `pause`, `stop` and `seek` anchor at the frame currently shown.
-`version` changes only when the frame does.
+`last_pos` preserves the fractional frame when speed or loop changes on a
+running animation. `pause`, `stop` and `seek` anchor at the frame currently
+shown. `raster_rev` changes only when the selected frame changes.
 
-**Why `hold_us / 2`**: for 30 fps content on a 60 Hz display every frame
-boundary is a refresh boundary. Sampling at the refresh would put `pos` on an
-integer, where rounding noise decides between a 2- and a 3-refresh hold.
-Sampling at the middle of the refresh leaves a quarter frame of margin each
-way.
+Sampling at `present_us + hold_us / 2` avoids a rounding decision exactly on a
+refresh boundary: 30 fps content on a 60 Hz display has every frame boundary
+coincide with a refresh, and the half-period offset gives it margin against
+jitter.
 
-### 5.2 Rasterization Pipeline
+### 5.2 Raster Contract
 
-When ThorVG is available (auto-detected via pkg-config `thorvg-1`):
+The host rasterizes `json` at exactly `px_w × px_h` device pixels and
+`current_frame`. A typical implementation uses ThorVG's software canvas:
 
-```c
-static void lt_rasterize(LtRec *r) {
-    // Set ThorVG animation frame
-    tvg_animation_set_frame(r->tvg_anim, (float)r->current_frame);
+1. Rebuild its animation/picture when `definition_rev` changes.
+2. Resize the vector picture and output target when `px_w`/`px_h` change.
+3. Select and draw the frame when `raster_rev` changes.
+4. Upload or composite the resulting pixels 1:1.
 
-    // Rasterize into our RGBA buffer via ThorVG SW canvas
-    tvg_canvas_update(r->tvg_canvas);
-    tvg_canvas_draw(r->tvg_canvas, true);
-    tvg_canvas_sync(r->tvg_canvas);
-
-    // ThorVG outputs premultiplied BGRA — convert to non-premultiplied
-    // linear-light RGBA for correct compositing in the host renderer.
-    // 1. Un-premultiply (divide RGB by alpha × 255)
-    // 2. Swap R↔B (BGRA → RGBA byte order)
-    // 3. Linearize each RGB channel (sRGB → linear)
-    lt_linearize_rgba(r->rgba, r->px_w, r->px_h);
-    r->dirty = true;
-}
-```
-
-**Without ThorVG** (`--disable-thorvg` at build time): APC sequences are still
-accepted and animation state is tracked, but the RGBA buffer is zeroed (all
-pixels are transparent black). `cfr_have_lottie()` returns `false`.
+The engine imposes no GPU requirement. The host can use CPU rasterization on
+every platform and still use a GPU for texture storage and scene composition.
 
 ### 5.3 Pixel Format
 
-The engine outputs **non-premultiplied linear-light RGBA32** pixels:
+The host owns its pixel contract. Portty's rasterizer produces straight-alpha,
+sRGB-encoded RGBA8 and applies exactly one sRGB→linear conversion when its
+linear-light compositor is active. Per-placement opacity is applied during
+composition, not baked into the raster.
 
-| Step | Input              | Transform                | Output            |
-| ---- | ------------------ | ------------------------ | ----------------- |
-| 1    | Premultiplied BGRA | Un-premultiply           | Non-premulti BGRA |
-| 2    | Non-premulti BGRA  | Swap R↔B                 | Non-premulti RGBA |
-| 3    | Non-premulti RGBA  | sRGB → linear (RGB only) | Linear-light RGBA |
+### 5.4 Device-Pixel Geometry
 
-Alpha is left unchanged (non-premultiplied) through all steps. This format
-composites correctly in the host's linear-light render pipeline without any
-additional conversion.
+The raster is drawn at its native `px_w × px_h` size. No additional content
+scale is applied. The renderer centers that rectangle within the placement's
+cell box. A cell-metric change causes re-layout and, where necessary, a fresh
+vector raster at the new size.
 
 ---
 
 ## 6. Memory Management
 
-### 6.1 Resource Overview
+| Resource                     | Owner  | Lifetime                              |
+| ---------------------------- | ------ | ------------------------------------- |
+| Raw Lottie JSON              | coffer | load → delete                         |
+| Placement and playback state | coffer | load → delete                         |
+| Vector scene and canvas      | host   | definition revision / object lifetime |
+| RGBA frame buffer            | host   | reusable while its size is unchanged  |
+| Texture cache                | host   | keyed by `(handle, raster_rev)`       |
 
-| Resource                 | Owner  | Lifetime      |
-| ------------------------ | ------ | ------------- |
-| Raw Lottie JSON body     | engine | load → delete |
-| ThorVG painter + surface | engine | load → delete |
-| RGBA pixel buffer        | engine | load → delete |
-| GPU texture cache        | host   | load → delete |
-
-### 6.2 Constants
-
-```c
-#define LT_MAX_ANIMS      64
-#define LT_MAX_PLACEMENTS 32
-#define LT_SPARE_MAX      16
-#define LT_LIVE_MAX       (128 * 1024 * 1024)   /* 128 MiB */
-#define LT_RETAIN_MAX     (64 * 1024 * 1024)    /* 64 MiB  */
-```
-
-### 6.3 RGBA Buffer Pool
-
-Following the same pattern as coffer's `SxSpare` free-list pool:
-
-```c
-typedef struct {
-    uint8_t *buf;
-    size_t   cap;
-} LtSpare;
-```
-
-- On animation delete, the RGBA buffer is retained in the spare pool if
-  `retain_bytes < LT_RETAIN_MAX` (64 MiB). Otherwise it is freed.
-- On animation load, `lt_buf_alloc()` searches the pool for a best-fit spare
-  before allocating fresh memory.
-- Animation replacement reuses the buffer in-place if `rec->rgba_cap >= need`.
-
-### 6.4 Budget Enforcement
-
-| Budget              | Value     | Enforcement                                                   |
-| ------------------- | --------- | ------------------------------------------------------------- |
-| Max animations      | 64        | Evict animation with oldest `abs_line` (LRU by scroll)        |
-| Max live pixels     | 128 MiB   | Evict oldest animations until budget is clear                 |
-| Max spare retention | 64 MiB    | Free buffers that exceed the retain limit                     |
-| Max per-animation   | 32 places | `LT_MAX_PLACEMENTS` — subsequent `place` commands are ignored |
-
-### 6.5 Per-Frame Allocation Cost: Zero
-
-The critical design property: **advancing a frame produces no allocations.**
-
-| Event                           | Allocations                                        |
-| ------------------------------- | -------------------------------------------------- |
-| `load`                          | 1 arena, 1 RGBA buffer, 1 ThorVG painter+surface   |
-| `delete`                        | 0 (arena free, RGBA → spare pool, painter destroy) |
-| Frame advance (tick)            | 0 (in-place rasterize + memcpy into existing buf)  |
-| Replace (`load` with same `id`) | 0 (arena reset + reuse, RGBA buffer reuse)         |
-| Scroll-off cull                 | 0 (same as delete)                                 |
+coffer's Lottie path does not allocate per presented frame. The host's current
+frame buffer and upload staging buffer can likewise be retained and grown only
+when dimensions change. A host should cap total raster bytes and handle invalid
+or oversized documents without displaying stale pixels under a new revision.
 
 ---
 
@@ -796,47 +631,41 @@ The critical design property: **advancing a frame produces no allocations.**
 
 ### 7.1 Cell Ownership
 
-Lottie animations **do not replace or modify cells**. The cells beneath an
-animation retain their text, colors, and SGR attributes. The animation is a
+Lottie animations do not replace or modify cells. The cells beneath an
+animation retain their text, colors and SGR attributes. The animation is a
 supplemental visual layer composited by the host renderer.
 
 ### 7.2 Scroll Behavior
 
-Lottie placements scroll identically to sixel images:
-
-- Anchored by `abs_line` in coffer's absolute coordinate space.
-- `cfr_lottie_note_scroll()` culls placements that scrolled past scrollback.
-- The host renderer maps `abs_line` → display row:
-  `screen_row = abs_line - abs_top + scroll_offset`.
+Placements are anchored by absolute line and scroll with text. The shared
+graphics store culls placements that move beyond scrollback. A Lottie object
+that has had a placement dies with its last placement. The public placement
+query returns display-relative rows; the host adds its scrollback offset as it
+does for cells.
 
 ### 7.3 Clear Behavior
 
-- **ED** (erase display): `cfr_lottie_clear_display_rows()` removes foreground
-  placements in the cleared row range. Background placements survive — text
-  erase should not remove background decorations.
-- **Terminal reset**: all animations are freed during `cfr_free()`.
+A text erase removes foreground Lottie placements in the cleared rows and
+preserves background placements. Store release damages the affected rows so
+the host repaints them.
 
-### 7.4 Resize
+### 7.4 Resize and Cell Metrics
 
-On terminal resize, `cfr_set_cell_pixels()` updates the engine's cell pixel
-dimensions. **Existing placements are not re-rasterized.** The pixel dimensions
-(`px_w`/`px_h`) of existing animations remain based on the cell size at the
-time of placement. Only new placements use the updated cell pixel dimensions.
-
-`design_w`/`design_h` (from Lottie JSON `w`/`h`) remain unchanged for all
-animations.
+A grid resize clears Lottie animations because reflow cannot preserve their
+text anchors. A cell-pixel change without a grid resize preserves them and
+recomputes raster and placement geometry from the requested region.
 
 ### 7.5 Alternate Screen
 
-Switching to alternate screen (mode 1049) clears all Lottie placements in the
-alternate screen, matching sixel behavior.
+Lottie objects are screen-scoped. Entering or leaving the alternate screen
+clears the alternate screen's set; main-screen objects survive and become
+visible again on return. Queries report only the active screen.
 
 ### 7.6 Selection and Cursor
 
-Selection highlights render on top of background Lottie but below foreground
-Lottie (enforced by the host's render pipeline ordering). The cursor renders
-within the cell pipeline. A foreground Lottie may obscure the cursor — this
-matches existing sixel foreground behavior and is acceptable.
+The host places background graphics behind the cell pass and foreground
+graphics above it. A foreground animation may obscure text or the cursor, as
+other foreground graphics do.
 
 ---
 
@@ -918,96 +747,37 @@ does not create a duplicate.
 
 ## 9. Host Integration Guide
 
-A host renderer that wants to display Lottie animations needs:
-
-1. **Per-frame tick**: call `terminal_lottie_tick(term, now_us)` before querying
-   animations.
-2. **Query animations**: `terminal_get_lotties(term, &count)` returns RGBA
-   snapshots.
-3. **Query placements**: `terminal_get_lottie_placements(term, id, &pl_count)`
-   returns cell regions.
-4. **GPU texture cache**: keyed by `id`, version-gated (same pattern as sixel).
-5. **Compositing**: render background-layer placements after cell content but
-   before foreground-layer placements.
-
-The host has zero Lottie-specific knowledge beyond pixel upload and draw. No
-ThorVG dependency is required in the host.
-
-### Per-Frame Data Flow
+A host renderer performs these steps once per presented frame:
 
 ```
-1. terminal_lottie_tick(term, now_us)        // advance + re-rasterize
-2. terminal_get_lotties(term, &lottie_count) // pull RGBA snapshots
-3. For each animation:
-     a. Lookup/create GPU texture (keyed by id, version-gated)
-     b. If version changed: SDL_UpdateTexture from CfrLottie.rgba
-     c. terminal_get_lottie_placements(term, id, &pl_count)
-     d. For each placement:
-          - Skip if wrong layer
-          - Compute screen coordinates from abs_line
-          - Frustum cull
-          - Set per-placement opacity
-          - SDL_RenderTexture
+1. cfr_lottie_present(vt, present_us, hold_us)
+2. anims = cfr_get_lotties(vt, &anim_count)
+3. Reconcile host scenes with the animation handles
+4. For each animation:
+     a. If definition_rev changed, load json into the vector renderer
+     b. If px_w/px_h changed, resize the vector picture and raster target
+     c. If raster_rev changed, rasterize current_frame
+     d. Upload the frame to the texture cache if raster_rev changed
+5. placements = cfr_get_image_placements(vt, &placement_count)
+6. For each Lottie placement:
+     - Match its animation by image_handle
+     - Select background or foreground pass
+     - Map the display row through the host's scrollback offset
+     - Cull boxes outside the viewport
+     - Apply per-placement opacity
+     - Draw the raster 1:1, centered in the cell box
 ```
 
----
+A headless host can ignore rasterization entirely while retaining full VT and
+protocol behavior. A graphical host chooses its own CPU or GPU vector stack;
+coffer has no vector-renderer dependency.
 
-## 10. JSON Parser
+## 10. JSON Metadata Reader
 
-The engine uses a lightweight JSON parser (`lt_json_find_key`) that searches
-for keys at the **top level** of a JSON object. It correctly skips nested
-objects and arrays (tracking depth) to avoid finding keys inside the `lottie`
-sub-object. Only top-level command fields (`cmd`, `id`, `lottie`, `placement`,
-`layer`, `opacity`, `play`, `frame`, `speed`, `loop`, `autostart`, `data`,
-`seq`, `total`) are extracted.
+The engine uses a lightweight reader (`lt_json_find_key`) that searches for
+keys at the top level of a JSON object and skips nested objects and arrays.
+It extracts only command fields and the Lottie document's `w`, `h`, `ip`, `op`
+and `fr` metadata needed for layout and playback.
 
-The full Lottie JSON body is passed verbatim to ThorVG's
-`tvg_picture_load_data()` which handles parsing internally.
-
----
-
-## 11. Alternatives Considered
-
-### Direct pixel streaming (like sixel)
-
-The client could pre-rasterize frames and send them as pixel data.
-**Rejected** because:
-
-- Lottie JSON is typically 1–50 KB; pre-rasterized RGBA frames are ~720 KB per
-  frame at 4×8 cells HiDPI. A 30-frame animation would be ~21 MB vs ~50 KB.
-- JSON enables resolution-independent rendering (crisp at any DPI or zoom).
-- Frame composition (Lottie's partial frames) would need client-side work,
-  duplicating ThorVG's effort.
-
-### Host-side rasterization
-
-Rasterization in the host with ThorVG linked only there. **Rejected** because:
-
-- Inconsistent with sixel: host must manage ThorVG state coupled to the engine's
-  animation lifecycle.
-- A Lottie-capable host requires ThorVG as a dependency. With engine-side
-  rasterization, any host consuming `CfrLottie.rgba` works with zero
-  Lottie-specific code.
-- The engine can correctly manage canvas resize, frame timing, and pixel buffer
-  reuse without cross-process coordination.
-
-### Host-side JSON parsing
-
-The engine fires a callback with the raw payload and the host handles
-everything. **Rejected** because:
-
-- Animation state (playback, timing, loop) is grid-coupled — must scroll with
-  text, be culled on scroll-off, and cleared on ED. These are engine
-  responsibilities (same rationale as sixel being internal).
-- Cell-anchoring and placement management are naturally part of the VT engine's
-  coordinate system.
-
-### OSC instead of APC
-
-The original design used OSC 837. **Changed to APC** because:
-
-- ECMA-48 defines APC as "command string for an application program."
-- Kitty's graphics protocol uses APC, establishing precedent.
-- OSC codes are a flat numeric namespace with no registry — any chosen number
-  could conflict.
-- APC strings are safely ignored by other terminals (xterm discards them).
+The complete Lottie document is retained verbatim for the host. coffer does
+not implement the Lottie vector object model.

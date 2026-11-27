@@ -112,8 +112,13 @@ typedef struct
     int buf_w, buf_h;      /* pixel buffer stride (native decoded size) */
     int rows_tall;         /* cells tall (cached for cull/clear) */
     int cols_wide;         /* cells wide (cached) */
-    uint8_t *rgba;         /* pixel buffer */
+    uint8_t *rgba;         /* pixel buffer; NULL for vector-backed objects */
     size_t cap;            /* allocated bytes of rgba */
+
+    /* Protocol-private state owned by the record. Lottie keeps its JSON,
+     * layout and playback clock here; its pixels belong to the host. */
+    void *source_state;
+    void (*source_state_free)(void *vt, void *state);
 
     /* Kitty animation state: extra frames plus the playback clock.
      * Frames use kitty's 1-based numbering: 1 is the root image, extra
@@ -145,17 +150,19 @@ typedef struct
  * model used by Lottie and kitty). */
 typedef struct
 {
-    uint64_t id;           /* placement id (client- or engine-assigned) */
-    uint64_t image_id;     /* owning image's PUBLIC id */
-    uint64_t image_handle; /* owning image's store-internal handle; the
-                            * store's own lookups use THIS, so a client
-                            * id cannot collide with an engine id */
-    uint8_t source;        /* the owning image's IMG_SRC_* — the id space
-                            * the public id belongs to */
-    uint8_t screen;        /* the owning image's IMG_SCREEN_* — a placement
-                            * never crosses screens */
-    long abs_line;         /* absolute line anchor (scrolls with text) */
-    int col;
+    uint64_t id;             /* placement id (client- or engine-assigned) */
+    uint64_t image_id;       /* owning image's PUBLIC id */
+    uint64_t image_handle;   /* owning image's store-internal handle; the
+                              * store's own lookups use THIS, so a client
+                              * id cannot collide with an engine id */
+    uint8_t source;          /* the owning image's IMG_SRC_* — the id space
+                              * the public id belongs to */
+    uint8_t screen;          /* the owning image's IMG_SCREEN_* — a placement
+                              * never crosses screens */
+    long abs_line;           /* centered absolute line anchor */
+    int col;                 /* centered column */
+    long requested_abs_line; /* Lottie: region anchor before centering */
+    int requested_col;       /* Lottie: region column before centering */
     int rows, cols;
     uint8_t layer;
     uint8_t opacity_x256;
@@ -248,7 +255,14 @@ int cfr_img_add(void *vt, CfrImgStore *st,
                 int disp_w, int disp_h,
                 uint8_t layer, uint8_t source);
 
-/* Store RGBA data keyed by an explicit id (kitty, lottie). Creates or
+/* Create or find a named graphics object with no engine-owned pixel buffer.
+ * Used by Lottie: the record owns protocol-private state and placements,
+ * while the host rasterizes the JSON. Returns the record index or -1. */
+int cfr_img_add_object(void *vt, CfrImgStore *st, uint64_t id,
+                       uint8_t layer, uint8_t source, void *source_state,
+                       void (*source_state_free)(void *vt, void *state));
+
+/* Store RGBA data keyed by an explicit id (kitty). Creates or
  * replaces the image with the given id at no anchor, without advancing
  * the cursor or damaging (the caller handles placement/damage).
  *
