@@ -15,7 +15,7 @@ SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEST="${1:-$SRC_DIR/third_party/stb}"
 
 # Pinned commit — update when bumping stb.
-STB_COMMIT="2c980bb59875b0d32144a71867fbdebb2f77cd20"
+STB_COMMIT="1da9ade1e66195252114f5da497f244704a6c58d"
 BASE_URL="https://raw.githubusercontent.com/nothings/stb/${STB_COMMIT}"
 
 HEADER="stb_image.h"
