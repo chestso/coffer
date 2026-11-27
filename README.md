@@ -47,10 +47,14 @@ compositing. See the portty README for renderer-side details.
   enter scrollback, and clear with the text they sit on. Decode covers
   RLE, RGB and DEC HLS color, P2 transparency, and raster attributes;
   capability is advertised via DA1 (`4`), DECSET 80/1070/8452, and
-  XTSMGRAPHICS. The host declares cell pixel size with
+  XTSMGRAPHICS. The host declares the device cell size with
   `cfr_set_cell_pixels()` and fetches images to draw with
-  `cfr_get_images()`. `cfr_set_content_scale()` corrects image cell
-  occupancy on HiDPI displays.
+  `cfr_get_images()`. Every client-facing pixel quantity is a device
+  pixel — the cell-size and geometry reports carry the physical cell and
+  a client's raster is drawn 1:1 — so a canvas sized from the cell-size
+  report stays sharp on a scaled display. `cfr_set_content_scale()` feeds
+  the one report in iTerm2's points + scale unit,
+  `OSC 1337 ; ReportCellSize`.
 - **iTerm2 inline images (OSC 1337)** — `OSC 1337 ; File=… ST` sequences
   are parsed and decoded (base64 PNG via stb_image, auto-fetched at
   configure time) and stored through the shared image store with full 8-bit

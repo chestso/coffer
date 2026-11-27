@@ -1,34 +1,11 @@
 # coffer — follow-ups
 
 Living checklist for coffer. Promote items to PRs as they get worked
-on. Order is roughly priority, not strict dependency.
+on. Order is roughly priority, not strict dependency. Landed work lives
+in `docs/` (the wrapped-line spec and its differential fuzzer, the
+script engine, the image store); this file tracks what is still open.
 
-## Investigate
-
-- **Wrapped-line behavioral spec + differential fuzz.** The spec is
-  `docs/wrapped-lines-spec.md` (policy knobs, edit/severance table, text
-  extraction) and the oracle is `tests/test_cfr_wrap_fuzz.c` (random op
-  stream vs. a naive row model, checked after every op). The model now
-  covers resize/reflow (per-row widths, the scrollback/grid boundary,
-  `CFR_REFLOW_PREFIX_ROWS`), the clamp-only resize path (`reflow =
-  false`, resize on the alt screen, and the exit-time catch-up of the
-  stale main page), DECOM, partial scroll regions (DECSTBM), altscreen
-  1049 and raw 47/1047, selector/ZWJ clusters printed as one write, and
-  split-write base+joiner pairs (§3.4). The model extension found and
-  pinned three engine fixes: the ASCII run fast path wrote one cell past
-  the row after a failed wrap commit and ED 0/1 indexed rows out of
-  bounds after a DECRC restored a pre-shrink cursor (both in
-  `test_cfr_wrap_erase`), and a width-changing clamp carried the margin
-  WRAPLINE bit onto an interior cell, where a later resize could
-  resurrect a severed join (`test_cfr_lines`). The split-write ops also
-  pin the parked-margin attach fix: a stray joiner now re-attaches to
-  the recorded last printed cell instead of the cell before the cursor
-  (`test_cfr_wrap_width`). The accepted
-  DL-inside-one-wrapped-line over-join (spec §7) is modeled by the
-  fuzzer's `m_dl` and pinned by `test_wrap_fuzz_dl_over_join`: wrong
-  text, never wrong structure. No unmodeled wrap behavior remains.
-
-## Not yet implemented
+## Open
 
 ### Kitty keyboard protocol — remaining flags
 
@@ -41,13 +18,13 @@ Coverage in `tests/test_cfr_keys.c`.
 The remaining three flags are accepted-and-stored on the stack but
 have no behavioural effect:
 
-- **0x2 — Report event types** (press / repeat / release). Requires
-  the platform layer to emit key-up events. SDL3 delivers
-  `SDL_EVENT_KEY_UP` and a `repeat` flag on `SDL_EVENT_KEY_DOWN`, so
-  this is plumbing work in `platform_sdl3.c` + `platform_gtk4.c` + the
-  `terminal_send_key` API (add an event-type argument) more than VT
-  work. Encoding: `CSI <code>;<mods>:<event>u` where event is 1=press,
-  2=repeat, 3=release.
+- **0x2 — Report event types** (press / repeat / release). The encoder
+  has to be told the event type, so this is an API addition before it is
+  a VT one: `cfr_send_key()` grows an event argument (`keys.c`), and the
+  host's platform layer supplies it — portty's SDL3 backend has
+  `SDL_EVENT_KEY_UP` and a repeat flag on `SDL_EVENT_KEY_DOWN`. Encoding:
+  `CSI <code>;<mods>:<event>u` where event is 1=press, 2=repeat,
+  3=release.
 
   **Benefit:** Enables applications to distinguish between initial key
   press, auto-repeat, and key release. Critical for games, text editors
@@ -124,47 +101,6 @@ embedded within other control string contexts.
 experimental terminals. Not a real corpus case — no known applications
 emit this pattern. Purely defensive.
 
-### Bundled ConPTY
-
-The CLI loads the pinned `Microsoft.Windows.Console.ConPTY`
-`conpty.dll` + `OpenConsole.exe` bundle when available; system conhost is
-the fallback. The PTY layer is shared with the tests on both platforms:
-`src/pty_posix.c` (`forkpty`) and `src/pty_w32.c` + `src/conpty.c`, archived
-into `libcofferpty.a`.
-
-- `test_cfr_conpty` covers the loader branches a live bundle cannot reach:
-  a directory with `conpty.dll` but no `OpenConsole.exe`, an unloadable
-  (wrong-architecture) DLL, the `<arch>/OpenConsole.exe` fallback, and the
-  `--conpty-dir` > `COFFER_CONPTY_DIR` > compiled-path search order.
-- `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` and
-  `PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE` were evaluated with
-  `test_conpty_width_alignment`: the bundled OpenConsole re-serialises text
-  and lets the receiving engine measure it, so these host flags do not
-  change coffer's grid, and no `--conpty-glyph-width` / `--ambiguous-wide`
-  switch is warranted. The test fails if a future OpenConsole starts baking
-  widths into the stream, which is the signal to revisit that decision.
-- OSC 4 and OSC 104 pass through ConPTY untouched: verified on the Windows
-  CI runners (x64 and arm64) for both the bundle and system conhost, in
-  stream order, with indexed SGR kept as an index rather than baked to RGB.
-  `test_conpty_palette` runs a child through the selected backend, replays
-  the captured stream, and checks the engine's palette and cell colours; the
-  bundle's behaviour is asserted, the system-conhost observation is only
-  logged. Palette-override parity behind ConPTY matches the POSIX path.
-- The OSC 5555 (input) and 5556 (response) carriers stay. 5555 is emitted by
-  the child, which cannot know which backend the CLI selected; 5556 must
-  remain usable because `cfr_conpty_create()` can fall back to system
-  conhost at runtime.
-- `scripts/verify_conpty_bundle.py` checks every fetched architecture's PE
-  machine type, `SHA256SUMS` and lock version; `make dist` runs it for all
-  architectures, and CI covers Windows arm64 natively in addition to x64.
-- Portty now bundles 1.25.261109001, prefers the `Conpty*` exports and uses
-  flags 0 (the old `0x8` passthrough constant is
-  `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` in 1.25). It has adopted this
-  directory's lock and fetch/update/verify scripts (portty `10d9555`) and
-  no longer tracks the binaries; its diagnostics report the pinned package
-  version. Portty's `-S` exit status and `await-exit` races are fixed in
-  portty `1dcec02`.
-
 ### Kitty graphics protocol — remaining gaps
 
 The core protocol is implemented (`src/graphics.c`, tests in
@@ -216,10 +152,57 @@ the transmit/place/delete paths, which already work.
   `advance` hook on the policy table would let one host call drive both,
   with `cfr_lottie_present/tick` as wrappers. Don't hold anything on it —
   only if the host side wants a single scheduler call.
-- **`cfr_image_decode` allocator boundary.** stb_image allocates with
-  the C library's malloc. The kitty f=100 and zlib paths copy onto the
-  caller's allocator, but `osc_1337.c` still frees the decoded buffer
-  with plain `free()`. Route it through the allocator (or document the
-  boundary) before anyone relies on custom allocators for iTerm2
-  images. The parser's OSC/APC accumulators grow through the
-  terminal's allocator already.
+
+## Landed — kept so the decisions are not re-litigated
+
+### Bundled ConPTY
+
+The CLI loads the pinned `Microsoft.Windows.Console.ConPTY`
+`conpty.dll` + `OpenConsole.exe` bundle when available; system conhost is
+the fallback. The PTY layer is shared with the tests on both platforms:
+`src/pty_posix.c` (`forkpty`) and `src/pty_w32.c` + `src/conpty.c`, archived
+into `libcofferpty.a`.
+
+- `test_cfr_conpty` covers the loader branches a live bundle cannot reach:
+  a directory with `conpty.dll` but no `OpenConsole.exe`, an unloadable
+  (wrong-architecture) DLL, the `<arch>/OpenConsole.exe` fallback, and the
+  `--conpty-dir` > `COFFER_CONPTY_DIR` > compiled-path search order.
+- `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` and
+  `PSEUDOCONSOLE_AMBIGUOUS_IS_WIDE` were evaluated with
+  `test_conpty_width_alignment`: the bundled OpenConsole re-serialises text
+  and lets the receiving engine measure it, so these host flags do not
+  change coffer's grid, and no `--conpty-glyph-width` / `--ambiguous-wide`
+  switch is warranted. The test fails if a future OpenConsole starts baking
+  widths into the stream, which is the signal to revisit that decision.
+- OSC 4 and OSC 104 pass through ConPTY untouched: verified on the Windows
+  CI runners (x64 and arm64) for both the bundle and system conhost, in
+  stream order, with indexed SGR kept as an index rather than baked to RGB.
+  `test_conpty_palette` runs a child through the selected backend, replays
+  the captured stream, and checks the engine's palette and cell colours; the
+  bundle's behaviour is asserted, the system-conhost observation is only
+  logged. Palette-override parity behind ConPTY matches the POSIX path.
+- The OSC 5555 (input) and 5556 (response) carriers stay. 5555 is emitted by
+  the child, which cannot know which backend the CLI selected; 5556 must
+  remain usable because `cfr_conpty_create()` can fall back to system
+  conhost at runtime.
+- `scripts/verify_conpty_bundle.py` checks every fetched architecture's PE
+  machine type, `SHA256SUMS` and lock version; `make dist` runs it for all
+  architectures, and CI covers Windows arm64 natively in addition to x64.
+- Portty now bundles 1.25.261109001, prefers the `Conpty*` exports and uses
+  flags 0 (the old `0x8` passthrough constant is
+  `PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES` in 1.25). It has adopted this
+  directory's lock and fetch/update/verify scripts (portty `10d9555`) and
+  no longer tracks the binaries; its diagnostics report the pinned package
+  version. Portty's `-S` exit status and `await-exit` races are fixed in
+  portty `1dcec02`.
+
+### `cfr_image_decode` returns C-library memory
+
+stb_image and the TIFF fallback both allocate with the C library's
+`malloc`; `src/image_decode.c` documents the boundary at the one entry
+point, which is where the rule lives. Callers either free with `free()`
+(iTerm2 keeps no engine-owned copy of the decoded buffer) or copy onto
+the terminal's allocator (kitty `f=100`, zlib). Decision: leave the
+decoders on the C allocator rather than thread a `CfrTerm` through them
+— the decoded buffer never crosses the public API, so a custom allocator
+sees no foreign pointer.

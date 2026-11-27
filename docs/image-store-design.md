@@ -5,7 +5,7 @@ the damage, the buffer dimensions, the Lottie reconciliation, the
 public surface, the tests, the consumers). The findings F1–F9 are
 fixed; the reproducers under `tests/repro/` show the fixed behaviour.
 Owner repo: **coffer** (the engine; portty/nevermore/boba are consumers).
-Last updated: 2026-10-22.
+Last updated: 2026-11-27.
 
 > This file is the design AND the state tracker. It is written so the work
 > can resume after an outage or an OOM: the "Progress" section at the
@@ -186,6 +186,10 @@ allocation — **heap-buffer-overflow**, confirmed by ASan.
 bounds. This is a memory-safety bug that also corrupts the rendered
 image (garbage pixels → "blank space" or noise).
 
+**Fix:** `buf_w`/`buf_h` report the allocation's real extent, and the
+display fields use the same unit — the raster's own device pixels, so
+there is no scale conversion left in the store (item 13, §7).
+
 ### F9 — the lottie subsystem keeps a parallel record array
 
 `lottie.c` keeps `LtRec` (json arena, ThorVG handles, playback state)
@@ -216,9 +220,9 @@ The store must satisfy, and the tests must pin:
 - **I3** Every mutation that changes what the screen shows reports
   damage. An image that appears, changes, or disappears dirties the rows
   it covers.
-- **I4** The pixel buffer's dimensions the host reads are the buffer's
-  REAL dimensions. Logical→physical scaling happens in the display
-  fields, never in the buffer fields.
+- **I4** The dimensions the host reads are the buffer's REAL dimensions,
+  and the display dimensions are the raster's own device pixels, drawn
+  1:1. No pixel figure the store hands out is scaled.
 - **I5** The store's eviction order is well-defined: oldest first, by a
   single, total order over all records (creation order for named
   images, anchor order for 1:1 images).
@@ -256,7 +260,7 @@ The store must satisfy, and the tests must pin:
 5. `buf_w`/`buf_h` are the REAL buffer dimensions; `w`/`h` are the
    display dimensions in device pixels — the raster's own unit, drawn
    1:1. `cfr_img_get()` copies them through with no scale conversion
-   (see `docs/IMAGE-DEVICE-PX-PLAN.md`).
+   (§7).
 
 ### Phase 2 — the lifetimes (F1, F2, F3)
 
@@ -320,11 +324,11 @@ The store must satisfy, and the tests must pin:
 
 ### Phase 4 — the buffer dimensions (F8)
 
-13. `cfr_img_get()` reports `buf_w`/`buf_h` unscaled; the display
-    fields (`width_px`/`height_px`) stay scaled. portty's
-    `image_get_texture()` then reads exactly the buffer. Add a
-    regression test at `content_scale = 2.0` (ASan) that copies
-    `buf_w * buf_h * 4` bytes and asserts no overread.
+13. `cfr_img_get()` reports `buf_w`/`buf_h` and the display fields
+    (`width_px`/`height_px`) unscaled — both are the raster's device
+    pixels (§7). portty's `image_get_texture()` then reads exactly the
+    buffer. Add a regression test at `content_scale = 2.0` (ASan) that
+    copies `buf_w * buf_h * 4` bytes and asserts no overread.
 14. Check every other host of `CfrImage` (portty's `render_to_png`
     expands the canvas from `width_px`/`height_px` — fine; the lottie
     path uses its own `canvas_w/h` — fine).
@@ -358,7 +362,7 @@ New/extended test files (all in `tests/`, no new dependency):
 
 | Test                     | Pins                                                                                                                                                        |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test_cfr_image_store.c` | I1–I5: kind-based lifetimes, id-space separation, deterministic eviction, damage on placement, buffer dims at scale 2                                       |
+| `test_cfr_image_store.c` | I1–I5: kind-based lifetimes, id-space separation, deterministic eviction, damage on placement, buffer and display dims at scale 2                           |
 | `test_cfr_graphics.c`    | the kitty-specific rules: a transmitted-but-unplaced image survives ED2; a re-transmit with the same id drops the placements (kitty's rule); `a=d` variants |
 | `test_cfr_lottie.c`      | the lottie/store reconciliation after an eviction                                                                                                           |
 
@@ -443,8 +447,15 @@ run in CI).
   occupancy, and every pixel figure the engine _reports_ back to a
   client (XTWINOPS `14t`/`16t`, XTSMGRAPHICS geometry, the Lottie APC
   report) carry the physical cell, and a client's raster is drawn 1:1.
-  The one exception is OSC 1337 `ReportCellSize`, which keeps iTerm2's
-  points + scale unit — `cfr_cell_logical_px` / `cfr_px_logical` serve
-  that report alone. See `docs/IMAGE-DEVICE-PX-PLAN.md`.
+  This is the kitty/foot/wezterm convention, so a client that sizes its
+  canvas from the cell-size report lands sharp on a scaled display, and
+  a consequence worth knowing is that an image's native pixels are
+  device pixels (a natural-size image on a 2× display covers half the
+  logical extent it would under a points contract — the same device
+  extent). The one exception is OSC 1337 `ReportCellSize`, which keeps
+  iTerm2's points + scale unit — `cfr_cell_logical_px` / `cfr_px_logical`
+  serve that report alone. The two oracles agree: physical `16t` ==
+  ReportCellSize points × scale, pinned by
+  `test_cell_size_reports_agree`.
 - Budget constants live in `src/image_store.h` (`IMG_MAX_IMAGES`,
   `IMG_LIVE_MAX`, `IMG_SPARE_MAX`, `IMG_RETAIN_MAX`).

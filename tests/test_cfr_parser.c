@@ -1704,7 +1704,8 @@ static void test_cell_size_reports_agree(void)
     cfr_free(vt);
 }
 
-/* The one conversion every client-facing pixel figure goes through. */
+/* Device pixels -> the points ReportCellSize reports; the one conversion
+ * left in client-facing pixel figures. */
 static void test_cfr_px_logical(void)
 {
     ASSERT_EQ(cfr_px_logical(10, 1.0f), 10); /* unscaled: identity */
